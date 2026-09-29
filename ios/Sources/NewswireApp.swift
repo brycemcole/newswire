@@ -437,7 +437,7 @@ struct StoryRow: View {
                 AsyncImage(url: imageURL) { phase in
                     if phase.error != nil {
                         details
-                    } else if showSummary && largeImage {
+                    } else if showSummary && largeImage && !isSeen {
                         VStack(alignment: .leading, spacing: 12) {
                             details
                             Color.clear
@@ -461,6 +461,8 @@ struct StoryRow: View {
                 details
             }
         }
+        .opacity(isSeen ? 0.5 : 1)
+        .animation(.easeOut(duration: 0.25), value: isSeen)
         .accessibilityElement(children: .combine)
         .contextMenu {
             if imageURL != nil && showSummary {
@@ -541,7 +543,8 @@ struct StoryRow: View {
         return Text(line)
     }
 
-    private var unreadPriority: String { ReadState.shared.contains(story) ? "normal" : story.priority }
+    private var isSeen: Bool { ReadState.shared.contains(story) }
+    private var unreadPriority: String { isSeen ? "normal" : story.priority }
 
     private var headline: Text {
         switch unreadPriority {
@@ -688,8 +691,13 @@ struct StoryDetail: View {
             return .handled
         })
         .scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
-        .onAppear {
+        .task {
+            // Give the reader a moment before dimming/collapsing the row in the feed.
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
             ReadState.shared.mark(story)
+        }
+        .onAppear {
             if interaction == nil { interaction = story.interaction }
         }
         .task {

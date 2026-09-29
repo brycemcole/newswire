@@ -248,7 +248,7 @@ enum ReaderKeychain {
     private func ranked(_ page: [Story]) -> [Story] {
         guard query.isEmpty else { return page }
         let symbols = Set(Watchlist.shared.symbols + PortfolioStore.shared.snapshot.positions.map(\.symbol))
-        return StoryRanking.rank(page, seen: Set(ReadState.shared.seen), symbols: symbols)
+        return StoryRanking.rank(page, seen: [], symbols: symbols)
     }
 
     func switchMode() {
