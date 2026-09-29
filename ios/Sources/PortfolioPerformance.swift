@@ -345,6 +345,6 @@ extension AnyTransition {
 
 extension Animation {
     static func dashboard(_ reduceMotion: Bool) -> Animation {
-        reduceMotion ? .easeOut(duration: 0.15) : .spring(duration: 0.45, bounce: 0.12)
+        reduceMotion ? .easeOut(duration: 0.15) : .smooth(duration: 0.38)
     }
 }
