@@ -10,7 +10,11 @@ on:
 
 concurrency:
   group: testflight
-  cancel-in-progress: false
+  cancel-in-progress: true
+
+permissions:
+  actions: read
+  contents: read
 
 jobs:
   upload:
@@ -25,6 +29,8 @@ jobs:
       ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       - name: Check App Store Connect secrets
         env:
           ASC_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
@@ -54,6 +60,35 @@ jobs:
             -authenticationKeyPath "$RUNNER_TEMP/AuthKey.p8" -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             2>&1 | tee "$RUNNER_TEMP/upload.log"
           echo "Uploaded Newswire build $BUILD_NUMBER" >> "$GITHUB_STEP_SUMMARY"
+      - name: Write release notes
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ASC_KEY_PATH: ${{ runner.temp }}/AuthKey.p8
+        run: |
+          prev=$(gh run list -R "$GITHUB_REPOSITORY" -w TestFlight -b main -s success -L 1 --json headSha -q '.[0].headSha')
+          if [ -n "$prev" ] && git merge-base --is-ancestor "$prev" HEAD; then range="$prev..HEAD"; else range="-20"; fi
+          git log --no-merges --format='- %s' $range -- . > "$RUNNER_TEMP/commits.txt"
+          [ -s "$RUNNER_TEMP/commits.txt" ] || git log -1 --format='- %s' > "$RUNNER_TEMP/commits.txt"
+          cp "$RUNNER_TEMP/commits.txt" "$RUNNER_TEMP/notes.txt"
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            body=$(jq -n --rawfile commits "$RUNNER_TEMP/commits.txt" '{
+              model: "claude-opus-5-5", max_tokens: 2000, fallbacks: "default",
+              output_config: {effort: "low"},
+              messages: [{role: "user", content: ("These are the commits in a new TestFlight build of Newswire, an iOS app. Write the tester-facing What to Test notes: a short plain-text bulleted list (\"- \" bullets, no markdown headings or bold) of user-visible changes, grouped naturally, skipping CI, tooling and docs-only changes. If nothing is user-visible, write a single line saying it is a maintenance build. Keep it under 800 characters.\n\n" + $commits)}]
+            }')
+            res=$(curl -sS https://api.anthropic.com/v1/messages \
+              -H "Content-Type: application/json" -H "x-api-key: $ANTHROPIC_API_KEY" \
+              -H "anthropic-version: 2023-06-01" -H "anthropic-beta: server-side-fallback-2026-07-01" -d "$body")
+            if [ "$(jq -r '.stop_reason' <<<"$res")" = "end_turn" ]; then
+              jq -r '[.content[] | select(.type == "text") | .text] | join("")' <<<"$res" > "$RUNNER_TEMP/notes.txt"
+            else
+              echo "::warning::Claude summary unavailable, using commit list: $(jq -c '.error // .stop_reason' <<<"$res")"
+            fi
+          fi
+          { echo "### What to Test"; cat "$RUNNER_TEMP/notes.txt"; } >> "$GITHUB_STEP_SUMMARY"
+          ruby ci/set_whats_new.rb "$BUILD_NUMBER" "$RUNNER_TEMP/notes.txt"
       - name: Upload logs
         if: failure()
         uses: actions/upload-artifact@v4
