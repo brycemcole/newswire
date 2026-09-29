@@ -426,14 +426,17 @@ struct FeedView: View {
                     if let first = store.stories.first { proxy.scrollTo(first.id, anchor: .top) }
                 }
             } label: {
-                Label(String(store.newCount) + " NEW", systemImage: "arrow.up")
-                    .font(.system(.caption, design: .monospaced).weight(.bold))
+                Label(String(store.newCount) + " New", systemImage: "arrow.up")
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Theme.shared.accent.onColor)
-                    .padding(.horizontal, 18).frame(minHeight: 48)
+                    .padding(.horizontal, 14)
+                    .frame(minHeight: 36)
+                    .background(Capsule().fill(Color.wireAccent))
+                    .contentShape(.capsule)
+                    .glassEffect(.regular, in: .capsule)
             }
-            .buttonStyle(.glassProminent)
-            .tint(.wireAccent)
-            .padding(.vertical, 8)
+            .buttonStyle(PressSpringStyle())
+            .padding(.vertical, 4)
             .sensoryFeedback(.impact(weight: .light), trigger: store.newCount) { old, new in old == 0 && new > 0 }
             .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .scale(scale: 0.9)).combined(with: .opacity))
         }
