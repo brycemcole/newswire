@@ -107,7 +107,7 @@ struct FeedView: View {
 
     var body: some View {
         NavigationStack(path: $store.path) {
-            ScrollViewReader { proxy in
+            Group {
                 List {
                     if search.isEmpty && store.filters.isEmpty {
                         dashboard
@@ -191,12 +191,6 @@ struct FeedView: View {
                         Button { settings = true } label: { Image(systemName: "gearshape") }
                             .accessibilityLabel("Settings")
                     }
-                }
-                .safeAreaInset(edge: .top, spacing: 0) {
-                    VStack(spacing: 0) {
-                        latestPill(proxy: proxy)
-                    }
-                    .animation(reduceMotion ? .easeOut(duration: 0.15) : .spring(duration: 0.4, bounce: 0.22), value: store.newCount)
                 }
             }
             .sheet(isPresented: $settings) { SettingsView(store: store) }
@@ -415,28 +409,6 @@ struct FeedView: View {
         Text(category.isEmpty ? "All" : category.capitalized)
             .font(.subheadline.weight(.semibold))
             .lineLimit(1)
-    }
-
-    @ViewBuilder
-    private func latestPill(proxy: ScrollViewProxy) -> some View {
-        if store.newCount > 0 {
-            Button {
-                withAnimation(reduceMotion ? .easeOut(duration: 0.15) : .smooth(duration: 0.35)) {
-                    store.showLatest()
-                    if let first = store.stories.first { proxy.scrollTo(first.id, anchor: .top) }
-                }
-            } label: {
-                Label(String(store.newCount) + " NEW", systemImage: "arrow.up")
-                    .font(.system(.caption, design: .monospaced).weight(.bold))
-                    .foregroundStyle(Theme.shared.accent.onColor)
-                    .padding(.horizontal, 18).frame(minHeight: 48)
-            }
-            .buttonStyle(.glassProminent)
-            .tint(.wireAccent)
-            .padding(.vertical, 8)
-            .sensoryFeedback(.impact(weight: .light), trigger: store.newCount) { old, new in old == 0 && new > 0 }
-            .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .scale(scale: 0.9)).combined(with: .opacity))
-        }
     }
 
     private func state(_ title: String, message: String, icon: String) -> some View {
