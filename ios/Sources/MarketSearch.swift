@@ -138,6 +138,7 @@ struct MarketSearchSheet: View {
     @State private var recents = MarketRecents.all
     @State private var moverList = MoverList(rawValue: UserDefaults.standard.string(forKey: "marketMovers") ?? "") ?? .gainers
     @State private var board = MarketBoard.shared
+    @State private var detent: PresentationDetent = .medium
     @FocusState private var searching: Bool
     @Environment(\.scenePhase) private var phase
 
@@ -157,9 +158,15 @@ struct MarketSearchSheet: View {
         }
         .frame(maxHeight: .infinity, alignment: .top)
         .animation(.easeOut(duration: 0.18), value: trimmed.isEmpty)
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.medium, .large], selection: $detent)
         .presentationDragIndicator(.visible)
+        // Drags inside the lists scroll them instead of resizing the sheet, so a swipe never moves the sheet and the keyboard at once.
+        .presentationContentInteraction(.scrolls)
         .onAppear { searching = true }
+        // The keyboard covers most of a medium sheet and relayouts it when it leaves, so search at full height.
+        .onChange(of: searching) { _, focused in
+            if focused { detent = .large }
+        }
         .task(id: trimmed) {
             let text = trimmed
             guard !text.isEmpty else { matches = []; loading = false; return }
@@ -232,7 +239,7 @@ struct MarketSearchSheet: View {
             }
             .animation(.easeOut(duration: 0.18), value: matches)
         }
-        .scrollDismissesKeyboard(.immediately)
+        .scrollDismissesKeyboard(.interactively)
     }
 
     private var overview: some View {
@@ -258,7 +265,7 @@ struct MarketSearchSheet: View {
             .padding(.top, 8)
             .padding(.bottom, 24)
         }
-        .scrollDismissesKeyboard(.immediately)
+        .scrollDismissesKeyboard(.interactively)
     }
 
     private var indices: some View {
