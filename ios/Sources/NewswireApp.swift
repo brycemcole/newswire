@@ -670,6 +670,10 @@ struct StoryDetail: View {
                         }
                         .font(.body).foregroundStyle(.primary.opacity(0.85)).lineSpacing(3)
                         .transition(.opacity)
+                    } else if BlockedHosts.contains(story.url) && !(story.hasDistinctSummary && !story.isBrain) {
+                        Label("\(story.source) doesn't allow in-app reading. Tap Read Source to open the full story.", systemImage: "safari")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     } else if loading {
                         Label("Loading article", systemImage: "doc.text").font(.subheadline).foregroundStyle(.secondary)
                             .symbolEffect(.pulse, options: .repeating)
@@ -704,7 +708,7 @@ struct StoryDetail: View {
         }
         .navigationDestination(item: $selectedQuote) { QuoteDetail(symbol: $0.symbol) }
         .task(id: attempt) {
-            guard story.opensInReader, story.url.host() != "news.google.com", excerpt.isEmpty else { return }
+            guard story.opensInReader, story.url.host() != "news.google.com", !BlockedHosts.contains(story.url), excerpt.isEmpty else { return }
             loading = true
             defer { loading = false }
             // Let the navigation push finish first: extraction can create a web view, which would drop frames mid-transition.

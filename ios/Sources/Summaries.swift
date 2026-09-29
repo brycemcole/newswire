@@ -81,7 +81,7 @@ import WebKit
         guard !story.isBrain else { return }
         let needsSummary = available && summaries[story.url.absoluteString] == nil
         let needsImage = story.thumbnail == nil && images[story.url.absoluteString] == nil
-        guard story.opensInReader, story.url.host() != "news.google.com", needsSummary || needsImage, !done.contains(story.url.absoluteString), !queued.contains(story.url.absoluteString) else { return }
+        guard story.opensInReader, story.url.host() != "news.google.com", !BlockedHosts.contains(story.url), needsSummary || needsImage, !done.contains(story.url.absoluteString), !queued.contains(story.url.absoluteString) else { return }
         queued.insert(story.url.absoluteString)
         queue.append(story)
         guard !running else { return }
@@ -180,22 +180,64 @@ import WebKit
 
     nonisolated static func page(_ url: URL, render: Bool = true) async -> (text: String, image: URL?)? {
         let url = URL(string: url.absoluteString.replacingOccurrences(of: "&amp;", with: "&")) ?? url
-        let fetched = await fetched(url)
+        guard !BlockedHosts.contains(url) else { return nil }
+        let (fetched, refused) = await fetched(url)
         if let fetched, fetched.complete || !render { return (fetched.text, fetched.image) }
         guard render else { return nil }
-        let rendered = await RenderedPage.load(url)
+        var rendered = await RenderedPage.load(url)
+        if let text = rendered?.text, BlockedHosts.isWall(text) { rendered = nil }
+        if refused && (rendered?.text ?? "").isEmpty {
+            // Refused by the server and nothing but a bot check in a real web view: stop trying this site for a while.
+            BlockedHosts.mark(url)
+            return nil
+        }
         guard let fetched, !fetched.paragraphs.isEmpty else { return rendered ?? fetched.map { ($0.text, $0.image) } }
         guard let rendered, rendered.text.count > fetched.text.count else { return (fetched.text, fetched.image ?? rendered?.image) }
         return (rendered.text, rendered.image ?? fetched.image)
     }
 
-    @concurrent nonisolated private static func fetched(_ url: URL) async -> ArticleExtractor.Result? {
+    /// The extracted page, and whether the server refused the request (an auth/rate-limit status or a bot-check page).
+    @concurrent nonisolated private static func fetched(_ url: URL) async -> (ArticleExtractor.Result?, Bool) {
         var request = URLRequest(url: url, timeoutInterval: 15)
         request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
         guard let (data, response) = try? await URLSession.shared.data(for: request),
-              (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) == true,
-              let html = String(data: data.prefix(1_500_000), encoding: .utf8) ?? String(data: data.prefix(1_500_000), encoding: .isoLatin1) else { return nil }
-        return ArticleExtractor.extract(html: html, baseURL: url)
+              let status = (response as? HTTPURLResponse)?.statusCode else { return (nil, false) }
+        guard (200..<300).contains(status) else { return (nil, [401, 403, 429, 503].contains(status)) }
+        guard let html = String(data: data.prefix(1_500_000), encoding: .utf8) ?? String(data: data.prefix(1_500_000), encoding: .isoLatin1) else { return (nil, false) }
+        let result = ArticleExtractor.extract(html: html, baseURL: url)
+        // A bot check can come back as 200; its text is short, so only short pages are checked.
+        if result.text.count < 600, BlockedHosts.isWall(result.text) || BlockedHosts.isWall(String(html.prefix(20_000))) { return (nil, true) }
+        return (result, false)
+    }
+}
+
+/// Publishers that answer anything but a full browser tab with a bot check ("Press & Hold", CAPTCHA). Their
+/// stories skip in-app extraction and point to Read Source instead of spinning on a page that never arrives.
+/// Known sites are listed; others are learned when a fetch is refused and a web view only finds a bot check,
+/// and are retried after a day.
+nonisolated enum BlockedHosts {
+    private static let known = ["seekingalpha.com"]
+    private static let key = "blockedArticleHosts"
+    private static let retry: TimeInterval = 24 * 3600
+    private static let wall = #"press (&|and) hold|confirm you are a human|verify (that )?you are (a )?human|are you a robot|access to this page has been denied|checking (if the site connection is secure|your browser)|enable javascript and cookies to continue|px-captcha"#
+
+    static func contains(_ url: URL) -> Bool {
+        guard let host = url.host()?.lowercased() else { return false }
+        if known.contains(where: { host == $0 || host.hasSuffix("." + $0) }) { return true }
+        let until = (UserDefaults.standard.dictionary(forKey: key)?[host] as? Double) ?? 0
+        return until > Date.now.timeIntervalSince1970
+    }
+
+    static func mark(_ url: URL) {
+        guard let host = url.host()?.lowercased() else { return }
+        let now = Date.now.timeIntervalSince1970
+        var hosts = (UserDefaults.standard.dictionary(forKey: key) as? [String: Double] ?? [:]).filter { $0.value > now }
+        hosts[host] = now + retry
+        UserDefaults.standard.set(hosts, forKey: key)
+    }
+
+    static func isWall(_ text: String) -> Bool {
+        text.range(of: wall, options: [.regularExpression, .caseInsensitive]) != nil
     }
 }
 
