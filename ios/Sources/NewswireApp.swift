@@ -66,14 +66,23 @@ nonisolated enum Accent: String, CaseIterable, Identifiable {
 
 @Observable final class ReadState {
     static let shared = ReadState()
-    private(set) var seen: [String] = UserDefaults.standard.stringArray(forKey: "seenStories") ?? []
+    /// Looked up by every row on every render, so it is a set; `order` keeps the oldest-first list that is trimmed and saved.
+    private(set) var seen: Set<String>
+    @ObservationIgnored private var order: [String]
+
+    init() {
+        order = UserDefaults.standard.stringArray(forKey: "seenStories") ?? []
+        seen = Set(order)
+    }
 
     func contains(_ story: Story) -> Bool { seen.contains(story.id) }
 
     func mark(_ story: Story) {
         guard !seen.contains(story.id) else { return }
-        seen = Array((seen + [story.id]).suffix(2000))
-        UserDefaults.standard.set(seen, forKey: "seenStories")
+        order.append(story.id)
+        if order.count > 2000 { order.removeFirst(order.count - 2000) }
+        seen = Set(order)
+        UserDefaults.standard.set(order, forKey: "seenStories")
     }
 }
 
@@ -122,6 +131,9 @@ struct FeedView: View {
                     if !store.configured && store.stories.isEmpty {
                         state("CONNECT YOUR WIRE", message: "Add your HTTPS server URL and reader token to start reading.", icon: "antenna.radiowaves.left.and.right.slash")
                         Button("Open settings") { settings = true }
+                    } else if !store.restored {
+                        // The cache is read off the main thread in a few milliseconds; show nothing rather than flash a placeholder.
+                        EmptyView()
                     } else if store.stories.isEmpty && (store.loading || !store.hasLoaded) {
                         state("YOUR WIRE", message: "Connecting to your latest headlines.", icon: "newspaper")
                     } else if store.stories.isEmpty && !store.loading && store.error == nil && store.hasLoaded {
@@ -130,34 +142,42 @@ struct FeedView: View {
                     if let error = store.error {
                         VStack(alignment: .leading, spacing: 8) {
                             Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.secondary)
-                            Button("Retry") { Task { await store.load(poll: !store.stories.isEmpty) } }
+                            Button("Retry") { Task { await store.sync(.replace) } }
                         }.font(.system(.caption, design: .monospaced)).padding(.vertical, 8)
                     }
+                    let olderTrigger = store.olderTriggerID
                     ForEach(store.stories) { story in
                         NavigationLink(value: story) { StoryRow(story: story, showSummary: !headlinesOnly) }
                             .id(story.id)
                             .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 12))
                             .listRowBackground(Color.clear)
                             .listRowSeparator(.visible)
-
+                            .onAppear {
+                                // Start the next page well before the end so scrolling never waits on the network.
+                                if story.id == olderTrigger { Task { await store.loadOlder() } }
+                            }
                     }
                     if store.cursor != nil {
-                        Button { Task { await store.load(older: true) } } label: {
-                            HStack { Spacer(); Text(store.loading ? "FETCHING OLDER STORIES" : "LOAD OLDER"); Spacer() }.frame(minHeight: 44)
-                        }.disabled(store.loading)
-                            .task(id: store.cursor) {
-                                guard store.error == nil else { return }
-                                await store.load(older: true)
-                            }
+                        Button { Task { await store.loadOlder() } } label: {
+                            HStack { Spacer(); Text(store.loadingOlder ? "FETCHING OLDER STORIES" : "LOAD OLDER"); Spacer() }.frame(minHeight: 44)
+                        }.disabled(store.loadingOlder)
+                            .task(id: store.cursor) { await store.loadOlder() }
                     }
                 }
                 .listStyle(.plain)
                 .listSectionSpacing(0)
                 .listSectionSeparator(.hidden)
-                .animation(reduceMotion ? .easeOut(duration: 0.15) : .smooth(duration: 0.32), value: store.stories)
                 .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: headlinesOnly)
                 .scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
-                .refreshable { await store.load(poll: !store.stories.isEmpty) }
+                .refreshable { await store.sync(.replace) }
+                .onScrollGeometryChange(for: Bool.self) { geometry in
+                    geometry.contentOffset.y + geometry.contentInsets.top < 24
+                } action: { _, top in
+                    store.atTop = top
+                }
+                .onScrollPhaseChange { _, phase in
+                    Summarizer.shared.scrolling = phase.isScrolling
+                }
                 .searchable(text: $search, tokens: $store.filters, placement: .navigationBarDrawer(displayMode: .automatic), prompt: store.mode == .brain ? "Search Brain" : "Search the wire") { filter in
                     Label(filter.title, systemImage: filter.symbol)
                 }
@@ -207,19 +227,33 @@ struct FeedView: View {
             .task(id: store.mode.rawValue + "|" + store.category + "|" + search + "|" + store.filters.map(\.id).joined(separator: "|") + "|" + store.serverURL + "|" + store.token) {
                 store.query = search.trimmingCharacters(in: .whitespacesAndNewlines)
                 store.reset()
-                do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
-                await store.load()
+                // Debounce typing only; category and filter taps load immediately.
+                if !store.query.isEmpty {
+                    do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+                }
+                await store.ready()
+                // A cache under an hour old keeps its order and only gains new stories on top; an older one is
+                // re-ranked in place before the reader has had time to start reading it.
+                let stale = store.lastUpdated.map { $0.timeIntervalSinceNow < -3600 } ?? true
+                await store.sync(stale ? .replace : .merge, quiet: true)
             }
             .task(id: phase) {
-                if phase == .background { FeedStore.scheduleRefresh() }
+                if phase == .background {
+                    FeedStore.scheduleRefresh()
+                    FeedStore.scheduleProcessing()
+                }
                 guard phase == .active else { return }
-                if store.hasLoaded {
-                    store.showLatest()
-                    await store.load()
+                await store.ready()
+                // Skipped when background refresh just brought the feed up to date; at launch the feed-key task
+                // above usually wins and this returns at once because a load is already in flight. After an hour
+                // away the list is re-ranked as it opens rather than gaining a block of new stories over stale ones.
+                let age = store.lastUpdated.map { -$0.timeIntervalSinceNow } ?? .infinity
+                if store.hasLoaded && age > 60 {
+                    await store.sync(age > 3600 ? .replace : .merge, quiet: true)
                 }
                 while !Task.isCancelled {
-                    do { try await Task.sleep(for: .seconds(30)) } catch { return }
-                    await store.load(poll: true)
+                    do { try await Task.sleep(for: .seconds(60)) } catch { return }
+                    await store.sync(.merge, quiet: true)
                 }
             }
             .task(id: phase == .active ? watchlist.symbols : []) {
@@ -423,38 +457,41 @@ struct StoryRow: View {
     var showSummary = true
     @AppStorage private var largeImage: Bool
     @Environment(\.feedStore) private var feedStore
-    private var summarizer = Summarizer.shared
+    /// Captured once when the row is created and never updated while it is on screen: an image or summary that
+    /// arrives later appears the next time the row is built, instead of resizing a row under the reader's thumb.
+    /// Read from the summarizer's unobserved storage so neither this row nor the feed re-renders when it changes.
+    @State private var imageURL: URL?
+    @State private var generated: String?
 
     init(story: Story, showSummary: Bool = true) {
         self.story = story
         self.showSummary = showSummary
         _largeImage = AppStorage(wrappedValue: story.priority == "breaking" || story.priority == "urgent", "largeStoryImage.\(story.id)")
+        let key = story.url.absoluteString
+        _imageURL = State(initialValue: story.thumbnail ?? Summarizer.shared.images[key])
+        _generated = State(initialValue: Summarizer.shared.summaries[key])
     }
 
     var body: some View {
         Group {
             if let imageURL {
-                AsyncImage(url: imageURL) { phase in
-                    if phase.error != nil {
+                if showSummary && largeImage && !isSeen {
+                    VStack(alignment: .leading, spacing: 12) {
                         details
-                    } else if showSummary && largeImage && !isSeen {
-                        VStack(alignment: .leading, spacing: 12) {
-                            details
-                            Color.clear
-                                .aspectRatio(16.0 / 9.0, contentMode: .fit)
-                                .frame(maxHeight: 320)
-                                .overlay { photo(phase.image) }
-                                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                                .accessibilityHidden(true)
-                        }
-                    } else {
-                        HStack(alignment: .center, spacing: 14) {
-                            details.frame(maxWidth: .infinity, alignment: .leading)
-                            Color.clear.frame(width: 96, height: 96)
-                                .overlay { photo(phase.image) }
-                                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                                .accessibilityHidden(true)
-                        }
+                        Color.clear
+                            .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                            .frame(maxHeight: 320)
+                            .overlay { ThumbnailImage(url: imageURL, size: ThumbnailLoader.large) }
+                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            .accessibilityHidden(true)
+                    }
+                } else {
+                    HStack(alignment: .center, spacing: 14) {
+                        details.frame(maxWidth: .infinity, alignment: .leading)
+                        Color.clear.frame(width: 96, height: 96)
+                            .overlay { ThumbnailImage(url: imageURL, size: ThumbnailLoader.small) }
+                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            .accessibilityHidden(true)
                     }
                 }
             } else {
@@ -476,18 +513,7 @@ struct StoryRow: View {
             Link(destination: story.url) { Label("Read Source", systemImage: "safari") }
             ShareLink(item: story.url)
         }
-        .task(id: story.id) { summarizer.request(story) }
-    }
-
-    private var imageURL: URL? { story.thumbnail ?? summarizer.images[story.url.absoluteString] }
-
-    @ViewBuilder
-    private func photo(_ image: Image?) -> some View {
-        if let image {
-            image.resizable().scaledToFill()
-        } else {
-            Rectangle().fill(.quaternary)
-        }
+        .task(id: story.id) { Summarizer.shared.request(story) }
     }
 
     private var details: some View {
@@ -507,7 +533,7 @@ struct StoryRow: View {
                 .font(.title3.weight(.semibold))
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
-            if showSummary, let generated = summarizer.summaries[story.url.absoluteString] {
+            if showSummary, let generated {
                 Text("\(Text(Image(systemName: "text.line.3.summary")).foregroundStyle(.tertiary)) \(generated)")
                     .font(.subheadline).foregroundStyle(.secondary).lineLimit(3)
             } else if showSummary, story.hasDistinctSummary {
@@ -587,15 +613,14 @@ struct StoryDetail: View {
         Array((Summarizer.shared.texts[key] ?? "").split(separator: "\n").map(String.init).prefix(8))
     }
     var body: some View {
+        // The summarizer's dictionaries are unobserved; this makes the detail (and only the detail) update live.
+        let _ = Summarizer.shared.revision
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 if let hero = story.thumbnail ?? Summarizer.shared.images[key] {
+                    // Starts from the feed's already-decoded thumbnail, so the header is never blank during the push.
                     Color.clear.frame(height: 210).frame(maxWidth: .infinity)
-                        .overlay {
-                            AsyncImage(url: hero, transaction: Transaction(animation: .easeOut(duration: 0.2))) { phase in
-                                if let loaded = phase.image { loaded.resizable().scaledToFill() } else { Rectangle().fill(.quaternary) }
-                            }
-                        }
+                        .overlay { ThumbnailImage(url: hero, size: ThumbnailLoader.large) }
                     .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                     .accessibilityHidden(true)
                 }
@@ -682,6 +707,10 @@ struct StoryDetail: View {
             guard story.opensInReader, story.url.host() != "news.google.com", excerpt.isEmpty else { return }
             loading = true
             defer { loading = false }
+            // Let the navigation push finish first: extraction can create a web view, which would drop frames mid-transition.
+            if attempt == 0 {
+                do { try await Task.sleep(for: .milliseconds(450)) } catch { return }
+            }
             if let page = await Summarizer.page(story.url) { Summarizer.shared.remember(page, for: story) }
         }
         .textSelection(.enabled)

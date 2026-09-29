@@ -4,7 +4,9 @@ import UserNotifications
 final class PushDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        FeedStore.registerProcessing()
         FeedStore.scheduleRefresh()
+        FeedStore.scheduleProcessing()
         Task {
             guard (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])) == true else { return }
             application.registerForRemoteNotifications()

@@ -6,30 +6,73 @@ import WebKit
 @Observable final class Summarizer {
     static let shared = Summarizer()
 
-    private(set) var summaries: [String: String] = [:]
-    private(set) var images: [String: URL] = [:]
-    private(set) var texts: [String: String] = [:]
-    private var queue: [Story] = []
-    private var queued: Set<String> = []
-    private var done: Set<String> = []
-    private var running = false
+    /// Bumped whenever a summary, image or article text lands. Only the story detail observes it; feed rows read
+    /// the dictionaries once when they are created, so a result arriving mid-scroll never re-lays out a visible row.
+    private(set) var revision = 0
+    @ObservationIgnored private(set) var summaries: [String: String] = [:]
+    @ObservationIgnored private(set) var images: [String: URL] = [:]
+    @ObservationIgnored private(set) var texts: [String: String] = [:]
+    @ObservationIgnored private var stamps: [String: Date] = [:]
+    /// Set by the feed while the list is moving; queued work waits for it to settle.
+    @ObservationIgnored var scrolling = false
+    @ObservationIgnored private var queue: [Story] = []
+    @ObservationIgnored private var queued: Set<String> = []
+    @ObservationIgnored private var done: Set<String> = []
+    @ObservationIgnored private var running = false
+    @ObservationIgnored private var loading: Task<Void, Never>?
+    @ObservationIgnored private var saving: Task<Void, Never>?
 
     private nonisolated struct Cache: Codable, Sendable {
         var summaries: [String: String]
         var images: [String: URL]
         var articleText: [String: String]?
+        var stamps: [String: Date]?
     }
 
-    private init() {
-        if let data = try? Data(contentsOf: Self.cacheURL), let saved = try? JSONDecoder().decode(Cache.self, from: data) {
-            summaries = saved.summaries
-            images = saved.images
-            texts = saved.articleText ?? [:]
-        }
-    }
+    /// Entries older than this are dropped when the cache is read, so the file stays small and fast to load.
+    private nonisolated static let retention: TimeInterval = 3 * 24 * 3600
+
+    private init() {}
 
     nonisolated private static var cacheURL: URL {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appending(path: "newswire-pages-v3.json")
+    }
+
+    /// Reads the cache from disk on the concurrent pool. The feed awaits this before showing cached stories,
+    /// so the first rows are created with their summaries and images already known.
+    func load() async {
+        if let loading { return await loading.value }
+        let task = Task {
+            guard let saved = await Self.read() else { return }
+            for (key, value) in saved.summaries where summaries[key] == nil { summaries[key] = value }
+            for (key, value) in saved.images where images[key] == nil { images[key] = value }
+            for (key, value) in saved.articleText ?? [:] where texts[key] == nil { texts[key] = value }
+            for (key, value) in saved.stamps ?? [:] where stamps[key] == nil { stamps[key] = value }
+            revision += 1
+        }
+        loading = task
+        await task.value
+    }
+
+    @concurrent nonisolated private static func read() async -> Cache? {
+        guard let data = try? Data(contentsOf: cacheURL), var cache = try? JSONDecoder().decode(Cache.self, from: data) else { return nil }
+        let now = Date.now
+        // Older caches have no stamps; start their clock now so they age out on the normal schedule.
+        var stamps = cache.stamps ?? [:]
+        for key in Set(cache.summaries.keys).union(cache.images.keys).union((cache.articleText ?? [:]).keys) where stamps[key] == nil { stamps[key] = now }
+        let expired = Set(stamps.filter { now.timeIntervalSince($0.value) > retention }.keys)
+        for key in expired {
+            cache.summaries[key] = nil
+            cache.images[key] = nil
+            cache.articleText?[key] = nil
+            stamps[key] = nil
+        }
+        cache.stamps = stamps
+        return cache
+    }
+
+    @concurrent nonisolated private static func write(_ cache: Cache) async {
+        try? JSONEncoder().encode(cache).write(to: cacheURL, options: .atomic)
     }
 
     var available: Bool { SystemLanguageModel.default.availability == .available }
@@ -46,32 +89,82 @@ import WebKit
         Task { await drain() }
     }
 
+    /// Foreground work runs one story at a time, waits while the list is scrolling, and never spins up a hidden
+    /// web view: that is left to the story detail (after its push animation) and to background processing.
     private func drain() async {
+        await load()
         while !queue.isEmpty {
+            await idle()
             let story = queue.removeFirst()
-            if let page = await Self.page(story.url) {
-                if !page.text.isEmpty { texts[story.url.absoluteString] = page.text }
-                if story.thumbnail == nil, let image = page.image { images[story.url.absoluteString] = image }
-                if available, summaries[story.url.absoluteString] == nil, let summary = await summarize(story, article: page.text) { summaries[story.url.absoluteString] = summary }
-                persist()
+            let key = story.url.absoluteString
+            if let page = await Self.page(story.url, render: false) {
+                if !page.text.isEmpty { texts[key] = page.text }
+                if story.thumbnail == nil, let image = page.image { images[key] = image }
+                if available, summaries[key] == nil {
+                    await idle()
+                    if let summary = await summarize(story, article: page.text) { summaries[key] = summary }
+                }
+                changed(key)
             }
-            done.insert(story.url.absoluteString)
-            queued.remove(story.url.absoluteString)
+            done.insert(key)
+            queued.remove(key)
         }
         running = false
     }
 
-    private func persist() {
-        let cache = Cache(summaries: summaries, images: images, articleText: texts)
-        Task.detached { try? JSONEncoder().encode(cache).write(to: Self.cacheURL, options: .atomic) }
+    private func idle() async {
+        while scrolling {
+            do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+        }
+    }
+
+    /// Fetches article text, images and summaries for the top stories ahead of time. Background refresh and
+    /// overnight processing call this so the feed opens with everything ready. Stops early when cancelled.
+    func prepare(_ stories: [Story], summarize wantsSummaries: Bool) async {
+        await load()
+        for story in stories {
+            guard !Task.isCancelled else { break }
+            guard !story.isBrain, story.opensInReader, story.url.host() != "news.google.com" else { continue }
+            let key = story.url.absoluteString
+            let needsSummary = wantsSummaries && available && summaries[key] == nil
+            guard texts[key] == nil || needsSummary || (story.thumbnail == nil && images[key] == nil) else { continue }
+            guard let page = await Self.page(story.url, render: false) else { continue }
+            if !page.text.isEmpty { texts[key] = page.text }
+            if story.thumbnail == nil, images[key] == nil, let image = page.image { images[key] = image }
+            if needsSummary, !Task.isCancelled, let summary = await summarize(story, article: page.text) { summaries[key] = summary }
+            changed(key)
+        }
+        await flush()
     }
 
     func remember(_ page: (text: String, image: URL?), for story: Story) {
         let key = story.url.absoluteString
         if !page.text.isEmpty { texts[key] = page.text }
         if story.thumbnail == nil, images[key] == nil, let image = page.image { images[key] = image }
-        persist()
+        changed(key)
     }
+
+    private func changed(_ key: String) {
+        stamps[key] = .now
+        revision += 1
+        guard saving == nil else { return }
+        // Coalesce writes: one encode of the whole cache every couple of seconds at most, off the main thread.
+        saving = Task {
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            saving = nil
+            await Self.write(snapshot)
+        }
+    }
+
+    /// Writes immediately; used before the app is suspended at the end of background work.
+    func flush() async {
+        saving?.cancel()
+        saving = nil
+        await Self.write(snapshot)
+    }
+
+    private var snapshot: Cache { Cache(summaries: summaries, images: images, articleText: texts, stamps: stamps) }
 
     private func summarize(_ story: Story, article: String) async -> String? {
         guard article.count >= 400 else { return nil }
@@ -85,10 +178,11 @@ import WebKit
         }
     }
 
-    nonisolated static func page(_ url: URL) async -> (text: String, image: URL?)? {
+    nonisolated static func page(_ url: URL, render: Bool = true) async -> (text: String, image: URL?)? {
         let url = URL(string: url.absoluteString.replacingOccurrences(of: "&amp;", with: "&")) ?? url
         let fetched = await fetched(url)
-        if let fetched, fetched.complete { return (fetched.text, fetched.image) }
+        if let fetched, fetched.complete || !render { return (fetched.text, fetched.image) }
+        guard render else { return nil }
         let rendered = await RenderedPage.load(url)
         guard let fetched, !fetched.paragraphs.isEmpty else { return rendered ?? fetched.map { ($0.text, $0.image) } }
         guard let rendered, rendered.text.count > fetched.text.count else { return (fetched.text, fetched.image ?? rendered?.image) }

@@ -74,7 +74,7 @@ A topic needs an `id`, a `label`, a `category`, and one of three matchers: a `de
 
 ## Push notifications
 
-After publishing, `run.mjs` sends an APNs alert for every new `breaking` story to each device registered with the Worker (`POST /v1/devices` from the iOS app, listed with the writer token). Tapping the alert opens the source link. Devices that APNs reports as unregistered are removed. Sending needs an APNs auth key at `~/.config/newswire/apns-key.p8` and `{"key_id": "..."}` in `~/.config/newswire/apns.json` (team `A792L5W262` by default); `APNS_KEY_FILE`, `APNS_KEY_ID`, `APNS_TEAM_ID`, and `APNS_TOPIC` override them.
+After publishing, `run.mjs` sends an APNs alert for every new `breaking` story to each device registered with the Worker (`POST /v1/devices` from the iOS app, listed with the writer token). Tapping the alert opens the source link. When a run publishes only normal stories, it instead sends a silent background push (`apns-push-type: background`) so the app refreshes its feed, images and article text while suspended; these are coalesced to one per 20 minutes (`APNS_WAKE_MINUTES`) across the monitor and Brain scraper, tracked in `~/.config/newswire/apns-wake.json`, and any alert push resets the interval. Devices that APNs reports as unregistered are removed. Sending needs an APNs auth key at `~/.config/newswire/apns-key.p8` and `{"key_id": "..."}` in `~/.config/newswire/apns.json` (team `A792L5W262` by default); `APNS_KEY_FILE`, `APNS_KEY_ID`, `APNS_TEAM_ID`, and `APNS_TOPIC` override them.
 
 ## Priority
 
