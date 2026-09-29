@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { notify } from './apns.mjs';
+import { notify, wake } from './apns.mjs';
 import { publish } from './publish.mjs';
 import { load, save, statePath } from './state.mjs';
 import * as crypto from './rules/crypto.mjs';
@@ -93,6 +93,7 @@ for (const event of seed ? [] : batch) {
 
 const alerts = published.filter(entry => entry.result === 'new' && ['breaking', 'urgent'].includes(entry.story.priority)).map(entry => entry.story);
 failures.push(...await notify(alerts).catch(error => [`notify: ${error.message}`]));
+if (!alerts.length && published.some(entry => entry.result === 'new')) failures.push(...await wake().catch(error => [`wake: ${error.message}`]));
 
 if (seed) for (const event of candidates) state[event.key] ??= { at: new Date().toISOString(), rule: event.rule };
 if (!dryRun) await save(state);

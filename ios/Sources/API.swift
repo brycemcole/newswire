@@ -1,6 +1,6 @@
 import Foundation
 
-struct Story: Codable, Identifiable, Hashable {
+nonisolated struct Story: Codable, Identifiable, Hashable, Sendable {
     let id: String
     let externalId: String
     let title: String
@@ -22,12 +22,12 @@ struct Story: Codable, Identifiable, Hashable {
     var isBrain: Bool { agent == "brain" && externalId.hasPrefix("brain:") }
 }
 
-struct StoryPage: Codable {
+nonisolated struct StoryPage: Codable, Sendable {
     let stories: [Story]
     let nextCursor: String?
 }
 
-enum FeedMode: String, CaseIterable {
+nonisolated enum FeedMode: String, CaseIterable, Sendable {
     case wire, brain
 
     var path: String { self == .brain ? "v1/brain/stories" : "v1/stories" }
@@ -35,7 +35,7 @@ enum FeedMode: String, CaseIterable {
     var symbol: String { self == .brain ? "brain" : "antenna.radiowaves.left.and.right" }
 }
 
-enum WireFilter: Hashable, Identifiable {
+nonisolated enum WireFilter: Hashable, Identifiable, Sendable {
     case category(String), priority(String), source(String), ticker(String), tag(String)
 
     var id: String { name + ":" + value }
@@ -97,8 +97,8 @@ enum WireFilter: Hashable, Identifiable {
     }
 }
 
-struct APIError: Decodable, LocalizedError {
-    struct Detail: Decodable {
+nonisolated struct APIError: Decodable, LocalizedError {
+    nonisolated struct Detail: Decodable, Sendable {
         let code: String
         let message: String
     }
@@ -106,7 +106,7 @@ struct APIError: Decodable, LocalizedError {
     var errorDescription: String? { error.message }
 }
 
-enum WireError: LocalizedError {
+nonisolated enum WireError: LocalizedError {
     case configuration, response, status(Int)
     var errorDescription: String? {
         switch self {
@@ -117,7 +117,7 @@ enum WireError: LocalizedError {
     }
 }
 
-struct NewswireAPI {
+nonisolated struct NewswireAPI: Sendable {
     let baseURL: URL
     let token: String
 
@@ -134,23 +134,31 @@ struct NewswireAPI {
         return URLSession(configuration: configuration, delegate: RedirectBlocker(), delegateQueue: nil)
     }()
 
+    // ISO8601DateFormatter is thread-safe and expensive to create, so decoding reuses two shared instances
+    // instead of building new ones for every timestamp.
+    nonisolated(unsafe) private static let fractionalDates: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    nonisolated(unsafe) private static let plainDates = ISO8601DateFormatter()
+
     static func decoder() -> JSONDecoder {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         decoder.dateDecodingStrategy = .custom { decoder in
             let container = try decoder.singleValueContainer()
             let value = try container.decode(String.self)
-            let fractional = ISO8601DateFormatter()
-            fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            if let date = fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value) { return date }
+            if let date = Self.fractionalDates.date(from: value) ?? Self.plainDates.date(from: value) { return date }
             throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid ISO 8601 timestamp")
         }
         return decoder
     }
 
-    func page(mode: FeedMode = .wire, cursor: String? = nil, category: String, query: String, filters: [WireFilter] = []) async throws -> StoryPage {
+    /// Runs on the concurrent pool so the network wait, JSON parsing and date decoding never touch the main thread.
+    @concurrent func page(mode: FeedMode = .wire, cursor: String? = nil, limit: Int = 50, category: String, query: String, filters: [WireFilter] = []) async throws -> StoryPage {
         var components = URLComponents(url: baseURL.appending(path: mode.path), resolvingAgainstBaseURL: false)
-        var items = [URLQueryItem(name: "limit", value: "50")]
+        var items = [URLQueryItem(name: "limit", value: String(min(max(limit, 1), 100)))]
         if let cursor { items.append(URLQueryItem(name: "cursor", value: cursor)) }
         if !category.isEmpty { items.append(URLQueryItem(name: "category", value: category)) }
         if !query.isEmpty { items.append(URLQueryItem(name: "q", value: query)) }
@@ -169,7 +177,7 @@ struct NewswireAPI {
         return try Self.decoder().decode(StoryPage.self, from: data)
     }
 
-    struct StoryEnvelope: Decodable { let story: Story }
+    nonisolated struct StoryEnvelope: Decodable { let story: Story }
 
     func brain(_ story: Story, action: String, body: [String: String] = [:]) async throws -> Story? {
         var request = URLRequest(url: baseURL.appending(path: "v1/brain/stories/\(story.id)/\(action)"), timeoutInterval: 20)
@@ -195,7 +203,7 @@ struct NewswireAPI {
     }
 }
 
-final class RedirectBlocker: NSObject, URLSessionTaskDelegate {
+nonisolated final class RedirectBlocker: NSObject, URLSessionTaskDelegate, Sendable {
     nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
         completionHandler(nil)
     }

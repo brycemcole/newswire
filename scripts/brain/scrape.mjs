@@ -2,7 +2,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { token } from '../monitor/publish.mjs';
-import { notify } from '../monitor/apns.mjs';
+import { notify, wake } from '../monitor/apns.mjs';
 
 const origin = process.env.NEWSWIRE_URL ?? 'https://bryce-newswire.bryce-e19.workers.dev';
 const stateFile = process.env.BRAIN_SCRAPE_STATE ?? join(homedir(), '.config', 'newswire', 'brain-state.json');
@@ -381,6 +381,7 @@ async function main() {
       if (single.inserted) alerts.push({ title: post.title, source: post.source || 'Brain', url: post.source_url, priority: post.priority >= 10 ? 'breaking' : 'urgent', feed: 'brain' });
     }
     failures.push(...await notify(alerts).catch(error => [`notify: ${error.message}`]));
+    if (!alerts.length && result.inserted) failures.push(...await wake().catch(error => [`wake: ${error.message}`]));
     await saveState(state);
   }
   const mix = posts.reduce((counts, post) => ({ ...counts, [post.source]: (counts[post.source] ?? 0) + 1 }), {});

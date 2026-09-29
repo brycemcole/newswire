@@ -29,8 +29,8 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         ITSAppUsesNonExemptEncryption: false
-        UIBackgroundModes: [fetch, remote-notification]
-        BGTaskSchedulerPermittedIdentifiers: [com.brycecole.newswire.refresh]
+        UIBackgroundModes: [fetch, processing, remote-notification]
+        BGTaskSchedulerPermittedIdentifiers: [com.brycecole.newswire.refresh, com.brycecole.newswire.process]
     settings:
       base:
         DEVELOPMENT_TEAM: A792L5W262
