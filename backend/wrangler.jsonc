@@ -1,0 +1,14 @@
+{
+  "name": "bryce-newswire",
+  "workers_dev": true,
+  "main": "src/index.ts",
+  "account_id": "e19588e98f1bca9591df2c7f1b252df6",
+  "compatibility_date": "2026-09-06",
+  "assets": { "directory": "../web", "binding": "ASSETS", "run_worker_first": true },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "bryce-newswire", "database_id": "e9e7d6a9-c762-4cfd-904a-b6735906a401", "migrations_dir": "migrations" },
+    { "binding": "BRAIN", "database_name": "brain", "database_id": "4d26dd8c-892f-49c9-8f42-6b897a7ec668", "migrations_dir": "brain" }
+  ],
+  "ai": { "binding": "AI" },
+  "observability": { "enabled": false, "logs": { "enabled": false, "invocation_logs": false } }
+}

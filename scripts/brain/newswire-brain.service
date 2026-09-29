@@ -1,0 +1,9 @@
+[Unit]
+Description=Newswire Brain scraper
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/newswire
+ExecStart=/usr/bin/node %h/newswire/scripts/brain/scrape.mjs
+TimeoutStartSec=900

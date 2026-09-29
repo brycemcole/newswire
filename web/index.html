@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Newswire / Intelligence terminal</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header><a class="brand" href="/">N<span>W</span><b>NEWSWIRE</b></a><span class="desk">PERSONAL INTELLIGENCE TERMINAL</span><time id="clock"></time><button id="connect">CONNECT</button></header>
+  <main>
+    <section class="heading"><div><span class="eyebrow">01 / GLOBAL NEWS DESK</span><h1>The wire<span>.</span></h1><p>Signals from your agents. One place to stay ahead.</p></div><div class="status"><i id="status-dot"></i><span id="status">DISCONNECTED</span><small id="updated">AWAITING CONNECTION</small></div></section>
+    <nav aria-label="News categories" id="categories"><button class="selected" data-category="">ALL NEWS</button><button data-category="markets">MARKETS</button><button data-category="technology">TECHNOLOGY</button><button data-category="economy">ECONOMY</button><button data-category="politics">POLITICS</button><button data-category="world">WORLD</button><button data-category="science">SCIENCE</button></nav>
+    <section class="tools"><label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search headlines, sources, signals…" aria-label="Search stories"><kbd>/</kbd></label><select id="priority" aria-label="Priority"><option value="">ALL PRIORITIES</option><option value="breaking">BREAKING</option><option value="urgent">URGENT</option></select><button id="refresh">↻ REFRESH</button></section>
+    <div class="workspace"><section class="feed" aria-label="News feed"><div class="table-head"><span>TIME / SOURCE</span><span>HEADLINE</span><span>NEWEST FIRST ↓</span></div><button id="new-stories" hidden></button><div id="notice" role="status"></div><div id="stories"></div><button id="load-more" hidden>LOAD EARLIER STORIES ↓</button></section><aside id="detail"><div class="detail-label">STORY INSPECTOR <span>02</span></div><div class="inspector-empty"><div class="crosshair">+</div><h2>Follow the signal.</h2><p>Select a headline to read the report, inspect its source, and see which agent sent it.</p><div class="legend"><span><i class="amber"></i> NORMAL</span><span><i class="red"></i> BREAKING</span></div></div></aside></div>
+  </main>
+  <footer><span>NW / AGENT NETWORK</span><span id="count">0 STORIES LOADED</span><span>UTC · CHRONOLOGICAL FEED</span><span>J/K MOVE · ENTER OPEN · ESC CLOSE</span></footer>
+  <dialog id="settings"><form id="connection-form"><span class="eyebrow">TERMINAL CONNECTION</span><h2>Connect your wire.</h2><p>Use your reader token to access the private feed.</p><label>READER TOKEN<input id="token" type="password" autocomplete="off" required placeholder="Paste reader token"></label><p class="hint">Kept in memory for this tab only. Reloading clears it.</p><div class="dialog-actions"><button type="button" id="cancel">CANCEL</button><button class="primary" type="submit">CONNECT →</button></div></form></dialog>
+</body>
+</html>

@@ -1,0 +1,120 @@
+{
+  "window_minutes": 30,
+  "min_confidence": 0.7,
+  "feeds": [
+    { "name": "BBC", "url": "https://feeds.bbci.co.uk/news/world/rss.xml" },
+    { "name": "NPR", "url": "https://feeds.npr.org/1001/rss.xml" },
+    { "name": "The Guardian", "url": "https://www.theguardian.com/world/rss" },
+    { "name": "Al Jazeera", "url": "https://www.aljazeera.com/xml/rss/all.xml" },
+    { "name": "Washington Post", "url": "https://feeds.washingtonpost.com/rss/national" },
+    { "name": "CBS News", "url": "https://www.cbsnews.com/latest/rss/main" },
+    { "name": "ABC News", "url": "https://abcnews.go.com/abcnews/topstories" },
+    { "name": "PBS NewsHour", "url": "https://www.pbs.org/newshour/feeds/rss/headlines" },
+    { "name": "CNBC", "url": "https://www.cnbc.com/id/100003114/device/rss/rss.html" },
+    { "name": "CNBC", "url": "https://www.cnbc.com/id/10000664/device/rss/rss.html" },
+    { "name": "CNBC", "url": "https://www.cnbc.com/id/20910258/device/rss/rss.html" },
+    { "name": "CNBC", "url": "https://www.cnbc.com/id/10001147/device/rss/rss.html" },
+    { "name": "CNBC", "url": "https://www.cnbc.com/id/19854910/device/rss/rss.html" },
+    { "name": "Yahoo Finance", "url": "https://finance.yahoo.com/rss/topstories" },
+    { "name": "Yahoo Finance", "url": "https://finance.yahoo.com/news/rssindex" },
+    { "name": "Bloomberg", "url": "https://feeds.bloomberg.com/markets/news.rss" },
+    { "name": "Bloomberg", "url": "https://feeds.bloomberg.com/politics/news.rss" },
+    { "name": "Bloomberg", "url": "https://feeds.bloomberg.com/technology/news.rss" },
+    { "name": "Bloomberg", "url": "https://feeds.bloomberg.com/economics/news.rss" },
+    { "name": "MarketWatch", "url": "https://feeds.content.dowjones.io/public/rss/mw_marketpulse" },
+    { "name": "New York Times", "url": "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml" },
+    { "name": "New York Times", "url": "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml" },
+    { "name": "BBC", "url": "https://feeds.bbci.co.uk/news/business/rss.xml" },
+    { "name": "Seeking Alpha", "url": "https://seekingalpha.com/market_currents.xml" },
+    { "name": "Financial Times", "url": "https://www.ft.com/rss/home" },
+    { "name": "Reuters", "url": "https://news.google.com/rss/search?q=site:reuters.com+when:1h&hl=en-US&gl=US&ceid=US:en" },
+    { "name": "Associated Press", "url": "https://news.google.com/rss/search?q=site:apnews.com+when:1h&hl=en-US&gl=US&ceid=US:en" },
+    { "name": "Sky News", "url": "https://feeds.skynews.com/feeds/rss/world.xml" },
+    { "name": "TechCrunch", "url": "https://techcrunch.com/feed/" },
+    { "name": "Business Insider", "url": "https://www.businessinsider.com/rss" },
+    { "name": "The Verge", "url": "https://www.theverge.com/rss/index.xml" },
+    { "name": "404 Media", "url": "https://www.404media.co/rss/" },
+    { "name": "Defector", "url": "https://defector.com/feed" },
+    { "name": "Aftermath", "url": "https://aftermath.site/rss/" },
+    { "name": "RANGE Media", "url": "https://www.rangemedia.co/rss/" },
+    { "name": "Hell Gate", "url": "https://hellgatenyc.com/all-posts/rss/" },
+    { "name": "Flaming Hydra", "url": "https://flaminghydra.com/rss/" },
+    { "name": "Meta Newsroom", "url": "https://about.fb.com/feed/" },
+    { "name": "OpenAI News", "url": "https://openai.com/news/rss.xml", "via": ["ai-labs"] },
+    { "name": "Google DeepMind", "url": "https://deepmind.google/blog/rss.xml", "via": ["ai-labs"] },
+    { "name": "Google AI Blog", "url": "https://blog.google/technology/ai/rss/", "via": ["ai-labs"] },
+    { "name": "Hugging Face Blog", "url": "https://huggingface.co/blog/feed.xml", "via": ["ai-labs"] },
+    { "name": "Mistral AI", "url": "https://mistral.ai/rss.xml", "via": ["ai-labs"] }
+  ],
+  "topics": [
+    {
+      "id": "tariffs",
+      "label": "tariffs and trade",
+      "category": "economy",
+      "priority": "urgent",
+      "description": "A government imposing, raising, cutting, or suspending tariffs, import duties, or export controls, or countries agreeing, signing, or breaking off a trade deal. Not a single small business's experience of tariffs."
+    },
+    {
+      "id": "midterms-2026",
+      "label": "2026 midterms",
+      "category": "politics",
+      "priority": "normal",
+      "description": "A concrete 2026 US midterm development: a primary or special election result, a new poll with figures, a candidate entering, dropping out, or being endorsed, a fundraising filing, or a court or election-law ruling. Not campaign-trail color or voter-mood pieces."
+    },
+    {
+      "id": "ai-and-antitrust",
+      "label": "AI industry and antitrust",
+      "category": "technology",
+      "priority": "normal",
+      "description": "A concrete AI industry event (a major AI company like OpenAI, Anthropic, Google DeepMind, xAI, or Meta AI releasing a model, disclosing an incident, striking a deal, or facing a lawsuit; a government passing or proposing AI regulation) or a major antitrust action against a large company. Not product explainers, workplace advice, or speculation about AI."
+    },
+    {
+      "id": "ai-labs",
+      "label": "AI lab announcements",
+      "category": "technology",
+      "priority": "normal"
+    },
+    {
+      "id": "anthropic-news",
+      "label": "Anthropic announcements",
+      "category": "technology",
+      "priority": "normal",
+      "query": "site:anthropic.com/news"
+    },
+    {
+      "id": "layoffs",
+      "label": "major layoffs",
+      "category": "economy",
+      "priority": "normal",
+      "description": "A company announcing or carrying out layoffs or job cuts of a specific large number of workers. Not stories about one worker's dismissal or legal case."
+    },
+    {
+      "id": "dealmaking",
+      "label": "M&A and public listings",
+      "category": "economy",
+      "priority": "normal",
+      "description": "A merger, acquisition, takeover, take-private deal, spin-off, or IPO/public listing that has been announced, agreed, or completed."
+    },
+    {
+      "id": "funding",
+      "label": "funding and valuations",
+      "category": "economy",
+      "priority": "normal",
+      "description": "A company raising a funding round or disclosing a new valuation."
+    },
+    {
+      "id": "executive-moves",
+      "label": "executive changes",
+      "category": "economy",
+      "priority": "normal",
+      "description": "A CEO, CFO, COO, CTO, president, or chair of a notable public or large private business being appointed, resigning, or ousted. Not sports clubs, teams, or athletes."
+    },
+    {
+      "id": "results",
+      "label": "quarterly results headlines",
+      "category": "economy",
+      "priority": "normal",
+      "description": "A public company reporting quarterly or annual earnings results, including beats or misses versus expectations."
+    }
+  ]
+}

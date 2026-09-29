@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Newswire story input v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "external_id",
+    "title",
+    "source",
+    "url",
+    "published_at"
+  ],
+  "properties": {
+    "external_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "url": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https?://",
+      "maxLength": 4096
+    },
+    "published_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "summary": {
+      "type": "string",
+      "maxLength": 2000,
+      "default": ""
+    },
+    "body": {
+      "type": "string",
+      "maxLength": 20000,
+      "default": ""
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "general",
+        "markets",
+        "technology",
+        "economy",
+        "politics",
+        "world",
+        "science"
+      ],
+      "default": "general"
+    },
+    "priority": {
+      "type": "string",
+      "enum": [
+        "normal",
+        "urgent",
+        "breaking"
+      ],
+      "default": "normal"
+    },
+    "agent": {
+      "type": "string",
+      "maxLength": 100,
+      "default": "unknown"
+    },
+    "tickers": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 20
+      },
+      "default": []
+    },
+    "tags": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 40
+      },
+      "default": []
+    }
+  }
+}

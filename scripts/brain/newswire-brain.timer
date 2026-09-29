@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Newswire Brain scraper every 20 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=20min
+AccuracySec=30
+
+[Install]
+WantedBy=timers.target

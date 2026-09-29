@@ -1,0 +1,1 @@
+{"name":"newswire-brain-scraper","private":true,"type":"module","engines":{"node":">=22"},"dependencies":{"unpdf":"^1.0.0"}}
