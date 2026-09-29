@@ -262,14 +262,8 @@ struct FeedView: View {
             let shown = watchlistExpanded ? watchlist.symbols : Array(watchlist.symbols.prefix(3))
             ForEach(shown, id: \.self) { symbol in
                 let quote = board.quotes[symbol]
-                Button { quoteRoute = MarketSymbol(id: symbol) } label: {
+                watchlistMenu(for: symbol) {
                     MarketRow(symbol: symbol, title: quote?.name ?? " ", tag: nil, quote: quote, spark: board.sparks[symbol], inset: 16)
-                }
-                .buttonStyle(.plain)
-                .contextMenu {
-                    Button("Remove from Watchlist", systemImage: "star.slash", role: .destructive) {
-                        withAnimation(.easeOut(duration: 0.2)) { watchlist.remove(symbol) }
-                    }
                 }
                 if symbol != shown.last { Divider().padding(.leading, 16) }
             }
@@ -295,16 +289,32 @@ struct FeedView: View {
         .fixedSize(horizontal: false, vertical: true)
     }
 
+    /// Tap opens the quote; press and hold shows the remove action.
+    /// A `Menu` is used instead of `.contextMenu` because the dashboard is a single `List` row,
+    /// and a context menu inside a row lifts the whole row (both cards) as its preview.
+    private func watchlistMenu<Label: View>(for symbol: String, @ViewBuilder label: () -> Label) -> some View {
+        Menu {
+            Button("Remove from Watchlist", systemImage: "star.slash", role: .destructive) {
+                withAnimation(.easeOut(duration: 0.2)) { watchlist.remove(symbol) }
+            }
+        } label: {
+            label().contentShape(.rect)
+        } primaryAction: {
+            quoteRoute = MarketSymbol(id: symbol)
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Fades the card contents out, resizes the (empty) cards with a smooth, non-bouncy curve so the
+    /// list row height doesn't overshoot, then fades the new contents in once the resize has settled.
     private func morphDashboard(_ change: @escaping () -> Void) {
         guard !reduceMotion else {
             withAnimation(.easeOut(duration: 0.15)) { change() }
             return
         }
-        withAnimation(.easeOut(duration: 0.1)) { dashboardFaded = true } completion: {
-            withAnimation(.dashboard(false)) { change() }
-            Task {
-                try? await Task.sleep(for: .milliseconds(170))
-                withAnimation(.easeOut(duration: 0.22)) { dashboardFaded = false }
+        withAnimation(.easeOut(duration: 0.12)) { dashboardFaded = true } completion: {
+            withAnimation(.dashboard(false)) { change() } completion: {
+                withAnimation(.easeOut(duration: 0.2)) { dashboardFaded = false }
             }
         }
     }
@@ -321,7 +331,7 @@ struct FeedView: View {
             }
             ForEach(watchlist.symbols.prefix(3), id: \.self) { symbol in
                 let quote = board.quotes[symbol]
-                Button { quoteRoute = MarketSymbol(id: symbol) } label: {
+                watchlistMenu(for: symbol) {
                     HStack(alignment: .firstTextBaseline, spacing: 4) {
                         Text(symbol).font(.subheadline.weight(.semibold).monospaced())
                             .lineLimit(1).minimumScaleFactor(0.7)
@@ -338,12 +348,6 @@ struct FeedView: View {
                         .contentTransition(.numericText())
                     }
                     .contentShape(.rect)
-                }
-                .buttonStyle(.plain)
-                .contextMenu {
-                    Button("Remove from Watchlist", systemImage: "star.slash", role: .destructive) {
-                        withAnimation(.easeOut(duration: 0.2)) { watchlist.remove(symbol) }
-                    }
                 }
             }
             if watchlist.symbols.count > 3 {
