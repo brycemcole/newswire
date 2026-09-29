@@ -47,6 +47,7 @@ jobs:
           tail -3 "$RUNNER_TEMP/archive.log"
       - name: Upload to TestFlight
         run: |
+          set -o pipefail
           xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/Newswire.xcarchive" \
             -exportOptionsPlist ci/ExportOptions-AppStore.plist -exportPath "$RUNNER_TEMP/export" \
             -allowProvisioningUpdates \
