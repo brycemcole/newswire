@@ -32,6 +32,8 @@ The OAuth return path is tied to one deployment. If you are not building the ori
 - Add the **Associated Domains** capability with `applinks:<your worker host>` so iOS hands the `/plaid/oauth` redirect back to the app. (`ios/Newswire.entitlements` does not currently declare it; add it if OAuth brokerages fail to return to the app.)
 - Deploy the backend (`wrangler deploy` from `backend/`) so the redirect page and AASA file are served over HTTPS.
 
+In the app, the same steps are under Settings > Brokerage Sync.
+
 ## Security notes
 
 - Treat the Plaid secret like a password. If it leaks, rotate it in the Plaid dashboard and re-enter it in the app.
