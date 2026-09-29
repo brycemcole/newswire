@@ -865,6 +865,9 @@ struct SettingsView: View {
                     }
                     .sensoryFeedback(.selection, trigger: Theme.shared.accent)
                 }
+                Section("Brokerage Sync") {
+                    NavigationLink { BrokerageSyncView() } label: { Label("Set up Plaid", systemImage: "building.columns") }
+                }
                 Section("Connection") {
                     TextField("https://your-server", text: $url).keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
                     SecureField("Reader token", text: $token).textInputAutocapitalization(.never).autocorrectionDisabled().privacySensitive()

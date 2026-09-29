@@ -36,6 +36,10 @@ Omit `--get` to send JSON POST. The helper uses the writer credential from macOS
 
 `node scripts/provision-secrets.mjs` provisions separate reader/writer credentials in Cloudflare and macOS Keychain, service `com.brycecole.newswire`, accounts `reader` and `writer`. Existing Keychain values are reused on reruns. Use Keychain Access to retrieve/share the appropriate credential privately. No credential is included in the repository or iOS bundle. Web reader credentials last only for the current tab; the iOS app stores its reader token in Keychain.
 
+## Portfolio (Plaid)
+
+The iOS Portfolio tab syncs brokerage positions through Plaid using keys you enter in the app (kept in iCloud Keychain, never in this repo). Setup steps are in [PLAID.md](PLAID.md).
+
 ## Local development
 
 Backend: `cd backend`, `npm install`, `npm test`, and `npm run dev`. Use local `.dev.vars` for READER_TOKEN and WRITER_TOKEN (ignored by Git). Apply D1 migrations locally before development. Cloudflare deployment requires Wrangler login, remote migrations, and `wrangler deploy` from backend.

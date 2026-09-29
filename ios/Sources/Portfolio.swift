@@ -252,3 +252,40 @@ struct PlaidKeysView: View {
         }
     }
 }
+
+struct BrokerageSyncView: View {
+    @State private var store = PortfolioStore.shared
+    @State private var editingKeys = false
+
+    private let steps: [(title: String, detail: String)] = [
+        ("Create a Plaid account", "Sign up at dashboard.plaid.com, then open Developers > Keys."),
+        ("Choose an environment", "Production connects real brokerages (the free Trial plan uses it). Sandbox uses fake data; sign in with user_good / pass_good."),
+        ("Register the redirect URI", "In Developers > API, add \(PlaidClient.redirectURI) under Allowed redirect URIs. Brokerages like Fidelity and Schwab need it."),
+        ("Add your keys", "Enter the client ID and the secret for that environment below."),
+        ("Connect a brokerage", "Open the Portfolio tab, choose Connect account, and sign in through Plaid. Newswire reads positions only."),
+    ]
+
+    var body: some View {
+        Form {
+            Section("Setup") {
+                ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("\(index + 1). \(step.title)").font(.headline)
+                        Text(step.detail).font(.subheadline).foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 2)
+                    .accessibilityElement(children: .combine)
+                }
+            }
+            Section {
+                Button { editingKeys = true } label: {
+                    Label(store.credentials.isComplete ? "Edit Plaid Keys" : "Add Plaid Keys", systemImage: "key")
+                }
+            } footer: {
+                Text("Keys are stored in iCloud Keychain and sent only to Plaid. They are never in the app bundle, the repository, or the Newswire server. Treat the secret like a password and rotate it in Plaid if it leaks.")
+            }
+        }
+        .navigationTitle("Brokerage Sync").navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $editingKeys) { PlaidKeysView(store: store) }
+    }
+}
