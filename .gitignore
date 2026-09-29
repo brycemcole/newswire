@@ -17,3 +17,6 @@ xcuserdata/
 ios/.build-log.txt
 ios/scripts/.build-number
 ios/Newswire.xcodeproj/
+
+# Local UI screenshots (see AGENTS.md)
+screenshots/
