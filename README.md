@@ -42,6 +42,10 @@ Backend: `cd backend`, `npm install`, `npm test`, and `npm run dev`. Use local `
 
 iOS: `cd ios`, `xcodegen generate`, then open `Newswire.xcodeproj`. Build with Xcode beta. Configure the HTTPS backend URL and reader token in the app. Physical-device signing and distribution are separate from Simulator validation.
 
+## CI and TestFlight
+
+`Newswire.xcodeproj` is generated and not committed; `ios/project.yml` is authoritative. Pull requests run backend typecheck/tests and iOS unit tests (`.github/workflows/ci.yml`). Merges to `main` that touch `ios/` archive a Release build on GitHub's `xcode-27` runner and upload it to TestFlight (`.github/workflows/testflight.yml`); it can also be started manually from the Actions tab. Signing is cloud-managed through the App Store Connect API key in repository secrets `APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_ISSUER_ID`, and `APP_STORE_CONNECT_PRIVATE_KEY`. Build numbers derive from the workflow run; bump `MARKETING_VERSION` in `project.yml` for a new release version. `ios/scripts/release.sh` remains the local ad hoc path.
+
 ## Architecture
 
 Agents → authenticated ingestion → Worker → D1 → authenticated feed → iOS / web.
