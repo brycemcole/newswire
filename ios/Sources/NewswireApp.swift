@@ -268,7 +268,7 @@ struct FeedView: View {
         .onOpenURL { url in
             guard url.scheme == "newswire" else { return }
             settings = false
-            markets = false
+            dock = .peek
             switch url.host() {
             case "portfolio": portfolio = true
             case "quote":
