@@ -58,17 +58,17 @@ nonisolated struct MarketChart: Sendable {
     let exchange: String
     let currency: String
     let instrument: String
-    let price: Double
+    var price: Double
     let previousClose: Double?
-    let dayHigh: Double?
-    let dayLow: Double?
+    var dayHigh: Double?
+    var dayLow: Double?
     let volume: Double?
     let yearHigh: Double?
     let yearLow: Double?
     let decimals: Int
     let timeZone: TimeZone
-    let points: [PricePoint]
-    let slots: Int
+    var points: [PricePoint]
+    var slots: Int
     let pre: MarketSession?
     let regular: MarketSession?
     let post: MarketSession?
@@ -89,12 +89,110 @@ nonisolated struct MarketChart: Sendable {
         return !points.contains { !$0.extended && $0.date >= pre.start }
     }
 
+    func applying(_ tick: MarketTick, interval: TimeInterval = 120) -> MarketChart? {
+        guard tick.price > 0, let last = points.last, tick.date >= last.date, tick.date.timeIntervalSince(last.date) < 1800 else { return nil }
+        let extended = pre?.contains(tick.date) == true || post?.contains(tick.date) == true
+        var next = self
+        if !extended {
+            next.price = tick.price
+            next.dayHigh = max(dayHigh ?? tick.price, tick.price)
+            next.dayLow = min(dayLow ?? tick.price, tick.price)
+        }
+        let bucket = (tick.date.timeIntervalSince1970 / interval).rounded(.down)
+        if (last.date.timeIntervalSince1970 / interval).rounded(.down) == bucket {
+            next.points[points.count - 1] = PricePoint(id: last.id, date: last.date, open: last.open, close: tick.price, extended: last.extended, run: last.run)
+        } else {
+            next.points.append(PricePoint(id: points.count, date: Date(timeIntervalSince1970: bucket * interval), open: tick.price, close: tick.price,
+                                          extended: extended, run: last.run + (last.extended == extended ? 0 : 1)))
+            next.slots = max(slots, next.points.count)
+        }
+        return next
+    }
+
     var status: String {
         let now = Date()
         if let regular, regular.contains(now) { return "Market open" }
         if let pre, pre.contains(now) { return "Pre-market" }
         if let post, post.contains(now) { return "After hours" }
         return "Market closed"
+    }
+}
+
+nonisolated struct MarketTick: Sendable {
+    let symbol: String
+    let price: Double
+    let date: Date
+
+    init?(_ data: Data) {
+        var symbol: String?, price: Double?, millis: Int64?
+        let bytes = [UInt8](data)
+        var index = 0
+        func varint() -> UInt64? {
+            var result: UInt64 = 0, shift: UInt64 = 0
+            while index < bytes.count, shift < 64 {
+                let byte = bytes[index]
+                index += 1
+                result |= UInt64(byte & 0x7f) << shift
+                if byte < 0x80 { return result }
+                shift += 7
+            }
+            return nil
+        }
+        while index < bytes.count {
+            guard let key = varint() else { return nil }
+            switch (key >> 3, key & 7) {
+            case (_, 0):
+                guard let value = varint() else { return nil }
+                if key >> 3 == 3 { millis = Int64(bitPattern: value >> 1) ^ -Int64(bitPattern: value & 1) }
+            case (_, 1):
+                index += 8
+            case (let field, 2):
+                guard let length = varint().map(Int.init), index + length <= bytes.count else { return nil }
+                if field == 1 { symbol = String(decoding: bytes[index..<index + length], as: UTF8.self) }
+                index += length
+            case (let field, 5):
+                guard index + 4 <= bytes.count else { return nil }
+                let bits = bytes[index..<index + 4].reversed().reduce(UInt32(0)) { $0 << 8 | UInt32($1) }
+                if field == 2 { price = Double(Float(bitPattern: bits)) }
+                index += 4
+            default:
+                return nil
+            }
+        }
+        guard let symbol, let price, let millis else { return nil }
+        self.symbol = symbol
+        self.price = price
+        date = Date(timeIntervalSince1970: Double(millis) / 1000)
+    }
+}
+
+nonisolated enum MarketStream {
+    private struct Envelope: Decodable { let message: String }
+
+    static func ticks(_ symbol: String) -> AsyncThrowingStream<MarketTick, Error> {
+        AsyncThrowingStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            let socket = URLSession.shared.webSocketTask(with: URL(string: "wss://streamer.finance.yahoo.com/?version=2")!)
+            let reader = Task {
+                do {
+                    socket.resume()
+                    let subscribe = try JSONEncoder().encode(["subscribe": [symbol]])
+                    try await socket.send(.string(String(decoding: subscribe, as: UTF8.self)))
+                    while true {
+                        guard case .string(let text) = try await socket.receive(),
+                              let envelope = try? JSONDecoder().decode(Envelope.self, from: Data(text.utf8)),
+                              let data = Data(base64Encoded: envelope.message),
+                              let tick = MarketTick(data), tick.symbol == symbol else { continue }
+                        continuation.yield(tick)
+                    }
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in
+                reader.cancel()
+                socket.cancel(with: .goingAway, reason: nil)
+            }
+        }
     }
 }
 
