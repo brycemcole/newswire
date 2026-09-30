@@ -6,8 +6,8 @@ enum DockDetent { case peek, medium, large }
 /// (or tap the search field) to reach indices, movers and earnings from any screen.
 /// It is an overlay, not a system sheet, so alerts, sheets and Safari covers can still present from the screens under it.
 struct MarketDock: View {
-    /// Height of the handle and search bar. Screens under the dock reserve this much space.
-    static let peekHeight: CGFloat = 84
+    /// Height of the handle, search bar and the top edge of the index cards. Screens under the dock reserve this much space.
+    static let peekHeight: CGFloat = 144
 
     @Binding var detent: DockDetent
     let onSelect: (String) -> Void
@@ -52,7 +52,8 @@ struct MarketDock: View {
     }
 
     private func dragGesture(_ stops: Stops) -> some Gesture {
-        DragGesture(minimumDistance: 8)
+        // Global space: the dock resizes under the finger, so a local translation would feed back into itself and jitter.
+        DragGesture(minimumDistance: 8, coordinateSpace: .global)
             .updating($drag) { value, state, _ in state = value.translation.height }
             .onEnded { value in
                 let target = stops.height(detent) - value.predictedEndTranslation.height

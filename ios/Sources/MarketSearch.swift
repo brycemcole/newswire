@@ -151,7 +151,7 @@ struct MarketSearchSheet: View {
                 .padding(.top, 4)
                 .padding(.bottom, 8)
             if trimmed.isEmpty {
-                overview.accessibilityHidden(detent == .peek)
+                overview
             } else {
                 suggestions
             }
@@ -263,6 +263,7 @@ struct MarketSearchSheet: View {
             .padding(.top, 8)
             .padding(.bottom, 24)
         }
+        .scrollDisabled(detent == .peek)
         .scrollDismissesKeyboard(.interactively)
     }
 
