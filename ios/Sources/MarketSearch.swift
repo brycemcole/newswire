@@ -131,6 +131,7 @@ nonisolated struct MarketQuote: Sendable, Hashable, Identifiable {
 }
 
 struct MarketSearchSheet: View {
+    @Binding var detent: DockDetent
     let onSelect: (String) -> Void
     @State private var query = ""
     @State private var matches: [TickerMatch] = []
@@ -138,7 +139,6 @@ struct MarketSearchSheet: View {
     @State private var recents = MarketRecents.all
     @State private var moverList = MoverList(rawValue: UserDefaults.standard.string(forKey: "marketMovers") ?? "") ?? .gainers
     @State private var board = MarketBoard.shared
-    @State private var detent: PresentationDetent = .medium
     @FocusState private var searching: Bool
     @Environment(\.scenePhase) private var phase
 
@@ -148,7 +148,7 @@ struct MarketSearchSheet: View {
         VStack(spacing: 0) {
             searchBar
                 .padding(.horizontal, 16)
-                .padding(.top, 18)
+                .padding(.top, 4)
                 .padding(.bottom, 8)
             if trimmed.isEmpty {
                 overview
@@ -158,14 +158,12 @@ struct MarketSearchSheet: View {
         }
         .frame(maxHeight: .infinity, alignment: .top)
         .animation(.easeOut(duration: 0.18), value: trimmed.isEmpty)
-        .presentationDetents([.medium, .large], selection: $detent)
-        .presentationDragIndicator(.visible)
-        // Drags inside the lists scroll them instead of resizing the sheet, so a swipe never moves the sheet and the keyboard at once.
-        .presentationContentInteraction(.scrolls)
-        .onAppear { searching = true }
-        // The keyboard covers most of a medium sheet and relayouts it when it leaves, so search at full height.
+        // The keyboard covers most of the dock, so search at full height, and drop focus when it is pulled back down.
         .onChange(of: searching) { _, focused in
             if focused { detent = .large }
+        }
+        .onChange(of: detent) { _, value in
+            if value != .large { searching = false }
         }
         .task(id: trimmed) {
             let text = trimmed
@@ -265,6 +263,7 @@ struct MarketSearchSheet: View {
             .padding(.top, 8)
             .padding(.bottom, 24)
         }
+        .scrollDisabled(detent == .peek)
         .scrollDismissesKeyboard(.interactively)
     }
 
@@ -348,6 +347,7 @@ struct MarketSearchSheet: View {
         let symbol = symbol.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         guard !symbol.isEmpty else { return }
         searching = false
+        query = ""
         onSelect(symbol)
     }
 }

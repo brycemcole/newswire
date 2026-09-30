@@ -105,9 +105,8 @@ struct FeedView: View {
     @Environment(\.scenePhase) private var phase
     @State private var store = FeedStore.shared
     @State private var settings = false
-    @State private var markets = false
     @State private var portfolio = false
-    @State private var marketPick: String?
+    @State private var dock = DockDetent.peek
     @State private var quoteRoute: MarketSymbol?
     @State private var watchlist = Watchlist.shared
     @State private var board = MarketBoard.shared
@@ -173,6 +172,7 @@ struct FeedView: View {
                     }
                 }
                 .listStyle(.plain)
+                .dockClearance()
                 .listSectionSpacing(0)
                 .listSectionSeparator(.hidden)
                 .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: headlinesOnly)
@@ -190,7 +190,7 @@ struct FeedView: View {
                     Label(filter.title, systemImage: filter.symbol)
                 }
                 .navigationDestination(for: Story.self) { StoryDetail(story: $0) }
-                .navigationDestination(item: $quoteRoute) { QuoteDetail(symbol: $0.id) }
+                .navigationDestination(item: $quoteRoute) { QuoteDetail(symbol: $0.id).id($0.id).dockClearance() }
                 .navigationTitle(store.mode.title)
                 .navigationSubtitle(subtitle)
                 .navigationBarTitleDisplayMode(.inline)
@@ -206,11 +206,6 @@ struct FeedView: View {
                         .accessibilityLabel(store.mode == .brain ? "Brain feed" : "Wire feed")
                         .accessibilityHint(store.mode == .brain ? "Switches to the wire" : "Switches to Brain")
                     }
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button { markets = true } label: { Image(systemName: "chart.line.uptrend.xyaxis") }
-                            .accessibilityLabel("Markets")
-                            .accessibilityHint("Look up a ticker, future, or crypto price")
-                    }
                     ToolbarItem(placement: .topBarTrailing) {
                         Button { portfolio = true } label: { Image(systemName: "briefcase") }
                             .accessibilityLabel("Portfolio")
@@ -223,15 +218,6 @@ struct FeedView: View {
             }
             .sheet(isPresented: $settings) { SettingsView(store: store) }
             .sheet(isPresented: $portfolio) { PortfolioView() }
-            .sheet(isPresented: $markets, onDismiss: {
-                if let marketPick { quoteRoute = MarketSymbol(id: marketPick) }
-                marketPick = nil
-            }) {
-                MarketSearchSheet { symbol in
-                    marketPick = symbol
-                    markets = false
-                }
-            }
             .task(id: store.mode.rawValue + "|" + store.category + "|" + search + "|" + store.filters.map(\.id).joined(separator: "|") + "|" + store.serverURL) {
                 store.query = search.trimmingCharacters(in: .whitespacesAndNewlines)
                 store.reset()
@@ -272,6 +258,12 @@ struct FeedView: View {
                 }
             }
         }
+        .overlay {
+            MarketDock(detent: $dock) { symbol in
+                dock = .peek
+                open(quote: symbol)
+            }
+        }
         .environment(\.feedStore, store)
         .onOpenURL { url in
             guard url.scheme == "newswire" else { return }
@@ -299,6 +291,16 @@ struct FeedView: View {
         .onChange(of: portfolioExpanded) { _, value in UserDefaults.standard.set(value, forKey: "portfolioExpanded") }
     }
 
+    /// A quote opens from the feed root; from inside a story or another quote, return there first so it never stacks under a screen the reader left.
+    private func open(quote symbol: String) {
+        guard !store.path.isEmpty else { quoteRoute = MarketSymbol(id: symbol); return }
+        store.path = []
+        Task {
+            try? await Task.sleep(for: .milliseconds(400))
+            quoteRoute = MarketSymbol(id: symbol)
+        }
+    }
+
     private var watchlistHeader: some View {
         HomeSectionHeader("Watchlist", action: watchlist.symbols.count > 3 ? (watchlistExpanded ? "Show Less" : "Show All") : nil) {
             morphDashboard { watchlistExpanded.toggle() }
@@ -308,7 +310,7 @@ struct FeedView: View {
     private var watchlistRows: some View {
         VStack(spacing: 0) {
             if watchlist.symbols.isEmpty {
-                Button { markets = true } label: {
+                Button { dock = .large } label: {
                     Text("Tap the star on any quote to add it here.")
                         .font(.subheadline).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
@@ -381,7 +383,7 @@ struct FeedView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Watchlist").font(.headline)
             if watchlist.symbols.isEmpty {
-                Button { markets = true } label: {
+                Button { dock = .large } label: {
                     Text("Star any quote to add it here.").font(.caption).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading).contentShape(.rect)
                 }
@@ -732,7 +734,7 @@ struct StoryDetail: View {
                 await QuoteStore.shared.refresh(story)
             }
         }
-        .navigationDestination(item: $selectedQuote) { QuoteDetail(symbol: $0.symbol) }
+        .navigationDestination(item: $selectedQuote) { QuoteDetail(symbol: $0.symbol).dockClearance() }
         .task(id: attempt) {
             guard story.opensInReader, story.url.host() != "news.google.com", excerpt.isEmpty else { return }
             loading = true
@@ -763,6 +765,20 @@ struct StoryDetail: View {
             guard story.isBrain else { return }
             _ = await feedStore?.brain(story, action: "view")
         }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 0) {
+                if ["http", "https"].contains(story.url.scheme?.lowercased() ?? "") {
+                    Button { reading = true } label: {
+                        Text("Read Source").fontWeight(.semibold).padding(.horizontal, 8)
+                            .foregroundStyle(Theme.shared.accent.onColor)
+                    }
+                    .buttonStyle(.glassProminent)
+                    .tint(Color.wireAccent)
+                    .padding(.vertical, 8)
+                }
+                Color.clear.frame(height: MarketDock.peekHeight)
+            }
+        }
         .navigationTitle("STORY").navigationBarTitleDisplayMode(.inline)
         .fullScreenCover(isPresented: $reading) { SafariView(url: story.url).ignoresSafeArea() }
         .toolbar {
@@ -783,16 +799,6 @@ struct StoryDetail: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     ShareLink(item: story.url)
                 }
-                ToolbarSpacer(.flexible, placement: .bottomBar)
-                ToolbarItem(placement: .bottomBar) {
-                    Button { reading = true } label: {
-                        Text("Read Source").fontWeight(.semibold).padding(.horizontal, 8)
-                            .foregroundStyle(Theme.shared.accent.onColor)
-                    }
-                    .buttonStyle(.glassProminent)
-                    .tint(Color.wireAccent)
-                }
-                ToolbarSpacer(.flexible, placement: .bottomBar)
             }
         }
     }
