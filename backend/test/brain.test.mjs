@@ -1,6 +1,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { build } from 'esbuild';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 
@@ -14,7 +15,15 @@ const send = (path, data, token = 'writer') => request(path, token, { method: 'P
 
 before(async () => {
   const script = (await build({ entryPoints: ['src/index.ts'], bundle: true, format: 'esm', write: false })).outputFiles[0].text;
-  mf = new Miniflare(convertV4MiniflareOptions({ workers: [{ name: 'test', modules: true, script, compatibilityDate: '2026-09-06', d1Databases: ['DB', 'BRAIN'], bindings: { READER_TOKEN: 'reader', WRITER_TOKEN: 'writer' }, serviceBindings: { ASSETS: () => new Response('shell') } }] }));
+  mf = new Miniflare(convertV4MiniflareOptions({ workers: [{ name: 'test', modules: true, script, compatibilityDate: '2026-09-06', d1Databases: ['DB', 'BRAIN'], bindings: { WRITER_TOKEN: 'writer' }, serviceBindings: { ASSETS: () => new Response('shell') } }] }));
+  const main = await mf.getD1Database('DB');
+  for (const file of (await readdir(new URL('../migrations/', import.meta.url))).sort()) {
+    await main.batch((await readFile(new URL(`../migrations/${file}`, import.meta.url), 'utf8')).split(';').filter(s => s.trim()).map(s => main.prepare(s)));
+  }
+  await main.batch([
+    main.prepare("INSERT INTO attested_devices (key_id, public_key, created_at, last_seen_at) VALUES ('test', 'x', 'now', 'now')"),
+    main.prepare('INSERT INTO sessions (token_hash, key_id, expires_at) VALUES (?, ?, ?)').bind(createHash('sha256').update('reader').digest('hex'), 'test', Date.now() + 3600000),
+  ]);
   const db = await mf.getD1Database('BRAIN');
   const migration = await readFile(new URL('../brain/0001_reader_fields.sql', import.meta.url), 'utf8');
   await db.batch([...schema, ...migration.split(';').filter(s => s.trim())].map(s => db.prepare(s)));

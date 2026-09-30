@@ -4,7 +4,9 @@ import UserNotifications
 final class PushDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        FeedStore.registerProcessing()
         FeedStore.scheduleRefresh()
+        FeedStore.scheduleProcessing()
         Task {
             guard (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])) == true else { return }
             application.registerForRemoteNotifications()
@@ -15,14 +17,13 @@ final class PushDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCen
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         let device = deviceToken.map { String(format: "%02x", $0) }.joined()
         let server = UserDefaults.standard.string(forKey: "serverURL") ?? "https://bryce-newswire.bryce-e19.workers.dev"
-        let token = ReaderKeychain.read()
-        guard let url = NewswireAPI.validatedURL(server), !token.isEmpty else { return }
+        guard let url = NewswireAPI.validatedURL(server) else { return }
         #if DEBUG
         let environment = "sandbox"
         #else
         let environment = "production"
         #endif
-        Task { try? await NewswireAPI(baseURL: url, token: token).register(device: device, environment: environment) }
+        Task { try? await NewswireAPI(baseURL: url).register(device: device, environment: environment) }
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {

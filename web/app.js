@@ -104,4 +104,4 @@ setInterval(async () => {
 }, 30000);
 function tick() { $('#clock').textContent = `${new Date().toLocaleTimeString('en-GB', { timeZone: 'UTC' })} UTC`; }
 tick(); setInterval(tick, 1000);
-notice('Connect your reader token to open the private news wire.');
+notice('Connect your access token to open the private news wire.');

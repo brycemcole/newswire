@@ -48,10 +48,8 @@ extension NewswireAPI {
         components?.queryItems = items
         guard let url = components?.url else { throw WireError.configuration }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        let (data, response) = try await Self.session.data(for: request)
-        guard let response = response as? HTTPURLResponse else { throw WireError.response }
+        let (data, response) = try await send(request)
         guard (200..<300).contains(response.statusCode) else { throw WireError.status(response.statusCode) }
         return try Self.decoder().decode(QuoteEnvelope.self, from: data).quotes
     }
@@ -69,8 +67,8 @@ extension NewswireAPI {
 
     private var api: NewswireAPI? {
         let store = FeedStore.shared
-        guard !store.token.isEmpty, let url = NewswireAPI.validatedURL(store.serverURL) else { return nil }
-        return NewswireAPI(baseURL: url, token: store.token)
+        guard let url = NewswireAPI.validatedURL(store.serverURL) else { return nil }
+        return NewswireAPI(baseURL: url)
     }
 
     func symbols(for story: Story) -> [String] {

@@ -369,7 +369,7 @@ struct QuoteNewsSection: View {
                 }
                 Spacer(minLength: 0)
                 if let thumbnail = story.thumbnail {
-                    AsyncImage(url: thumbnail) { image in image.resizable().scaledToFill() } placeholder: { Color.secondary.opacity(0.12) }
+                    ThumbnailImage(url: thumbnail, size: ThumbnailLoader.small)
                         .frame(width: 56, height: 56)
                         .clipShape(.rect(cornerRadius: 10))
                 }

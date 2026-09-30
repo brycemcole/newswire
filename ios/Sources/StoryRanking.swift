@@ -1,10 +1,15 @@
 import Foundation
 
-enum StoryRanking {
+nonisolated enum StoryRanking {
     private static let stopwords: Set<String> = [
         "that", "this", "with", "from", "after", "over", "into", "amid", "about", "their", "they", "will", "would", "could",
         "says", "said", "than", "more", "have", "been", "what", "when", "where", "which", "while", "report", "reports", "news",
     ]
+
+    /// Ranking compares every pair of titles, so the feed calls this variant to keep it off the main thread.
+    @concurrent static func ranked(_ stories: [Story], symbols: Set<String>) async -> [Story] {
+        rank(stories, seen: [], symbols: symbols)
+    }
 
     static func rank(_ stories: [Story], seen: Set<String>, symbols: Set<String>, now: Date = .now) -> [Story] {
         guard stories.count > 1 else { return stories }

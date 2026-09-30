@@ -1,6 +1,6 @@
 # Newswire API v1
 
-Private news wire backed by Cloudflare Workers + D1. All story reads require a reader or writer bearer token. All writes require a writer token. Tokens never belong in query strings or app bundles.
+Private news wire backed by Cloudflare Workers + D1. All story reads require a bearer token: an App Attest session token (see Attestation) or the writer token. All writes require the writer token. Tokens never belong in query strings or app bundles.
 
 Live origin: https://bryce-newswire.bryce-e19.workers.dev. Machine-readable input schema: /story.schema.json.
 
@@ -30,9 +30,9 @@ Required: external_id (1–200), title (1–300), source (1–100), url (absolut
 - GET /health → {"ok":true,"version":1}
 - GET /v1/stories?limit=50&cursor=OPAQUE&category=technology&q=search&priority=breaking&ticker=AAPL&tag=ai&agent=agent-a&source=Reuters&since=ISO&until=ISO&retracted=exclude → {"stories":[Story],"next_cursor":string|null}. Limit 1–100. Optional filters: category, priority, ticker, tag, agent, source (exact match), q (substring search), since/until (published_at window, inclusive, ISO 8601). retracted controls tombstones: exclude (default), include, or only. Order published_at DESC, id DESC. Cursor encodes last timestamp/id; clients treat it as opaque. New stories arrive at top, older stories load downwards.
 - GET /v1/stories/:id → {"story":Story}. Resolves retracted stories too, with retracted_at set.
-- DELETE /v1/stories/:id (writer only) → 200 {"story":Story,"retracted":bool}. Retraction tombstone: sets retracted_at, hides the story from default listings, and never edits or deletes content. Idempotent — retracting again returns retracted:false. Reader tokens receive 403; unknown ids 404.
+- DELETE /v1/stories/:id (writer only) → 200 {"story":Story,"retracted":bool}. Retraction tombstone: sets retracted_at, hides the story from default listings, and never edits or deletes content. Idempotent — retracting again returns retracted:false. Session tokens receive 403; unknown ids 404.
 - POST /v1/stories with one JSON Story input → 201 {"story":Story,"duplicate":false}; repeated external_id or normalized URL returns existing story and 200 {"story":Story,"duplicate":true}. No overwriting.
-- POST /v1/devices {"token":hex,"environment":"sandbox"|"production"} (reader or writer) → 201 {"registered":true}. Upserts an APNs device token. GET /v1/devices (writer only) → {"devices":[{token,environment}]}. DELETE /v1/devices/:token (writer only) → {"removed":bool}.
+- POST /v1/devices {"token":hex,"environment":"sandbox"|"production"} (session or writer) → 201 {"registered":true}. Upserts an APNs device token. GET /v1/devices (writer only) → {"devices":[{token,environment}]}. DELETE /v1/devices/:token (writer only) → {"removed":bool}.
 - GET /v1/ingest with the same fields as URL-encoded query parameters. tickers/tags are comma-separated. Same auth and result as POST. Explicit ingestion route only; GET /v1/stories never writes. Ingest responses always no-store. GET URL capped at 8000 bytes; use POST for longer text.
 - OPTIONS supported. Errors: {"error":{"code":string,"message":string}} with 400/401/403/404/405/413/500/503.
 
@@ -48,7 +48,7 @@ The Worker also binds the Brain app's D1 database (`BRAIN`) and Workers AI (`AI`
 
 Brain schema changes live in `backend/brain/` and apply with `npx wrangler d1 migrations apply brain --remote`.
 
-Authorization: Bearer TOKEN. Cloudflare secrets READER_TOKEN and WRITER_TOKEN. Reader token cannot ingest. Missing secret fails closed. Static web shell may be public, all story data private.
+Authorization: Bearer TOKEN. Cloudflare secret WRITER_TOKEN (also signs attestation challenges). Session tokens cannot ingest. Missing secret fails closed. Static web shell may be public, all story data private.
 
 ## Agent example
 
@@ -66,3 +66,10 @@ curl --get "$NEWSWIRE_URL/v1/ingest" \
 ```
 
 Use the original publication timestamp and original source URL. Reuse external_id when retrying. Retry 429/5xx with exponential backoff; fix 4xx payload/auth errors. Do not invent headlines or present synthetic examples as real news. GET ingestion is intended for agents, never embed ingestion URLs as browser links because link scanners can invoke them.
+
+## Attestation (iOS sign-in)
+The app generates a Secure Enclave key with Apple App Attest; no token is typed or shipped. Endpoints are unauthenticated.
+- GET /v1/attest/challenge → {"challenge"}. Stateless, HMAC-signed with WRITER_TOKEN, valid 5 minutes.
+- POST /v1/attest {"key_id","attestation","challenge"} (base64) → 201 {"token","expires_at"}. Verifies Apple's attestation (certificate chain to the App Attest root, nonce, key id, app id `ATTEST_APP_ID` default `A792L5W262.com.brycecole.newswire`, counter 0), stores the public key, mints a 7-day session token.
+- POST /v1/attest/session {"key_id","assertion","challenge"} → 201 {"token","expires_at"}. Renews with a signed assertion; the counter must increase. Unknown key 404 (`unknown_key`), bad proof 401 (`attestation_failed`).
+Session tokens are random, stored only as SHA-256, and read-only (403 on writer routes). `ATTEST_ROOT_CA` overrides the pinned Apple root and exists for tests.

@@ -1,10 +1,12 @@
+import { AttestError, checkChallenge, fromBase64, makeChallenge, sha256, toBase64, verifyAssertion, verifyAttestation } from './attest';
 import { quotes, resolve, type Mention } from './quotes';
 
 interface Env {
   DB: D1Database;
   ASSETS: Fetcher;
-  READER_TOKEN?: string;
   WRITER_TOKEN?: string;
+  ATTEST_APP_ID?: string;
+  ATTEST_ROOT_CA?: string;
   BRAIN?: D1Database;
   AI?: { run(model: string, input: unknown): Promise<Record<string, unknown>> };
   BRAIN_AI_MODEL?: string;
@@ -79,16 +81,59 @@ function query(params: URLSearchParams, allowed: string[]) {
   }
   return result;
 }
+const sessionTTL = 7 * 86400000;
+const hex = (bytes: Uint8Array) => Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
 async function authenticate(request: Request, env: Env, write: boolean) {
-  if (!env.READER_TOKEN?.trim() || !env.WRITER_TOKEN?.trim() || env.READER_TOKEN === env.WRITER_TOKEN) throw new ApiError(503, 'unavailable', 'Authentication is not configured');
+  if (!env.WRITER_TOKEN?.trim()) throw new ApiError(503, 'unavailable', 'Authentication is not configured');
   const token = /^Bearer ([^\s]+)$/i.exec(request.headers.get('Authorization') ?? '')?.[1];
   if (!token || token.length > 4096) throw new ApiError(401, 'unauthorized', 'Bearer token required');
   const digest = async (s: string) => new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(s)));
-  const [actual, reader, writer] = await Promise.all([digest(token), digest(env.READER_TOKEN), digest(env.WRITER_TOKEN)]);
-  const equal = (a: Uint8Array, b: Uint8Array) => a.reduce((diff, byte, i) => diff | (byte ^ b[i]), 0) === 0;
-  if (equal(actual, writer)) return;
-  if (!equal(actual, reader)) throw new ApiError(401, 'unauthorized', 'Invalid bearer token');
+  const [actual, writer] = await Promise.all([digest(token), digest(env.WRITER_TOKEN)]);
+  if (actual.reduce((diff, byte, i) => diff | (byte ^ writer[i]), 0) === 0) return;
+  const session = await env.DB.prepare('SELECT 1 FROM sessions WHERE token_hash = ? AND expires_at > ?').bind(hex(actual), Date.now()).first();
+  if (!session) throw new ApiError(401, 'unauthorized', 'Invalid bearer token');
   if (write) throw new ApiError(403, 'forbidden', 'Writer token required');
+}
+async function mintSession(env: Env, keyId: string) {
+  const token = hex(crypto.getRandomValues(new Uint8Array(32)));
+  const expires = Date.now() + sessionTTL;
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM sessions WHERE expires_at < ?').bind(Date.now()),
+    env.DB.prepare('INSERT INTO sessions (token_hash, key_id, expires_at) VALUES (?, ?, ?)').bind(hex(await sha256(encoder.encode(token))), keyId, expires),
+  ]);
+  return json({ token, expires_at: new Date(expires).toISOString() }, 201);
+}
+async function attestRoute(request: Request, path: string, env: Env) {
+  if (!env.WRITER_TOKEN?.trim()) throw new ApiError(503, 'unavailable', 'Authentication is not configured');
+  if (path === '/v1/attest/challenge') {
+    if (request.method !== 'GET') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
+    return json({ challenge: await makeChallenge(env.WRITER_TOKEN) });
+  }
+  if (request.method !== 'POST') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
+  const data = await readBody(request) as Record<string, unknown> | null;
+  const keyId = text(data?.key_id, 'key_id', 100);
+  let keyBytes: Uint8Array;
+  try { keyBytes = fromBase64(keyId, 100); } catch { return invalid('Invalid key_id'); }
+  const challenge = text(data?.challenge, 'challenge', 200);
+  if (!await checkChallenge(env.WRITER_TOKEN, challenge)) throw new ApiError(401, 'stale_challenge', 'Challenge expired');
+  const appId = env.ATTEST_APP_ID ?? 'A792L5W262.com.brycecole.newswire';
+  const now = new Date().toISOString();
+  try {
+    if (path === '/v1/attest') {
+      const publicKey = await verifyAttestation(fromBase64(data?.attestation, 20000), challenge, keyBytes, appId, env.ATTEST_ROOT_CA);
+      await env.DB.prepare('INSERT INTO attested_devices (key_id, public_key, counter, created_at, last_seen_at) VALUES (?, ?, 0, ?, ?) ON CONFLICT(key_id) DO UPDATE SET public_key = excluded.public_key, counter = 0, last_seen_at = excluded.last_seen_at').bind(keyId, toBase64(publicKey), now, now).run();
+      return mintSession(env, keyId);
+    }
+    const device = await env.DB.prepare('SELECT public_key, counter FROM attested_devices WHERE key_id = ?').bind(keyId).first<{ public_key: string; counter: number }>();
+    if (!device) throw new ApiError(404, 'unknown_key', 'Key is not enrolled');
+    const counter = await verifyAssertion(fromBase64(data?.assertion, 4000), challenge, fromBase64(device.public_key), appId, device.counter);
+    const updated = await env.DB.prepare('UPDATE attested_devices SET counter = ?, last_seen_at = ? WHERE key_id = ? AND counter = ?').bind(counter, now, keyId, device.counter).run();
+    if (!updated.meta.changes) throw new ApiError(409, 'conflict', 'Assertion raced, retry');
+    return mintSession(env, keyId);
+  } catch (error) {
+    if (error instanceof AttestError) throw new ApiError(401, 'attestation_failed', error.message);
+    throw error;
+  }
 }
 function story(row: Record<string, unknown>) { return { ...row, tickers: JSON.parse(row.tickers as string), tags: JSON.parse(row.tags as string) }; }
 async function readBody(request: Request): Promise<unknown> {
@@ -364,6 +409,10 @@ async function route(request: Request, env: Env, ctx?: ExecutionContext): Promis
     return new Response('<!doctype html><meta name="viewport" content="width=device-width"><title>Newswire</title><p style="font:17px -apple-system;margin:40px 20px">Return to Newswire to finish connecting your account.</p>', { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
   }
   if (!api) return env.ASSETS.fetch(request);
+  if (path === '/v1/attest' || path.startsWith('/v1/attest/')) {
+    if (path !== '/v1/attest' && path !== '/v1/attest/challenge' && path !== '/v1/attest/session') throw new ApiError(404, 'not_found', 'Route not found');
+    return attestRoute(request, path, env);
+  }
   const write = path === '/v1/ingest' || (path === '/v1/stories' && request.method === 'POST') || (/^\/v1\/stories\/([^/]+)$/.test(path) && request.method === 'DELETE')
     || (path === '/v1/devices' && request.method === 'GET') || (/^\/v1\/devices\/([^/]+)$/.test(path) && request.method === 'DELETE')
     || ['/v1/brain/posts', '/v1/brain/known', '/v1/brain/ai', '/v1/brain/taste'].includes(path);

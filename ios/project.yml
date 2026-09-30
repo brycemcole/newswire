@@ -23,14 +23,15 @@ targets:
       path: Newswire.entitlements
       properties:
         aps-environment: development
+        com.apple.developer.devicecheck.appattest-environment: development
     info:
       path: Info.plist
       properties:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         ITSAppUsesNonExemptEncryption: false
-        UIBackgroundModes: [fetch, remote-notification]
-        BGTaskSchedulerPermittedIdentifiers: [com.brycecole.newswire.refresh]
+        UIBackgroundModes: [fetch, processing, remote-notification]
+        BGTaskSchedulerPermittedIdentifiers: [com.brycecole.newswire.refresh, com.brycecole.newswire.process]
     settings:
       base:
         DEVELOPMENT_TEAM: A792L5W262
