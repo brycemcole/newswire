@@ -162,6 +162,9 @@ struct FeedView: View {
                             .onAppear {
                                 // Start the next page well before the end so scrolling never waits on the network.
                                 if story.id == olderTrigger { Task { await store.loadOlder() } }
+                                if let index = store.stories.firstIndex(where: { $0.id == story.id }) {
+                                    for next in store.stories.dropFirst(index + 1).prefix(6).reversed() { Summarizer.shared.request(next, ahead: true) }
+                                }
                             }
                     }
                     if store.cursor != nil {
@@ -292,6 +295,13 @@ struct FeedView: View {
             if let index = CommandLine.arguments.firstIndex(of: "-quote"), let symbol = CommandLine.arguments.dropFirst(index + 1).first {
                 try? await Task.sleep(for: .seconds(1))
                 quoteRoute = MarketSymbol(id: symbol)
+            }
+            if let index = CommandLine.arguments.firstIndex(of: "-storyURL"), let link = CommandLine.arguments.dropFirst(index + 1).first.flatMap(URL.init(string:)) {
+                try? await Task.sleep(for: .seconds(1))
+                let title = CommandLine.arguments.dropFirst(index + 2).first ?? link.lastPathComponent
+                store.path = [Story(id: "debug", externalId: "debug", title: title, summary: "", body: "", source: link.host() ?? "", url: link,
+                                    publishedAt: .now, receivedAt: .now, category: "markets", priority: "normal",
+                                    tickers: [], tags: ["headlines"], agent: "debug", imageUrl: nil)]
             }
         }
         #endif
@@ -497,19 +507,20 @@ struct StoryRow: View {
     var showSummary = true
     @AppStorage private var largeImage: Bool
     @Environment(\.feedStore) private var feedStore
-    /// Captured once when the row is created and never updated while it is on screen: an image or summary that
-    /// arrives later appears the next time the row is built, instead of resizing a row under the reader's thumb.
-    /// Read from the summarizer's unobserved storage so neither this row nor the feed re-renders when it changes.
+    /// Read from the summarizer's unobserved storage, then refreshed only for this row when its own results land
+    /// (after scrolling settles), so the rest of the feed never re-renders.
     @State private var imageURL: URL?
     @State private var generated: String?
+    @State private var hasVideo: Bool
 
     init(story: Story, showSummary: Bool = true) {
         self.story = story
         self.showSummary = showSummary
         _largeImage = AppStorage(wrappedValue: story.priority == "breaking" || story.priority == "urgent", "largeStoryImage.\(story.id)")
         let key = story.url.absoluteString
-        _imageURL = State(initialValue: story.thumbnail ?? Summarizer.shared.images[key])
+        _imageURL = State(initialValue: Summarizer.shared.poster(for: story))
         _generated = State(initialValue: Summarizer.shared.summaries[key])
+        _hasVideo = State(initialValue: Summarizer.shared.videos[key] != nil)
     }
 
     var body: some View {
@@ -522,6 +533,7 @@ struct StoryRow: View {
                             .aspectRatio(16.0 / 9.0, contentMode: .fit)
                             .frame(maxHeight: 320)
                             .overlay { ThumbnailImage(url: imageURL, size: ThumbnailLoader.large) }
+                            .overlay(alignment: .bottomLeading) { videoBadge }
                             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                             .accessibilityHidden(true)
                     }
@@ -530,6 +542,7 @@ struct StoryRow: View {
                         details.frame(maxWidth: .infinity, alignment: .leading)
                         Color.clear.frame(width: 96, height: 96)
                             .overlay { ThumbnailImage(url: imageURL, size: ThumbnailLoader.small) }
+                            .overlay(alignment: .bottomLeading) { videoBadge }
                             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                             .accessibilityHidden(true)
                     }
@@ -554,6 +567,27 @@ struct StoryRow: View {
             ShareLink(item: story.url)
         }
         .task(id: story.id) { Summarizer.shared.request(story) }
+        .onDisappear { Summarizer.shared.withdraw(story) }
+        .onReceive(Summarizer.shared.updates) { key in
+            guard key == story.url.absoluteString else { return }
+            withAnimation(.easeOut(duration: 0.2)) {
+                imageURL = Summarizer.shared.poster(for: story)
+                generated = Summarizer.shared.summaries[key]
+                hasVideo = Summarizer.shared.videos[key] != nil
+            }
+        }
+    }
+
+    @ViewBuilder private var videoBadge: some View {
+        if hasVideo {
+            Image(systemName: "play.fill")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.white)
+                .frame(width: 24, height: 24)
+                .background(.black.opacity(0.45), in: .circle)
+                .padding(6)
+                .accessibilityLabel("Video")
+        }
     }
 
     private var details: some View {
@@ -579,20 +613,22 @@ struct StoryRow: View {
             } else if showSummary, story.hasDistinctSummary {
                 Text(StoryHTML.plainText(story.summary)).font(.subheadline).foregroundStyle(.secondary).lineLimit(3)
             }
-            if !story.tickers.isEmpty {
+            if !tickers.isEmpty {
                 tickerLine
                     .font(.system(.caption2, design: .monospaced).weight(.semibold))
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
                     .fixedSize(horizontal: false, vertical: true)
-                    .task(id: story.id) { QuoteStore.shared.want(story.tickers) }
             }
         }
+        .task(id: story.id) { QuoteStore.shared.want(QuoteStore.shared.candidates(for: story)) }
     }
+
+    private var tickers: [String] { QuoteStore.shared.symbols(for: story) }
 
     private var tickerLine: Text {
         var line = AttributedString()
-        for (index, symbol) in story.tickers.enumerated() {
+        for (index, symbol) in tickers.enumerated() {
             if index > 0 { line += AttributedString("  ·  ") }
             line += AttributedString(symbol)
             if let quote = QuoteStore.shared.quotes[symbol] {
@@ -637,13 +673,20 @@ struct StoryDetail: View {
     @State private var reading = false
     @State private var loading = false
     @State private var attempt = 0
+    @State private var rerender = false
+    @State private var moreDetail = false
     @State private var interaction: String?
     @State private var selectedQuote: Quote?
     private var key: String { story.url.absoluteString }
     private var quotes: [Quote] { QuoteStore.shared.quotes(for: story) }
     private var lead: String? {
         if story.isBrain && story.opensInReader && story.hasDistinctSummary { return StoryHTML.plainText(story.summary) }
-        return Summarizer.shared.summaries[story.url.absoluteString]
+        return glance == nil && !preparingGlance ? Summarizer.shared.summaries[key] : nil
+    }
+    private var glance: [String]? { Summarizer.shared.glances[key] }
+    private var preparingGlance: Bool {
+        !story.isBrain && Summarizer.shared.available && (Summarizer.shared.texts[key]?.count ?? 0) >= 400
+            && !Summarizer.shared.unsummarizable.contains(key)
     }
     private var inline: [Int: [Quote]] { QuoteInline.plan([lead ?? ""] + excerpt, quotes: quotes) }
     private func annotated(_ text: String, at index: Int) -> AttributedString {
@@ -657,7 +700,9 @@ struct StoryDetail: View {
         let _ = Summarizer.shared.revision
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                if let hero = story.thumbnail ?? Summarizer.shared.images[key] {
+                if let video = Summarizer.shared.videos[key] {
+                    StoryVideoView(url: video, poster: Summarizer.shared.poster(for: story), page: story.url, title: story.title, source: story.source)
+                } else if let hero = Summarizer.shared.poster(for: story) {
                     // Starts from the feed's already-decoded thumbnail, so the header is never blank during the push.
                     Color.clear.frame(height: 210).frame(maxWidth: .infinity)
                         .overlay { ThumbnailImage(url: hero, size: ThumbnailLoader.large) }
@@ -694,6 +739,9 @@ struct StoryDetail: View {
                         .font(.system(.subheadline, design: .monospaced).weight(.semibold)).foregroundStyle(.secondary)
                 }
                 Divider()
+                if glance != nil || preparingGlance {
+                    glanceCard.transition(.opacity)
+                }
                 if story.isBrain && story.opensInReader && story.hasDistinctSummary, let lead {
                     Text(annotated(lead, at: 0))
                         .font(.body.weight(.medium)).fixedSize(horizontal: false, vertical: true)
@@ -717,7 +765,7 @@ struct StoryDetail: View {
                         Text(StoryHTML.plainText(story.summary)).fixedSize(horizontal: false, vertical: true)
                     } else if story.url.host() != "news.google.com" {
                         Button { attempt += 1 } label: { Label("Load article", systemImage: "arrow.clockwise") }
-                            .font(.subheadline.weight(.semibold)).buttonStyle(.bordered)
+                            .font(.subheadline.weight(.semibold)).foregroundStyle(.secondary).buttonStyle(.plain)
                     }
                     if let topics = story.watchlistTopics {
                         Label(topics, systemImage: "scope").font(.caption).foregroundStyle(.tertiary)
@@ -729,6 +777,7 @@ struct StoryDetail: View {
                     filterLinks(story.tags.map(WireFilter.tag), separator: "  ")
                         .font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
                 }
+                sourceActions
             }.padding(20).frame(maxWidth: 760, alignment: .leading).frame(maxWidth: .infinity)
         }
         .animation(.easeOut(duration: 0.2), value: excerpt)
@@ -744,14 +793,22 @@ struct StoryDetail: View {
         }
         .navigationDestination(item: $selectedQuote) { QuoteDetail(symbol: $0.symbol).dockClearance() }
         .task(id: attempt) {
-            guard story.opensInReader, story.url.host() != "news.google.com", excerpt.isEmpty else { return }
+            guard story.opensInReader, story.url.host() != "news.google.com", excerpt.isEmpty || rerender else { return }
             loading = true
-            defer { loading = false }
+            defer { loading = false; rerender = false }
             // Let the navigation push finish first: extraction can create a web view, which would drop frames mid-transition.
             if attempt == 0 {
                 do { try await Task.sleep(for: .milliseconds(450)) } catch { return }
             }
-            if let page = await Summarizer.page(story.url) { Summarizer.shared.remember(page, for: story) }
+            if let page = await Summarizer.page(story.url, force: rerender) { Summarizer.shared.remember(page, for: story) }
+        }
+        .task(id: excerpt.count) {
+            await QuoteStore.shared.scan(story, article: Summarizer.shared.texts[key] ?? "")
+        }
+        .task(id: excerpt.count) {
+            guard !story.isBrain else { return }
+            await Summarizer.shared.digest(story)
+            await Summarizer.shared.brief(story)
         }
         .textSelection(.enabled)
         .environment(\.openURL, OpenURLAction { url in
@@ -773,20 +830,7 @@ struct StoryDetail: View {
             guard story.isBrain else { return }
             _ = await feedStore?.brain(story, action: "view")
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            VStack(spacing: 0) {
-                if ["http", "https"].contains(story.url.scheme?.lowercased() ?? "") {
-                    Button { reading = true } label: {
-                        Text("Read Source").fontWeight(.semibold).padding(.horizontal, 8)
-                            .foregroundStyle(Theme.shared.accent.onColor)
-                    }
-                    .buttonStyle(.glassProminent)
-                    .tint(Color.wireAccent)
-                    .padding(.vertical, 8)
-                }
-                Color.clear.frame(height: MarketDock.clearance)
-            }
-        }
+        .dockClearance()
         .navigationTitle("STORY").navigationBarTitleDisplayMode(.inline)
         .fullScreenCover(isPresented: $reading) { SafariView(url: story.url).ignoresSafeArea() }
         .toolbar {
@@ -807,9 +851,92 @@ struct StoryDetail: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     ShareLink(item: story.url)
                 }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        if canReload {
+                            Button {
+                                rerender = true
+                                attempt += 1
+                            } label: { Label("Reload Article", systemImage: "arrow.clockwise") }
+                            .disabled(loading)
+                        }
+                        Button { reading = true } label: { Label("Read Source", systemImage: "safari") }
+                    } label: {
+                        Image(systemName: loading && rerender ? "arrow.clockwise" : "ellipsis")
+                            .symbolEffect(.rotate, options: .repeating, isActive: loading && rerender)
+                    }
+                    .accessibilityLabel("More")
+                }
             }
         }
     }
+
+    private var glanceCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("At a glance", systemImage: "sparkles")
+                .font(.system(.caption, design: .monospaced).weight(.semibold))
+                .textCase(.uppercase)
+                .foregroundStyle(.secondary)
+            if let glance {
+                ForEach(Array(glance.enumerated()), id: \.offset) { _, point in
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        Text("•").fontWeight(.heavy).foregroundStyle(Color.wireAccent)
+                        Text(point).fixedSize(horizontal: false, vertical: true)
+                    }
+                    .font(.body.weight(.medium))
+                }
+                let brief = Summarizer.shared.briefs[key]
+                if moreDetail {
+                    if let brief {
+                        Text(brief).font(.body).foregroundStyle(.primary.opacity(0.85)).lineSpacing(3)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .transition(.opacity)
+                    } else {
+                        Text("Writing a longer summary…").font(.subheadline).foregroundStyle(.secondary)
+                            .symbolEffect(.pulse, options: .repeating)
+                    }
+                }
+                if brief != nil || (Summarizer.shared.texts[key]?.count ?? 0) >= 800 {
+                    Button {
+                        withAnimation(.easeOut(duration: 0.2)) { moreDetail.toggle() }
+                    } label: {
+                        Text(moreDetail ? "Show less" : "More detail").font(.subheadline.weight(.semibold)).foregroundStyle(Color.wireAccent)
+                    }
+                    .buttonStyle(.plain)
+                }
+            } else {
+                Text("Reading the story…").font(.subheadline).foregroundStyle(.secondary)
+                    .phaseAnimator([0.4, 1]) { view, opacity in view.opacity(opacity) } animation: { _ in .easeInOut(duration: 0.8) }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.fill.quaternary, in: .rect(cornerRadius: 16))
+        .animation(.easeOut(duration: 0.2), value: glance)
+    }
+
+    @ViewBuilder private var sourceActions: some View {
+        if ["http", "https"].contains(story.url.scheme?.lowercased() ?? "") {
+            Button { reading = true } label: {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Read full story").font(.subheadline.weight(.semibold)).foregroundStyle(Color.wireAccent)
+                        Text(story.source).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "arrow.up.right").font(.subheadline.weight(.semibold)).foregroundStyle(.tertiary)
+                }
+                .padding(.horizontal, 16).padding(.vertical, 12)
+                .background(.fill.quaternary, in: .rect(cornerRadius: 14))
+                .contentShape(.rect(cornerRadius: 14))
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 4)
+            .accessibilityHint("Opens the original article")
+        }
+    }
+
+    private var canReload: Bool { story.opensInReader && story.url.host() != "news.google.com" }
 
     private var reactionSymbol: String {
         switch interaction {

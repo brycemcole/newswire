@@ -71,8 +71,50 @@ extension NewswireAPI {
         return NewswireAPI(baseURL: url)
     }
 
+    @ObservationIgnored private var scanned: [String: Int] = [:]
+    @ObservationIgnored private var headlineSymbols: [String: [String]] = [:]
+
+    /// The feed's own tickers, then symbols found in the story's text. Headline symbols appear only once Yahoo has
+    /// confirmed them with a quote, so a stray capitalized word in parentheses never shows as a pill.
     func symbols(for story: Story) -> [String] {
-        story.tickers.isEmpty ? resolved[story.id] ?? [] : story.tickers
+        var seen = Set<String>()
+        let confirmed = headline(story).filter { quotes[$0] != nil }
+        return (story.tickers + (resolved[story.id] ?? []) + confirmed).filter { seen.insert($0).inserted }.prefix(6).map { $0 }
+    }
+
+    /// Everything worth asking Yahoo about for a feed row: its tickers plus any symbol its headline or summary spells out.
+    func candidates(for story: Story) -> [String] {
+        var seen = Set<String>()
+        return (story.tickers + (resolved[story.id] ?? []) + headline(story)).filter { seen.insert($0).inserted }
+    }
+
+    private func headline(_ story: Story) -> [String] {
+        if let known = headlineSymbols[story.id] { return known }
+        let found = TickerScanner.symbols(in: "\(story.title)\n\(StoryHTML.plainText(story.summary))")
+        headlineSymbols[story.id] = found
+        return found
+    }
+
+    /// Runs when the article text arrives: explicit symbols in the text are kept only if they return a real quote, and
+    /// stories the feed left untagged also get the server's company-name matching over the article's opening.
+    func scan(_ story: Story, article: String) async {
+        guard let api, !article.isEmpty, scanned[story.id] != article.count else { return }
+        scanned[story.id] = article.count
+        let text = "\(story.title)\n\(StoryHTML.plainText(story.summary))\n\(article)"
+        let known = Set(symbols(for: story))
+        let explicit = TickerScanner.symbols(in: text).filter { !known.contains($0) }
+        var found: [String] = []
+        if !explicit.isEmpty, let quotes = try? await api.quotes(symbols: Array(explicit.prefix(12))) {
+            store(quotes)
+            found += explicit.filter { symbol in quotes.contains { $0.symbol == symbol } }
+        }
+        if story.tickers.isEmpty, let named = try? await api.quotes(text: String(text.prefix(1500))) {
+            store(named)
+            found += named.map(\.symbol)
+        }
+        guard !found.isEmpty else { return }
+        var seen = Set<String>()
+        resolved[story.id] = ((resolved[story.id] ?? []) + found).filter { seen.insert($0).inserted }
     }
 
     func quotes(for story: Story) -> [Quote] {
@@ -102,13 +144,14 @@ extension NewswireAPI {
 
     func load(_ story: Story) async {
         if !story.tickers.isEmpty || resolved[story.id] != nil {
-            await fetch(symbols(for: story).filter { stale($0) })
+            await fetch(candidates(for: story).filter { stale($0) })
             return
         }
         guard let api, !resolving.contains(story.id) else { return }
         resolving.insert(story.id)
         defer { resolving.remove(story.id) }
         let text = "\(story.title)\n\(StoryHTML.plainText(story.summary))"
+        await fetch(headline(story).filter { stale($0) })
         guard let found = try? await api.quotes(text: text) else { return }
         store(found)
         resolved[story.id] = found.map(\.symbol)
@@ -138,6 +181,29 @@ extension NewswireAPI {
 private extension Quote {
     func keeping(match: String?) -> Quote {
         Quote(symbol: symbol, name: name, match: match, currency: currency, exchange: exchange, state: state, price: price, change: change, changePercent: changePercent, previousClose: previousClose, time: time, extended: extended, points: points, extendedPoints: extendedPoints, url: url)
+    }
+}
+
+/// Finds tickers that stories spell out in the standard formats: exchange-prefixed ("NASDAQ: MU", "NYSE:NU"),
+/// cashtags ("$TSLA"), Reuters codes ("(MU.O)") and a parenthesized symbol after a company name ("Nu Holdings (NU)").
+nonisolated enum TickerScanner {
+    private static let ignored: Set<String> = ["CEO", "CFO", "COO", "CTO", "IPO", "GDP", "CPI", "PPI", "PCE", "ETF", "SEC", "FDA", "FTC", "DOJ", "FCC", "EPA", "IRS", "FED", "ECB", "BOJ", "IMF", "OPEC", "AI", "EU", "UK", "US", "USA", "UN", "EV", "EVS", "LLC", "LP", "PLC", "NYSE", "EPS", "YOY", "QOQ", "ESG", "API", "M&A", "TV", "PC", "OK", "AM", "PM", "ET", "PT", "EST", "EDT", "Q1", "Q2", "Q3", "Q4", "FY", "USD", "EUR", "GBP", "JPY", "CNY", "NATO", "WHO", "NFL", "NBA", "CNBC", "CNN", "BBC", "WSJ", "FT", "AP", "AFP", "EBITDA", "ARR", "IT", "HR", "R&D", "GPU", "CPU", "LNG", "OTC"]
+    nonisolated(unsafe) private static let exchange = /\b(?:NYSE(?:\s?American|\s?Arca)?|NASDAQ|Nasdaq|AMEX|NYSEAMERICAN|NYSEARCA|OTCQX|OTCQB|OTC|TSX|TSXV|CBOE|BATS)\s*:\s*([A-Z]{1,5}(?:\.[A-Z])?)\b/
+    nonisolated(unsafe) private static let cashtag = /(?:^|[\s(])\$([A-Z]{1,5})\b/
+    nonisolated(unsafe) private static let reuters = /\(([A-Z]{1,5})\.(?:O|N|OQ|K|A|P)\)/
+    nonisolated(unsafe) private static let parenthesized = /(?:[A-Z][\w.&'’-]*|Inc\.?|Corp\.?|Co\.?|Ltd\.?|plc)\s+\(\s*([A-Z]{2,5})\s*\)/
+
+    static func symbols(in text: String) -> [String] {
+        var found: [String] = []
+        func add(_ symbol: Substring) {
+            let value = String(symbol)
+            if !ignored.contains(value), !found.contains(value) { found.append(value) }
+        }
+        for match in text.matches(of: exchange) { add(match.1) }
+        for match in text.matches(of: cashtag) { add(match.1) }
+        for match in text.matches(of: reuters) { add(match.1) }
+        for match in text.matches(of: parenthesized) { add(match.1) }
+        return Array(found.prefix(8))
     }
 }
 

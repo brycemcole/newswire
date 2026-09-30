@@ -148,8 +148,7 @@ struct MarketSearchSheet: View {
         VStack(spacing: 0) {
             searchBar
                 .padding(.horizontal, 16)
-                .padding(.top, 4)
-                .padding(.bottom, 8)
+                .padding(.bottom, MarketDock.barInset)
             if trimmed.isEmpty {
                 overview
             } else {

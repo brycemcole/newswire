@@ -5,6 +5,8 @@ nonisolated enum ArticleExtractor {
         let paragraphs: [String]
         let image: URL?
         let complete: Bool
+        var targeted = false
+        var video: URL?
         var text: String { String(paragraphs.joined(separator: "\n").prefix(6000)) }
     }
 
@@ -20,8 +22,72 @@ nonisolated enum ArticleExtractor {
     private static let articleBody = try! NSRegularExpression(pattern: #""articleBody"\s*:\s*""# + jsonString)
     private static let embeddedHTML = try! NSRegularExpression(pattern: #""(?:content|body|html|articleHtml|bodyHtml)"\s*:\s*""# + jsonString)
 
+    /// Article containers that publishers mark explicitly. When one is present its paragraphs are the story, and the
+    /// rest of the page (related stories, app data, FAQs) is ignored.
+    private static let containers = [#"data-test-id="content-container""#, #"itemprop="articleBody""#, #"data-component="body-content""#]
+
     static func extract(html: String, baseURL: URL) -> Result {
+        var result = content(html: html, baseURL: baseURL)
+        result.video = video(in: html, relativeTo: baseURL)
+        return result
+    }
+
+    private static let videoMeta: Set<String> = ["og:video:secure_url", "og:video:url", "og:video", "twitter:player:stream", "twitter:player"]
+    private static let jsonVideo = try! NSRegularExpression(pattern: #""(?:contentUrl|embedUrl)"\s*:\s*"([^"]+)""#)
+    private static let youtubeFrame = try! NSRegularExpression(pattern: #"<iframe\b[^>]*\bsrc\s*=\s*["']([^"']*youtube(?:-nocookie)?\.com/embed/[^"']+)"#, options: [.caseInsensitive])
+
+    /// The page's own video: its sharing metadata, its structured VideoObject, or an embedded YouTube player.
+    /// Only direct MP4/HLS files and YouTube are returned, since those are what the app can play inline.
+    static func video(in html: String, relativeTo baseURL: URL) -> URL? {
+        for tag in metaTags(in: html) {
+            guard let name = (attribute("property", in: tag) ?? attribute("name", in: tag))?.lowercased(), videoMeta.contains(name),
+                  let content = attribute("content", in: tag), let url = playable(strip(content), relativeTo: baseURL) else { continue }
+            return url
+        }
+        let source = html as NSString
+        for pattern in [jsonVideo, youtubeFrame] {
+            for match in pattern.matches(in: html, range: NSRange(location: 0, length: source.length)).prefix(20) {
+                let raw = source.substring(with: match.range(at: 1)).replacingOccurrences(of: "\\/", with: "/")
+                if let url = playable(strip(raw), relativeTo: baseURL) { return url }
+            }
+        }
+        return nil
+    }
+
+    static func playable(_ text: String, relativeTo baseURL: URL) -> URL? {
+        guard !text.isEmpty, let url = URL(string: text, relativeTo: baseURL)?.absoluteURL, url.scheme == "https" else { return nil }
+        if youtubeID(url) != nil { return url }
+        return ["mp4", "m4v", "mov", "m3u8"].contains(url.pathExtension.lowercased()) ? url : nil
+    }
+
+    static func youtubeID(_ url: URL) -> String? {
+        guard let host = url.host()?.lowercased() else { return nil }
+        let parts = url.pathComponents.filter { $0 != "/" }
+        let id: String?
+        if host == "youtu.be" {
+            id = parts.first
+        } else if host.hasSuffix("youtube.com") || host.hasSuffix("youtube-nocookie.com") {
+            if ["embed", "shorts", "v", "live"].contains(parts.first), parts.count > 1 {
+                id = parts[1]
+            } else {
+                id = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "v" }?.value
+            }
+        } else {
+            id = nil
+        }
+        guard let id, id.count == 11, id.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }) else { return nil }
+        return id
+    }
+
+    private static func content(html: String, baseURL: URL) -> Result {
         let image = metaImage(in: html, relativeTo: baseURL)
+        for marker in containers {
+            guard let start = html.range(of: marker) else { continue }
+            let rest = html[start.upperBound...]
+            let end = rest.range(of: marker)?.lowerBound ?? rest.index(rest.startIndex, offsetBy: 80_000, limitedBy: rest.endIndex) ?? rest.endIndex
+            let paragraphs = clean(blocks(in: String(rest[..<end])), minimum: 40)
+            if paragraphs.joined().count >= 150 { return Result(paragraphs: paragraphs, image: image, complete: true, targeted: true) }
+        }
         if let body = strings(articleBody, in: html).max(by: { $0.count < $1.count }) {
             let paragraphs = clean(body.split(whereSeparator: \.isNewline).map(String.init), minimum: 20)
             if paragraphs.joined().count >= 200 { return Result(paragraphs: paragraphs, image: image, complete: true) }
@@ -51,7 +117,7 @@ nonisolated enum ArticleExtractor {
     }
 
     static func isBoilerplate(_ text: String) -> Bool {
-        text.contains(/^(?i)(reporting by|writing by|editing by|additional reporting|our standards|adds |updates with|sign up|sign in|subscribe|read more|click here|get a look|this article|if you type a company|have a tip\?|found a factual error|close dialogue|skip to|advertisement|support the guardian|newsletter promotion|connecting decision makers|before it's here, it's on the bloomberg terminal|we use cookies|by continuing|already a subscriber|create a free account|to continue reading)/)
+        text.contains(/^(?i)(reporting by|writing by|editing by|additional reporting|our standards|adds |updates with|sign up|sign in|subscribe|read more|click here|get a look|this article|if you type a company|have a tip\?|are you a robot|found a factual error|close dialogue|skip to|advertisement|support the guardian|newsletter promotion|connecting decision makers|before it's here, it's on the bloomberg terminal|we use cookies|by continuing|already a subscriber|create a free account|to continue reading)/)
     }
 
     static func looksLikeCode(_ text: String) -> Bool {
@@ -93,10 +159,11 @@ nonisolated enum ArticleExtractor {
         return tags
     }
 
+    private static let imageMeta: Set<String> = ["og:image", "og:image:secure_url", "og:image:url", "twitter:image", "twitter:image:src"]
+
     static func metaImage(in html: String, relativeTo baseURL: URL) -> URL? {
         for tag in metaTags(in: html) {
-            let lowered = tag.lowercased()
-            if lowered.contains("og:image") || lowered.contains("twitter:image"),
+            if let name = (attribute("property", in: tag) ?? attribute("name", in: tag))?.lowercased(), imageMeta.contains(name),
                let content = attribute("content", in: tag),
                let url = URL(string: strip(content), relativeTo: baseURL)?.absoluteURL,
                url.scheme == "https" {

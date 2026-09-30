@@ -7,8 +7,10 @@ enum DockDetent { case peek, medium, large }
 /// (or tap the search field) to reach indices, movers and earnings from any screen.
 /// It is an overlay, not a system sheet, so alerts, sheets and Safari covers can still present from the screens under it.
 struct MarketDock: View {
-    /// Height of the handle, search bar and the top edge of the index cards.
-    static let peekHeight: CGFloat = 160
+    /// Collapsed, the dock is only the search bar with equal space above and below it, about the height of a tab bar.
+    static let peekHeight: CGFloat = 72
+    /// Space above the search bar when collapsed, matching the search sheet's space below it.
+    static let barInset: CGFloat = 12
     /// Space under the floating dock, measured from the bottom edge of the screen.
     static let floatGap: CGFloat = 14
     /// How much room screens under the dock reserve at the bottom (dock top edge, less the home-indicator inset it already sits above).
@@ -33,11 +35,10 @@ struct MarketDock: View {
             // Bottom corners follow the display's own curve (concentric with it, whatever the inset), so they match the device.
             let shape = ConcentricRectangle(topLeadingCorner: .fixed(radius), topTrailingCorner: .fixed(radius),
                                             bottomLeadingCorner: .concentric(minimum: 20), bottomTrailingCorner: .concentric(minimum: 20))
-            VStack(spacing: 0) {
-                handle(stops)
-                MarketSearchSheet(detent: $detent, onSelect: onSelect)
-            }
-            .padding(.bottom, max(inset, keyboard))
+            MarketSearchSheet(detent: $detent, onSelect: onSelect)
+                .padding(.top, Self.barInset + 8 * docked)
+                .overlay(alignment: .top) { handle(stops) }
+                .padding(.bottom, max(inset, keyboard))
             .frame(height: height + Self.floatGap * docked, alignment: .top)
             .clipShape(shape)
             .glassEffect(.regular, in: shape)
@@ -61,7 +62,8 @@ struct MarketDock: View {
     private func handle(_ stops: Stops) -> some View {
         Capsule().fill(.tertiary)
             .frame(width: 36, height: 5)
-            .frame(maxWidth: .infinity, minHeight: 20)
+            .padding(.top, 4)
+            .frame(maxWidth: .infinity, minHeight: 14, alignment: .top)
             .contentShape(.rect)
             .onTapGesture { detent = detent == .peek ? .medium : .peek }
             .gesture(dragGesture(stops), including: detent == .peek ? .none : .all)
@@ -92,7 +94,7 @@ struct MarketDock: View {
         func height(_ detent: DockDetent) -> CGFloat {
             switch detent {
             case .peek: MarketDock.peekHeight
-            case .medium: max(available * 0.52, MarketDock.peekHeight + 160)
+            case .medium: max(available * 0.52, MarketDock.peekHeight + 240)
             case .large: max(available - MarketDock.floatGap - 8, MarketDock.peekHeight)
             }
         }
