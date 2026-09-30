@@ -28,8 +28,9 @@ struct MarketDock: View {
             // 0 while resting (a floating card), 1 once expanded (docked to the bottom and sides, filling the home-indicator area).
             let docked = min(max((height - stops.height(.peek)) / (stops.height(.medium) - stops.height(.peek)), 0), 1)
             let inset = min(proxy.safeAreaInsets.bottom, 34) * docked
-            let shape = UnevenRoundedRectangle(topLeadingRadius: radius, bottomLeadingRadius: radius * (1 - docked),
-                                               bottomTrailingRadius: radius * (1 - docked), topTrailingRadius: radius, style: .continuous)
+            // Bottom corners follow the display's own curve (concentric with it, whatever the inset), so they match the device.
+            let shape = ConcentricRectangle(topLeadingCorner: .fixed(radius), topTrailingCorner: .fixed(radius),
+                                            bottomLeadingCorner: .concentric(minimum: 20), bottomTrailingCorner: .concentric(minimum: 20))
             VStack(spacing: 0) {
                 handle(stops)
                 MarketSearchSheet(detent: $detent, onSelect: onSelect)
