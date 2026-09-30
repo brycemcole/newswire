@@ -18,26 +18,31 @@ struct MarketDock: View {
     @GestureState private var drag: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private let shape = RoundedRectangle(cornerRadius: 34, style: .continuous)
+    private let radius: CGFloat = 34
     private var animation: Animation { reduceMotion ? .easeOut(duration: 0.15) : .spring(duration: 0.45, bounce: 0.22) }
 
     var body: some View {
         GeometryReader { proxy in
-            // Floats with a rounded bottom, so whatever is under the dock shows around it instead of a glass slab under the home indicator.
             let stops = Stops(available: proxy.size.height)
             let height = stops.rubberBanded(stops.height(detent) - drag)
+            // 0 while resting (a floating card), 1 once expanded (docked to the bottom and sides, filling the home-indicator area).
+            let docked = min(max((height - stops.height(.peek)) / (stops.height(.medium) - stops.height(.peek)), 0), 1)
+            let inset = min(proxy.safeAreaInsets.bottom, 34) * docked
+            let shape = UnevenRoundedRectangle(topLeadingRadius: radius, bottomLeadingRadius: radius * (1 - docked),
+                                               bottomTrailingRadius: radius * (1 - docked), topTrailingRadius: radius, style: .continuous)
             VStack(spacing: 0) {
                 handle(stops)
                 MarketSearchSheet(detent: $detent, onSelect: onSelect)
             }
-            .frame(height: height, alignment: .top)
+            .padding(.bottom, inset)
+            .frame(height: height + Self.floatGap * docked, alignment: .top)
             .clipShape(shape)
             .glassEffect(.regular, in: shape)
             .shadow(color: .black.opacity(0.10), radius: 14, y: 4)
             .animation(animation, value: detent)
             .simultaneousGesture(dragGesture(stops), including: detent == .peek ? .all : .subviews)
-            .padding(.horizontal, 8)
-            .padding(.bottom, Self.floatGap)
+            .padding(.horizontal, 8 * (1 - docked))
+            .padding(.bottom, Self.floatGap * (1 - docked))
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         }
         .ignoresSafeArea(.container, edges: .bottom)
