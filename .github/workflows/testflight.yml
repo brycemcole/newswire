@@ -42,6 +42,10 @@ jobs:
           echo "BUILD_NUMBER=$(( 100 + GITHUB_RUN_NUMBER * 10 + GITHUB_RUN_ATTEMPT ))" >> "$GITHUB_ENV"
       - run: brew install xcodegen
       - run: xcodegen generate
+      - name: Revoke CI signing certificates
+        env:
+          ASC_KEY_PATH: ${{ runner.temp }}/AuthKey.p8
+        run: ruby ci/revoke_ci_certs.rb
       - name: Archive
         run: |
           xcodebuild archive -project Newswire.xcodeproj -scheme Newswire -configuration Release \
@@ -89,6 +93,12 @@ jobs:
           fi
           { echo "### What to Test"; cat "$RUNNER_TEMP/notes.txt"; } >> "$GITHUB_STEP_SUMMARY"
           ruby ci/set_whats_new.rb "$BUILD_NUMBER" "$RUNNER_TEMP/notes.txt"
+      - name: Revoke this run's signing certificate
+        if: always()
+        continue-on-error: true
+        env:
+          ASC_KEY_PATH: ${{ runner.temp }}/AuthKey.p8
+        run: ruby ci/revoke_ci_certs.rb
       - name: Upload logs
         if: failure()
         uses: actions/upload-artifact@v4
