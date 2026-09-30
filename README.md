@@ -22,7 +22,7 @@ The brain button at the top left of the iOS home screen switches between the wir
 
 ## Agent API
 
-See [API.md](API.md) for the canonical story format, required fields, authenticated GET ingestion, JSON POST, filters, retry behavior, and deduplication. Give agents the backend URL and a writer token; give readers only the reader token. Source links and stable external IDs prevent accidental duplicate submissions.
+See [API.md](API.md) for the canonical story format, required fields, authenticated GET ingestion, JSON POST, filters, retry behavior, and deduplication. Give agents the backend URL and a writer token; the iOS app needs no token: it authenticates with App Attest (see [API.md](API.md)). Source links and stable external IDs prevent accidental duplicate submissions.
 
 Upload a story from this Mac:
 
@@ -34,7 +34,7 @@ Omit `--get` to send JSON POST. The helper uses the writer credential from macOS
 
 ## Credentials
 
-`node scripts/provision-secrets.mjs` provisions separate reader/writer credentials in Cloudflare and macOS Keychain, service `com.brycecole.newswire`, accounts `reader` and `writer`. Existing Keychain values are reused on reruns. Use Keychain Access to retrieve/share the appropriate credential privately. No credential is included in the repository or iOS bundle. Web reader credentials last only for the current tab; the iOS app stores its reader token in Keychain.
+`node scripts/provision-secrets.mjs` provisions the writer credential in Cloudflare and macOS Keychain, service `com.brycecole.newswire`, account `writer`. Existing Keychain values are reused on reruns. Use Keychain Access to retrieve/share the appropriate credential privately. No credential is included in the repository or iOS bundle. The web reader takes the writer token and keeps it in memory for the current tab only; the iOS app holds a Secure Enclave key and a short-lived session token in Keychain.
 
 ## Portfolio (Plaid)
 
@@ -42,9 +42,9 @@ The iOS Portfolio tab syncs brokerage positions through Plaid using keys you ent
 
 ## Local development
 
-Backend: `cd backend`, `npm install`, `npm test`, and `npm run dev`. Use local `.dev.vars` for READER_TOKEN and WRITER_TOKEN (ignored by Git). Apply D1 migrations locally before development. Cloudflare deployment requires Wrangler login, remote migrations, and `wrangler deploy` from backend.
+Backend: `cd backend`, `npm install`, `npm test`, and `npm run dev`. Use local `.dev.vars` for WRITER_TOKEN (ignored by Git). Apply D1 migrations locally before development. Cloudflare deployment requires Wrangler login, remote migrations, and `wrangler deploy` from backend.
 
-iOS: `cd ios`, `xcodegen generate`, then open `Newswire.xcodeproj`. Build with Xcode beta. Configure the HTTPS backend URL and reader token in the app. Physical-device signing and distribution are separate from Simulator validation.
+iOS: `cd ios`, `xcodegen generate`, then open `Newswire.xcodeproj`. Build with Xcode beta. Configure the HTTPS backend URL in the app. Physical-device signing and distribution are separate from Simulator validation.
 
 ## CI and TestFlight
 

@@ -110,7 +110,7 @@ nonisolated enum WireError: LocalizedError {
     case configuration, response, status(Int)
     var errorDescription: String? {
         switch self {
-        case .configuration: "Enter an HTTPS server URL and reader token in Settings."
+        case .configuration: "Enter an HTTPS server URL in Settings."
         case .response: "The server returned an unreadable response."
         case .status(let code): "Server request failed (\(code)). Try again."
         }
@@ -119,7 +119,6 @@ nonisolated enum WireError: LocalizedError {
 
 nonisolated struct NewswireAPI: Sendable {
     let baseURL: URL
-    let token: String
 
     static func validatedURL(_ text: String) -> URL? {
         guard let parts = URLComponents(string: text.trimmingCharacters(in: .whitespacesAndNewlines)),
@@ -155,6 +154,20 @@ nonisolated struct NewswireAPI: Sendable {
         return decoder
     }
 
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        var result = try await sendOnce(request, refresh: false)
+        if result.1.statusCode == 401 { result = try await sendOnce(request, refresh: true) }
+        return result
+    }
+
+    private func sendOnce(_ request: URLRequest, refresh: Bool) async throws -> (Data, HTTPURLResponse) {
+        var request = request
+        request.setValue("Bearer \(try await Attestation.shared.token(for: baseURL, refresh: refresh))", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await Self.session.data(for: request)
+        guard let response = response as? HTTPURLResponse else { throw WireError.response }
+        return (data, response)
+    }
+
     /// Runs on the concurrent pool so the network wait, JSON parsing and date decoding never touch the main thread.
     @concurrent func page(mode: FeedMode = .wire, cursor: String? = nil, limit: Int = 50, category: String, query: String, filters: [WireFilter] = []) async throws -> StoryPage {
         var components = URLComponents(url: baseURL.appending(path: mode.path), resolvingAgainstBaseURL: false)
@@ -166,10 +179,8 @@ nonisolated struct NewswireAPI: Sendable {
         components?.queryItems = items
         guard let url = components?.url else { throw WireError.configuration }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        let (data, response) = try await Self.session.data(for: request)
-        guard let response = response as? HTTPURLResponse else { throw WireError.response }
+        let (data, response) = try await send(request)
         guard (200..<300).contains(response.statusCode) else {
             if let error = try? Self.decoder().decode(APIError.self, from: data) { throw error }
             throw WireError.status(response.statusCode)
@@ -182,11 +193,9 @@ nonisolated struct NewswireAPI: Sendable {
     func brain(_ story: Story, action: String, body: [String: String] = [:]) async throws -> Story? {
         var request = URLRequest(url: baseURL.appending(path: "v1/brain/stories/\(story.id)/\(action)"), timeoutInterval: 20)
         request.httpMethod = "POST"
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(body)
-        let (data, response) = try await Self.session.data(for: request)
-        guard let response = response as? HTTPURLResponse else { throw WireError.response }
+        let (data, response) = try await send(request)
         guard (200..<300).contains(response.statusCode) else { throw WireError.status(response.statusCode) }
         return try? Self.decoder().decode(StoryEnvelope.self, from: data).story
     }
@@ -194,11 +203,9 @@ nonisolated struct NewswireAPI: Sendable {
     func register(device: String, environment: String) async throws {
         var request = URLRequest(url: baseURL.appending(path: "v1/devices"), timeoutInterval: 20)
         request.httpMethod = "POST"
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(["token": device, "environment": environment])
-        let (_, response) = try await Self.session.data(for: request)
-        guard let response = response as? HTTPURLResponse else { throw WireError.response }
+        let (_, response) = try await send(request)
         guard (200..<300).contains(response.statusCode) else { throw WireError.status(response.statusCode) }
     }
 }

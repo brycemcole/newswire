@@ -129,7 +129,7 @@ struct FeedView: View {
                     .listRowSeparator(.hidden)
                     .listRowBackground(Color.clear)
                     if !store.configured && store.stories.isEmpty {
-                        state("CONNECT YOUR WIRE", message: "Add your HTTPS server URL and reader token to start reading.", icon: "antenna.radiowaves.left.and.right.slash")
+                        state("CONNECT YOUR WIRE", message: "Add your HTTPS server URL to start reading.", icon: "antenna.radiowaves.left.and.right.slash")
                         Button("Open settings") { settings = true }
                     } else if !store.restored {
                         // The cache is read off the main thread in a few milliseconds; show nothing rather than flash a placeholder.
@@ -224,7 +224,7 @@ struct FeedView: View {
                     markets = false
                 }
             }
-            .task(id: store.mode.rawValue + "|" + store.category + "|" + search + "|" + store.filters.map(\.id).joined(separator: "|") + "|" + store.serverURL + "|" + store.token) {
+            .task(id: store.mode.rawValue + "|" + store.category + "|" + search + "|" + store.filters.map(\.id).joined(separator: "|") + "|" + store.serverURL) {
                 store.query = search.trimmingCharacters(in: .whitespacesAndNewlines)
                 store.reset()
                 // Debounce typing only; category and filter taps load immediately.
@@ -841,7 +841,6 @@ struct SettingsView: View {
     @Namespace private var accentNamespace
     let store: FeedStore
     @State private var url = ""
-    @State private var token = ""
     @State private var error: String?
     var body: some View {
         NavigationStack {
@@ -879,11 +878,9 @@ struct SettingsView: View {
                 }
                 Section("Connection") {
                     TextField("https://your-server", text: $url).keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    SecureField("Reader token", text: $token).textInputAutocapitalization(.never).autocorrectionDisabled().privacySensitive()
                 }
                 Section {
-                    Text("Use a reader token. It is stored in the Keychain on this device. The wire checks for updates every 30 seconds while foregrounded.")
-                    Text("The Newswire server is preconfigured. Add your reader token to connect.")
+                    Text("This device proves itself to the server with a key held in its Secure Enclave, so there is no password or token to enter. The wire checks for updates every 30 seconds while foregrounded.")
                 }.font(.footnote).foregroundStyle(.secondary)
                 if let error { Text(error).foregroundStyle(.red) }
             }
@@ -893,22 +890,17 @@ struct SettingsView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
                         let cleanURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
-                        let cleanToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
                         guard cleanURL.isEmpty || NewswireAPI.validatedURL(cleanURL) != nil else {
                             error = "Use an HTTPS URL without credentials, query, or fragment."
                             return
                         }
-                        do {
-                            try ReaderKeychain.save(cleanToken)
-                            store.serverURL = cleanURL
-                            store.token = cleanToken
-                            UserDefaults.standard.set(cleanURL, forKey: "serverURL")
-                            UIApplication.shared.registerForRemoteNotifications()
-                            dismiss()
-                        } catch { self.error = error.localizedDescription }
+                        store.serverURL = cleanURL
+                        UserDefaults.standard.set(cleanURL, forKey: "serverURL")
+                        UIApplication.shared.registerForRemoteNotifications()
+                        dismiss()
                     }
                 }
-            }.onAppear { url = store.serverURL; token = store.token }
+            }.onAppear { url = store.serverURL }
         }
     }
 }

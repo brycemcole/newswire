@@ -5,42 +5,6 @@ import Security
 import SwiftUI
 import UIKit
 
-enum ReaderKeychain {
-    static var query: [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword,
-         kSecAttrService as String: "com.brycecole.newswire",
-         kSecAttrAccount as String: "reader"]
-    }
-
-    static func read() -> String {
-        var query = query
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data else { return "" }
-        return String(decoding: data, as: UTF8.self)
-    }
-
-    static func save(_ token: String) throws {
-        if token.isEmpty {
-            let status = SecItemDelete(query as CFDictionary)
-            guard status == errSecSuccess || status == errSecItemNotFound else { throw KeychainError() }
-            return
-        }
-        let attributes: [String: Any] = [kSecValueData as String: Data(token.utf8),
-                                       kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly]
-        let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-        if status == errSecItemNotFound {
-            guard SecItemAdd(query.merging(attributes) { _, new in new } as CFDictionary, nil) == errSecSuccess else { throw KeychainError() }
-        } else if status != errSecSuccess { throw KeychainError() }
-    }
-
-    struct KeychainError: LocalizedError {
-        var errorDescription: String? { "Could not save the reader token securely. Please try again." }
-    }
-}
-
 @Observable final class FeedStore {
     static let shared = FeedStore()
     static let refreshTaskID = "com.brycecole.newswire.refresh"
@@ -55,7 +19,6 @@ enum ReaderKeychain {
     var error: String?
     var lastUpdated: Date?
     var serverURL = UserDefaults.standard.string(forKey: "serverURL") ?? "https://bryce-newswire.bryce-e19.workers.dev"
-    var token = ReaderKeychain.read()
     var mode = FeedMode(rawValue: UserDefaults.standard.string(forKey: "feedMode") ?? "") ?? .wire {
         didSet { UserDefaults.standard.set(mode.rawValue, forKey: "feedMode") }
     }
@@ -97,20 +60,13 @@ enum ReaderKeychain {
     }
 
     init() {
+        AttestKeychain.removeLegacyReaderToken()
         #if DEBUG && targetEnvironment(simulator)
         let environment = ProcessInfo.processInfo.environment
         if let url = environment["NEWSWIRE_TEST_URL"],
            NewswireAPI.validatedURL(url) != nil {
             serverURL = url
             UserDefaults.standard.set(url, forKey: "serverURL")
-        }
-        if let reader = environment["NEWSWIRE_TEST_READER_TOKEN"] {
-            do {
-                try ReaderKeychain.save(reader)
-                token = reader
-            } catch {
-                self.error = "Could not save the test reader token in Keychain."
-            }
         }
         #endif
         displayedKey = cacheKey
@@ -221,7 +177,7 @@ enum ReaderKeychain {
         Self.scheduleRefresh()
         await ready()
         guard configured, let baseURL = NewswireAPI.validatedURL(serverURL) else { return }
-        let api = NewswireAPI(baseURL: baseURL, token: token)
+        let api = NewswireAPI(baseURL: baseURL)
         let active = UIApplication.shared.applicationState == .active
         let others = FeedMode.allCases.map { ($0, Self.key(mode: $0, serverURL: serverURL)) }.filter { $0.1 != cacheKey }
         async let visible = self.sync(active ? .merge : .replace, quiet: true)
@@ -274,7 +230,7 @@ enum ReaderKeychain {
             return
         }
         if configured, let baseURL = NewswireAPI.validatedURL(serverURL),
-           let page = try? await NewswireAPI(baseURL: baseURL, token: token).page(mode: feed, category: "", query: ""),
+           let page = try? await NewswireAPI(baseURL: baseURL).page(mode: feed, category: "", query: ""),
            let story = find(page.stories) {
             path = [story]
         } else if let fallback {
@@ -282,7 +238,7 @@ enum ReaderKeychain {
         }
     }
 
-    var configured: Bool { NewswireAPI.validatedURL(serverURL) != nil && !token.isEmpty }
+    var configured: Bool { NewswireAPI.validatedURL(serverURL) != nil }
 
     func apply(_ filter: WireFilter) {
         if case .category(let value) = filter {
@@ -334,7 +290,7 @@ enum ReaderKeychain {
         loading = true
         defer { if generation == current { loading = false } }
         do {
-            let page = try await first(NewswireAPI(baseURL: baseURL, token: token), limit: replacing ? 100 : 50)
+            let page = try await first(NewswireAPI(baseURL: baseURL), limit: replacing ? 100 : 50)
             try Task.checkCancellation()
             guard generation == current else { return false }
             if replacing {
@@ -397,7 +353,7 @@ enum ReaderKeychain {
         let current = generation
         loadingOlder = true
         defer { if generation == current { loadingOlder = false } }
-        guard let page = try? await NewswireAPI(baseURL: baseURL, token: token).page(mode: mode, cursor: cursor, category: category, query: query, filters: filters),
+        guard let page = try? await NewswireAPI(baseURL: baseURL).page(mode: mode, cursor: cursor, category: category, query: query, filters: filters),
               generation == current, self.cursor == cursor else { return }
         let before = stories.count
         let ids = Set(stories.map(\.id))
@@ -434,7 +390,7 @@ enum ReaderKeychain {
 
     func brain(_ story: Story, action: String, body: [String: String] = [:]) async -> Story? {
         guard configured, let baseURL = NewswireAPI.validatedURL(serverURL) else { return nil }
-        guard let updated = try? await NewswireAPI(baseURL: baseURL, token: token).brain(story, action: action, body: body) else { return nil }
+        guard let updated = try? await NewswireAPI(baseURL: baseURL).brain(story, action: action, body: body) else { return nil }
         if let index = stories.firstIndex(where: { $0.id == updated.id }) {
             stories[index] = updated
             remember()

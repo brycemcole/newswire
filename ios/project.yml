@@ -23,6 +23,7 @@ targets:
       path: Newswire.entitlements
       properties:
         aps-environment: development
+        com.apple.developer.devicecheck.appattest-environment: development
     info:
       path: Info.plist
       properties:

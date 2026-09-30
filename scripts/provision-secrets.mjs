@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const backend = fileURLToPath(new URL('../backend/', import.meta.url));
-for (const [name, account] of [['READER_TOKEN', 'reader'], ['WRITER_TOKEN', 'writer']]) {
+for (const [name, account] of [['WRITER_TOKEN', 'writer']]) {
   const service = 'com.brycecole.newswire';
   const existing = spawnSync('security', ['find-generic-password', '-s', service, '-a', account, '-w'], { encoding: 'utf8' });
   const token = existing.status === 0 ? existing.stdout.trim() : randomBytes(32).toString('hex');

@@ -2,7 +2,7 @@
 
 Use Node 22 or newer. Run `npm ci`, `npm run typecheck`, and `npm test`. Tests bundle the Worker and use isolated local Miniflare D1 databases with the checked-in migration. No Cloudflare account or remote resources are used.
 
-For local development, put distinct `READER_TOKEN` and `WRITER_TOKEN` values in ignored `.dev.vars`, apply the migration with `npx wrangler d1 migrations apply bryce-newswire --local`, then run `npm run dev`. Both secrets must be present and distinct or API access returns 503. Production secrets must be configured separately before use.
+For local development, put a `WRITER_TOKEN` value in ignored `.dev.vars`, apply the migration with `npx wrangler d1 migrations apply bryce-newswire --local`, then run `npm run dev`. Without it API access returns 503. Production secrets must be configured separately before use.
 
 `wrangler.jsonc` targets the existing account/database and serves `../web` through ASSETS. Worker-first routing ensures API paths cannot fall through to static assets. Request observability and invocation logs are disabled. All responses use no-store and security headers; requests and errors are never logged by the Worker.
 

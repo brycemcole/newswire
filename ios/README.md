@@ -2,7 +2,7 @@
 
 SwiftUI reader for `../API.md`. iOS 26+, Swift 6 with approachable concurrency and main actor isolation. `project.yml` is authoritative; regenerate with `xcodegen generate`.
 
-The HTTPS server URL defaults to `https://bryce-newswire.bryce-e19.workers.dev`. Configure a reader token in Settings. Tokens are stored in device-only Keychain, never UserDefaults. Only authenticated story GET requests are issued. Redirects are rejected; network responses use an ephemeral session. No writer secret or synthetic market data is included.
+The HTTPS server URL defaults to `https://bryce-newswire.bryce-e19.workers.dev`. There is no token to enter: the app creates an App Attest key in the Secure Enclave, the server verifies Apple's attestation, and the app holds the resulting 7-day session token in device-only Keychain (renewed silently with a signed assertion), never UserDefaults. App Attest needs a physical device. Only authenticated story GET requests are issued. Redirects are rejected; network responses use an ephemeral session. No writer secret or synthetic market data is included.
 
 Foreground polling runs approximately every 30 seconds and pauses during filter debounce. Polling and pull refresh stage newer stories behind a banner without changing the visible rows. Selecting the banner returns to the newest page; older pages load as the footer appears, with Load Older available for retry. Failed requests retain the currently loaded stories in memory; cached pages restore immediately on launch.
 
@@ -20,7 +20,7 @@ DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer xcodebuild -projec
 DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer xcodebuild -project Newswire.xcodeproj -scheme Newswire -destination 'platform=iOS Simulator,id=DAA72EBB-037D-4E20-A661-9C9D969194D0' -derivedDataPath .build CODE_SIGNING_ALLOWED=NO test
 ```
 
-For Debug Simulator builds only, process environment variables `NEWSWIRE_TEST_URL` and `NEWSWIRE_TEST_READER_TOKEN` optionally configure the connection at launch. The URL must pass HTTPS validation. The token is written to Keychain and remains available on subsequent launches without the environment override. Values are never logged. When launching through simctl, supply the corresponding `SIMCTL_CHILD_` prefixed environment variables from your existing secret environment; do not put secrets in files, schemes, or shell history. Release and physical-device builds ignore these overrides.
+For Debug Simulator builds only, process environment variables `NEWSWIRE_TEST_URL` and `NEWSWIRE_TEST_TOKEN` (any accepted bearer token, since the Simulator cannot attest) optionally configure the connection at launch. The URL must pass HTTPS validation. Neither is persisted; supply them on every launch. Values are never logged. When launching through simctl, supply the corresponding `SIMCTL_CHILD_` prefixed environment variables from your existing secret environment; do not put secrets in files, schemes, or shell history. Release and physical-device builds ignore these overrides.
 
 Live pipeline, visual acceptance, signing, and physical-device deployment are separate from the no-sign build and contract tests.
 

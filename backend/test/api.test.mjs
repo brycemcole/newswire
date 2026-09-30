@@ -1,13 +1,14 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { build } from 'esbuild';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 
 let mf;
 let script;
 const base = { external_id: 'example', title: 'A factual headline', source: 'Source', url: 'https://example.com/story', published_at: '2026-01-01T12:00:00Z' };
-const options = (bindings = { READER_TOKEN: 'reader', WRITER_TOKEN: 'writer' }) => convertV4MiniflareOptions({ workers: [{ name: 'test', modules: true, script, compatibilityDate: '2026-09-06', d1Databases: ['DB'], bindings, serviceBindings: { ASSETS: () => new Response('static shell') } }] });
+const options = (bindings = { WRITER_TOKEN: 'writer' }) => convertV4MiniflareOptions({ workers: [{ name: 'test', modules: true, script, compatibilityDate: '2026-09-06', d1Databases: ['DB'], bindings, serviceBindings: { ASSETS: () => new Response('static shell') } }] });
 const request = (path, token = 'reader', init = {}) => mf.dispatchFetch(`https://newswire.test${path}`, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...init.headers } });
 const post = (data, token = 'writer') => request('/v1/stories', token, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
 before(async () => {
@@ -18,17 +19,22 @@ before(async () => {
     const migration = await readFile(new URL(`../migrations/${file}`, import.meta.url), 'utf8');
     await db.batch(migration.split(';').filter(s => s.trim()).map(s => db.prepare(s)));
   }
+  await db.batch([
+    db.prepare("INSERT INTO attested_devices (key_id, public_key, created_at, last_seen_at) VALUES ('test', 'x', 'now', 'now')"),
+    db.prepare('INSERT INTO sessions (token_hash, key_id, expires_at) VALUES (?, ?, ?)').bind(createHash('sha256').update('reader').digest('hex'), 'test', Date.now() + 3600000),
+    db.prepare('INSERT INTO sessions (token_hash, key_id, expires_at) VALUES (?, ?, ?)').bind(createHash('sha256').update('expired').digest('hex'), 'test', Date.now() - 1000),
+  ]);
 });
 after(async () => { await mf?.dispose(); });
 
 test('authentication, reader/writer separation, fail closed and public shell', async () => {
   assert.equal((await request('/health', null)).status, 200);
   assert.equal(await (await request('/', null)).text(), 'static shell');
-  for (const token of [null, 'wrong']) assert.equal((await request('/v1/stories', token)).status, 401);
+  for (const token of [null, 'wrong', 'expired']) assert.equal((await request('/v1/stories', token)).status, 401);
   assert.equal((await post(base, 'reader')).status, 403);
   assert.equal((await request('/v1/ingest', 'reader')).status, 403);
   assert.equal((await request('/v1/stories', 'writer')).status, 200);
-  for (const bindings of [{}, { READER_TOKEN: 'reader' }, { WRITER_TOKEN: 'writer' }, { READER_TOKEN: 'same', WRITER_TOKEN: 'same' }]) {
+  for (const bindings of [{}, { WRITER_TOKEN: ' ' }]) {
     const closed = new Miniflare(options(bindings));
     try { assert.equal((await closed.dispatchFetch('https://test/v1/stories', { headers: { Authorization: 'Bearer writer' } })).status, 503); } finally { await closed.dispose(); }
   }
