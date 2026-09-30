@@ -49,6 +49,8 @@ enum MarketRecents {
     var charts: [ChartRange: MarketChart] = [:]
     var summary: QuoteSummary?
     var error: String?
+    var streaming = false
+    private var tick: MarketTick?
 
     init(symbol: String) { self.symbol = symbol }
 
@@ -56,7 +58,8 @@ enum MarketRecents {
 
     func refreshLive() async {
         do {
-            live = try await MarketClient.chart(symbol, range: .day)
+            let chart = try await MarketClient.chart(symbol, range: .day)
+            live = tick.flatMap { chart.applying($0) } ?? chart
             error = nil
         } catch is CancellationError {
         } catch {
@@ -64,11 +67,34 @@ enum MarketRecents {
         }
     }
 
+    func stream() async {
+        var delay = 1.0
+        while !Task.isCancelled {
+            do {
+                for try await tick in MarketStream.ticks(symbol) {
+                    streaming = true
+                    delay = 1
+                    self.tick = tick
+                    if let updated = live?.applying(tick) { live = updated }
+                    if let updated = charts[.week]?.applying(tick, interval: 900) { charts[.week] = updated }
+                    try await Task.sleep(for: .milliseconds(250))
+                }
+            } catch is CancellationError {
+                break
+            } catch {}
+            streaming = false
+            do { try await Task.sleep(for: .seconds(delay)) } catch { break }
+            delay = min(delay * 2, 30)
+        }
+        streaming = false
+    }
+
     func refreshRange() async {
         let range = range
         guard range != .day else { return }
         do {
-            charts[range] = try await MarketClient.chart(symbol, range: range)
+            let chart = try await MarketClient.chart(symbol, range: range)
+            charts[range] = range == .week ? tick.flatMap { chart.applying($0, interval: 900) } ?? chart : chart
         } catch is CancellationError {
         } catch {
             if charts[range] == nil { self.error = error.localizedDescription }
@@ -115,7 +141,12 @@ struct QuoteDetail: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 VStack(alignment: .leading, spacing: 8) {
-                    tagLine
+                    HStack {
+                        tagLine
+                        Spacer()
+                        if model.streaming { liveBadge.transition(.opacity) }
+                    }
+                    .animation(.easeOut(duration: 0.2), value: model.streaming)
                     if let chart = model.chart {
                         QuoteHeader(chart: chart, live: model.live, range: model.range, scrub: scrub)
                     }
@@ -167,6 +198,10 @@ struct QuoteDetail: View {
                 do { try await Task.sleep(for: .seconds(15)) } catch { return }
             }
         }
+        .task(id: phase == .active) {
+            guard phase == .active else { return }
+            await model.stream()
+        }
         .task(id: "\(model.range.rawValue)|\(phase == .active)") {
             guard model.range != .day, phase == .active else { return }
             while !Task.isCancelled {
@@ -180,7 +215,7 @@ struct QuoteDetail: View {
     private var hero: some View {
         Group {
             if let chart = model.chart {
-                PriceChart(chart: chart, range: model.range, scrub: scrub)
+                PriceChart(chart: chart, range: model.range, live: model.streaming && model.range == .day, scrub: scrub)
                     .id(model.range)
                     .transition(.opacity)
             } else if let error = model.error {
@@ -221,6 +256,19 @@ struct QuoteDetail: View {
             .glassEffect(.regular, in: .capsule)
         }
         .sensoryFeedback(.selection, trigger: model.range)
+    }
+
+    private var liveBadge: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "circle.fill")
+                .font(.system(size: 6))
+                .foregroundStyle(.green)
+                .symbolEffect(.pulse, options: .repeating, isActive: !reduceMotion)
+            Text("LIVE")
+        }
+        .font(.system(.caption, design: .monospaced).weight(.semibold))
+        .foregroundStyle(.secondary)
+        .accessibilityLabel("Streaming live prices")
     }
 
     private var tagLine: some View {
@@ -942,6 +990,7 @@ private extension ChartRange {
 private struct PriceChart: View {
     let chart: MarketChart
     let range: ChartRange
+    let live: Bool
     let scrub: Scrub
 
     var body: some View {
@@ -970,6 +1019,11 @@ private struct PriceChart: View {
                         .foregroundStyle(tint)
                         .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                 }
+            }
+            if live, scrub.index == nil, let last = points.last {
+                PointMark(x: .value("Time", last.id), y: .value("Price", last.close))
+                    .symbolSize(40)
+                    .foregroundStyle(tint)
             }
             if range == .day, let reference {
                 RuleMark(y: .value("Previous close", reference))

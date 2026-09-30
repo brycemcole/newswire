@@ -287,6 +287,14 @@ struct FeedView: View {
             default: break
             }
         }
+        #if DEBUG
+        .task {
+            if let index = CommandLine.arguments.firstIndex(of: "-quote"), let symbol = CommandLine.arguments.dropFirst(index + 1).first {
+                try? await Task.sleep(for: .seconds(1))
+                quoteRoute = MarketSymbol(id: symbol)
+            }
+        }
+        #endif
         .onChange(of: watchlistExpanded) { _, value in UserDefaults.standard.set(value, forKey: "watchlistExpanded") }
         .onChange(of: portfolioExpanded) { _, value in UserDefaults.standard.set(value, forKey: "portfolioExpanded") }
     }
