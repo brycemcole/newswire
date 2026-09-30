@@ -6,7 +6,15 @@ import SwiftUI
 
     var body: some Scene {
         WindowGroup {
+            #if DEBUG
+            if let index = CommandLine.arguments.firstIndex(of: "-widgetGallery") {
+                WidgetGallery(page: CommandLine.arguments.dropFirst(index + 1).first ?? "home")
+            } else {
+                FeedView()
+            }
+            #else
             FeedView()
+            #endif
         }
         .backgroundTask(.appRefresh(FeedStore.refreshTaskID)) {
             await FeedStore.shared.backgroundRefresh()
@@ -265,6 +273,28 @@ struct FeedView: View {
             }
         }
         .environment(\.feedStore, store)
+        .onOpenURL { url in
+            guard url.scheme == "newswire" else { return }
+            settings = false
+            markets = false
+            switch url.host() {
+            case "portfolio": portfolio = true
+            case "quote":
+                guard let symbol = url.pathComponents.dropFirst().first else { return }
+                portfolio = false
+                quoteRoute = MarketSymbol(id: symbol)
+            case "story":
+                portfolio = false
+                guard let id = url.pathComponents.dropFirst().first else { return }
+                if let story = store.story(id: id) {
+                    store.path = [story]
+                } else if let link = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "url" })?.value,
+                          let web = URL(string: link), web.scheme == "https" {
+                    UIApplication.shared.open(web)
+                }
+            default: break
+            }
+        }
         .onChange(of: watchlistExpanded) { _, value in UserDefaults.standard.set(value, forKey: "watchlistExpanded") }
         .onChange(of: portfolioExpanded) { _, value in UserDefaults.standard.set(value, forKey: "portfolioExpanded") }
     }

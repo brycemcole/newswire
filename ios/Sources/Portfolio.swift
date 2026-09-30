@@ -1,12 +1,5 @@
 import SwiftUI
 
-enum Money {
-    static func text(_ value: Double) -> String { value.formatted(.currency(code: "USD")) }
-    static func signed(_ value: Double) -> String { (value >= 0 ? "+" : "−") + abs(value).formatted(.currency(code: "USD")) }
-    static func percent(_ value: Double) -> String { (value >= 0 ? "+" : "−") + abs(value).formatted(.percent.precision(.fractionLength(1))) }
-    static func tint(_ value: Double) -> Color { value >= 0 ? .green : .red }
-}
-
 struct PortfolioView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion

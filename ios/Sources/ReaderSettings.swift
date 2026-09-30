@@ -114,6 +114,17 @@ import UIKit
         if saved.count > Self.maxSavedStories { saved = (Self.maxSavedStories, nil) }
         Self.snapshots[cacheKey] = PageSnapshot(stories: Array(stories.prefix(saved.count)), cursor: saved.cursor, fetchedAt: lastUpdated)
         Self.persist()
+        publishWidget()
+    }
+
+    /// The widget always mirrors the unfiltered feed, whatever category or filter is on screen.
+    private func publishWidget() {
+        guard let feed = Self.snapshots[Self.key(mode: mode, serverURL: serverURL)]?.stories else { return }
+        NewsWidgetFeed.publish(feed)
+    }
+
+    func story(id: String) -> Story? {
+        stories.first { $0.id == id } ?? Self.snapshots.values.lazy.compactMap { $0.stories.first { $0.id == id } }.first
     }
 
     @discardableResult private static func persist() -> Task<Void, Never> {
@@ -208,6 +219,7 @@ import UIKit
         let lead = Array(stories.prefix(12))
         await Summarizer.shared.prepare(lead, summarize: false)
         await ThumbnailLoader.shared.prefetch(thumbnailRequests(for: lead))
+        publishWidget()
     }
 
     /// Image sizes each story will be drawn at: a thumbnail always, plus the full-width size when its row shows a large image.

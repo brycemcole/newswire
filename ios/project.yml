@@ -15,18 +15,23 @@ targets:
   Newswire:
     type: application
     platform: iOS
-    sources: [Sources]
+    sources: [Sources, Shared]
     dependencies:
       - framework: Vendor/LinkKit.xcframework
         embed: true
+      - target: NewswireWidgets
     entitlements:
       path: Newswire.entitlements
       properties:
         aps-environment: development
         com.apple.developer.devicecheck.appattest-environment: development
+        com.apple.security.application-groups: [group.com.brycecole.newswire]
     info:
       path: Info.plist
       properties:
+        CFBundleURLTypes:
+          - CFBundleURLName: com.brycecole.newswire
+            CFBundleURLSchemes: [newswire]
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         ITSAppUsesNonExemptEncryption: false
@@ -43,6 +48,27 @@ targets:
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+  NewswireWidgets:
+    type: app-extension
+    platform: iOS
+    sources: [Widget, Shared]
+    entitlements:
+      path: Widget/NewswireWidgets.entitlements
+      properties:
+        com.apple.security.application-groups: [group.com.brycecole.newswire]
+    info:
+      path: Widget/Info.plist
+      properties:
+        CFBundleDisplayName: Newswire
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        DEVELOPMENT_TEAM: A792L5W262
+        PRODUCT_BUNDLE_IDENTIFIER: com.brycecole.newswire.widgets
+        SWIFT_DEFAULT_ACTOR_ISOLATION: nonisolated
   NewswireTests:
     type: bundle.unit-test
     platform: iOS
