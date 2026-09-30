@@ -19,21 +19,22 @@ struct MarketDock: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let stops = Stops(available: proxy.size.height)
-            let height = min(max(stops.height(detent) - drag, Self.peekHeight), stops.height(.large))
+            // The glass runs under the home indicator, so the frame includes the bottom inset and the content is padded back up out of it.
+            let inset = min(proxy.safeAreaInsets.bottom, 34)
+            let stops = Stops(available: proxy.size.height, inset: inset)
+            let height = min(max(stops.height(detent) - drag, stops.height(.peek)), stops.height(.large))
             VStack(spacing: 0) {
                 handle(stops)
                 MarketSearchSheet(detent: $detent, onSelect: onSelect)
             }
+            .padding(.bottom, inset)
             .frame(height: height, alignment: .top)
-            .clipShape(shape)
-            .background(.regularMaterial, in: shape)
-            .overlay(shape.strokeBorder(.separator.opacity(0.5), lineWidth: 0.5))
-            .shadow(color: .black.opacity(0.12), radius: 16, y: -2)
+            .glassEffect(.regular, in: shape)
             .animation(animation, value: detent)
             .simultaneousGesture(dragGesture(stops), including: detent == .peek ? .all : .subviews)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         }
+        .ignoresSafeArea(.container, edges: .bottom)
     }
 
     private func handle(_ stops: Stops) -> some View {
@@ -61,12 +62,14 @@ struct MarketDock: View {
 
     private struct Stops {
         let available: CGFloat
+        let inset: CGFloat
 
         func height(_ detent: DockDetent) -> CGFloat {
+            let peek = MarketDock.peekHeight + inset
             switch detent {
-            case .peek: MarketDock.peekHeight
-            case .medium: max(available * 0.52, MarketDock.peekHeight + 160)
-            case .large: max(available - 8, MarketDock.peekHeight)
+            case .peek: return peek
+            case .medium: return max(available * 0.52, peek + 160)
+            case .large: return max(available - 8, peek)
             }
         }
 
