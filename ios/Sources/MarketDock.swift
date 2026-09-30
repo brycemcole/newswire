@@ -6,32 +6,38 @@ enum DockDetent { case peek, medium, large }
 /// (or tap the search field) to reach indices, movers and earnings from any screen.
 /// It is an overlay, not a system sheet, so alerts, sheets and Safari covers can still present from the screens under it.
 struct MarketDock: View {
-    /// Height of the handle, search bar and the top edge of the index cards. Screens under the dock reserve this much space.
-    static let peekHeight: CGFloat = 144
+    /// Height of the handle, search bar and the top edge of the index cards.
+    static let peekHeight: CGFloat = 160
+    /// Space under the floating dock, measured from the bottom edge of the screen.
+    static let floatGap: CGFloat = 14
+    /// How much room screens under the dock reserve at the bottom (dock top edge, less the home-indicator inset it already sits above).
+    static let clearance: CGFloat = peekHeight + floatGap - 34
 
     @Binding var detent: DockDetent
     let onSelect: (String) -> Void
     @GestureState private var drag: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private let shape = UnevenRoundedRectangle(topLeadingRadius: 28, bottomLeadingRadius: 0, bottomTrailingRadius: 0, topTrailingRadius: 28, style: .continuous)
-    private var animation: Animation { reduceMotion ? .easeOut(duration: 0.15) : .smooth(duration: 0.35) }
+    private let shape = RoundedRectangle(cornerRadius: 34, style: .continuous)
+    private var animation: Animation { reduceMotion ? .easeOut(duration: 0.15) : .spring(duration: 0.45, bounce: 0.22) }
 
     var body: some View {
         GeometryReader { proxy in
-            // The glass runs under the home indicator, so the frame includes the bottom inset and the content is padded back up out of it.
-            let inset = min(proxy.safeAreaInsets.bottom, 34)
-            let stops = Stops(available: proxy.size.height, inset: inset)
-            let height = min(max(stops.height(detent) - drag, stops.height(.peek)), stops.height(.large))
+            // Floats with a rounded bottom, so whatever is under the dock shows around it instead of a glass slab under the home indicator.
+            let stops = Stops(available: proxy.size.height)
+            let height = stops.rubberBanded(stops.height(detent) - drag)
             VStack(spacing: 0) {
                 handle(stops)
                 MarketSearchSheet(detent: $detent, onSelect: onSelect)
             }
-            .padding(.bottom, inset)
             .frame(height: height, alignment: .top)
+            .clipShape(shape)
             .glassEffect(.regular, in: shape)
+            .shadow(color: .black.opacity(0.10), radius: 14, y: 4)
             .animation(animation, value: detent)
             .simultaneousGesture(dragGesture(stops), including: detent == .peek ? .all : .subviews)
+            .padding(.horizontal, 8)
+            .padding(.bottom, Self.floatGap)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         }
         .ignoresSafeArea(.container, edges: .bottom)
@@ -63,15 +69,21 @@ struct MarketDock: View {
 
     private struct Stops {
         let available: CGFloat
-        let inset: CGFloat
 
         func height(_ detent: DockDetent) -> CGFloat {
-            let peek = MarketDock.peekHeight + inset
             switch detent {
-            case .peek: return peek
-            case .medium: return max(available * 0.52, peek + 160)
-            case .large: return max(available - 8, peek)
+            case .peek: MarketDock.peekHeight
+            case .medium: max(available * 0.52, MarketDock.peekHeight + 160)
+            case .large: max(available - MarketDock.floatGap - 8, MarketDock.peekHeight)
             }
+        }
+
+        /// Past either end the dock keeps following the finger, but with resistance, so it feels elastic rather than hitting a wall.
+        func rubberBanded(_ raw: CGFloat) -> CGFloat {
+            let low = height(.peek), high = height(.large)
+            if raw > high { return high + (raw - high) * 0.2 }
+            if raw < low { return low - (low - raw) * 0.2 }
+            return raw
         }
 
         func nearest(to target: CGFloat) -> DockDetent {
@@ -83,6 +95,6 @@ struct MarketDock: View {
 extension View {
     /// Keeps content clear of the dock's resting search bar.
     func dockClearance() -> some View {
-        safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: MarketDock.peekHeight) }
+        safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: MarketDock.clearance) }
     }
 }

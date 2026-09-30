@@ -784,7 +784,7 @@ struct StoryDetail: View {
                     .tint(Color.wireAccent)
                     .padding(.vertical, 8)
                 }
-                Color.clear.frame(height: MarketDock.peekHeight)
+                Color.clear.frame(height: MarketDock.clearance)
             }
         }
         .navigationTitle("STORY").navigationBarTitleDisplayMode(.inline)
