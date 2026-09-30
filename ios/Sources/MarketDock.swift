@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 enum DockDetent { case peek, medium, large }
 
@@ -15,32 +16,46 @@ struct MarketDock: View {
 
     @Binding var detent: DockDetent
     let onSelect: (String) -> Void
-    @GestureState private var drag: CGFloat = 0
+    @State private var drag: CGFloat = 0
+    @State private var keyboard: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private let shape = RoundedRectangle(cornerRadius: 34, style: .continuous)
-    private var animation: Animation { reduceMotion ? .easeOut(duration: 0.15) : .spring(duration: 0.45, bounce: 0.22) }
+    private let radius: CGFloat = 34
+    private var animation: Animation { reduceMotion ? .easeOut(duration: 0.15) : .spring(duration: 0.4, bounce: 0.05) }
 
     var body: some View {
         GeometryReader { proxy in
-            // Floats with a rounded bottom, so whatever is under the dock shows around it instead of a glass slab under the home indicator.
             let stops = Stops(available: proxy.size.height)
             let height = stops.rubberBanded(stops.height(detent) - drag)
+            // 0 while resting (a floating card), 1 once expanded (docked to the bottom and sides, filling the home-indicator area).
+            let docked = min(max((height - stops.height(.peek)) / (stops.height(.medium) - stops.height(.peek)), 0), 1)
+            let inset = min(proxy.safeAreaInsets.bottom, 34) * docked
+            // Bottom corners follow the display's own curve (concentric with it, whatever the inset), so they match the device.
+            let shape = ConcentricRectangle(topLeadingCorner: .fixed(radius), topTrailingCorner: .fixed(radius),
+                                            bottomLeadingCorner: .concentric(minimum: 20), bottomTrailingCorner: .concentric(minimum: 20))
             VStack(spacing: 0) {
                 handle(stops)
                 MarketSearchSheet(detent: $detent, onSelect: onSelect)
             }
-            .frame(height: height, alignment: .top)
+            .padding(.bottom, max(inset, keyboard))
+            .frame(height: height + Self.floatGap * docked, alignment: .top)
             .clipShape(shape)
             .glassEffect(.regular, in: shape)
             .shadow(color: .black.opacity(0.10), radius: 14, y: 4)
             .animation(animation, value: detent)
             .simultaneousGesture(dragGesture(stops), including: detent == .peek ? .all : .subviews)
-            .padding(.horizontal, 8)
-            .padding(.bottom, Self.floatGap)
+            .padding(.horizontal, 8 * (1 - docked))
+            .padding(.bottom, Self.floatGap * (1 - docked))
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         }
-        .ignoresSafeArea(.container, edges: .bottom)
+        // The keyboard must not resize the dock: the frame would change under the drag and while it dismisses, which is what made collapsing judder.
+        // Instead the frame ignores it and the content is padded up by the keyboard's height.
+        .ignoresSafeArea(.all, edges: .bottom)
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
+            guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+            let hidden = frame.minY >= UIScreen.main.bounds.height
+            withAnimation(.easeOut(duration: 0.25)) { keyboard = hidden ? 0 : frame.height }
+        }
     }
 
     private func handle(_ stops: Stops) -> some View {
@@ -60,10 +75,14 @@ struct MarketDock: View {
     private func dragGesture(_ stops: Stops) -> some Gesture {
         // Global space: the dock resizes under the finger, so a local translation would feed back into itself and jitter.
         DragGesture(minimumDistance: 8, coordinateSpace: .global)
-            .updating($drag) { value, state, _ in state = value.translation.height }
+            .onChanged { drag = $0.translation.height }
             .onEnded { value in
                 let target = stops.height(detent) - value.predictedEndTranslation.height
-                withAnimation(animation) { detent = stops.nearest(to: target) }
+                // The drag offset is released in the same animation as the detent change, so the two never play as separate motions.
+                withAnimation(animation) {
+                    detent = stops.nearest(to: target)
+                    drag = 0
+                }
             }
     }
 
