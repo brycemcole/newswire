@@ -2,82 +2,164 @@ import SwiftUI
 
 struct PortfolioView: View {
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var store = PortfolioStore.shared
     @State private var editingKeys = false
     @State private var removing: PlaidItem?
 
-    private var groups: [(symbol: String, positions: [Position])] {
-        Dictionary(grouping: store.snapshot.positions, by: \.symbol)
-            .map { ($0.key, $0.value) }
-            .sorted { $0.symbol < $1.symbol }
+    @State private var account: PortfolioAccount.ID?
+    @State private var search = ""
+    @AppStorage("portfolioHoldingsSort") private var sort = PortfolioHolding.Sort.value
+    @State private var showingPaper = false
+    @State private var managingAccounts = false
+
+    init() {
+        #if DEBUG
+        if CommandLine.arguments.contains("-portfolioSelfDirected") {
+            _account = State(initialValue: PortfolioAccount.group(PortfolioStore.shared.snapshot).first { $0.institution == "SoFi" && $0.name.contains("Self-directed") }?.id)
+        }
+        if CommandLine.arguments.contains("-portfolioAccount") {
+            _account = State(initialValue: PortfolioAccount.ID(item: "fidelity", name: "ira"))
+        }
+        if CommandLine.arguments.contains("-portfolioSearch") {
+            _search = State(initialValue: "NVDA")
+        }
+        #endif
+    }
+
+    private var hasPortfolio: Bool { !accounts.isEmpty || store.snapshot.cash != 0 }
+
+    private var accounts: [PortfolioAccount] { PortfolioAccount.group(store.snapshot) }
+    private var selectedPositions: [Position] {
+        guard let account else { return store.snapshot.positions }
+        return accounts.first { $0.id == account }?.positions ?? []
+    }
+    private var overviewSnapshot: PortfolioSnapshot {
+        guard let account, let entry = accounts.first(where: { $0.id == account }) else { return store.snapshot }
+        let balances = store.snapshot.accountBalances?.filter { $0.itemID == account.item && $0.accountID == account.name }
+        let residual = entry.reportedValue.map { $0 - entry.positions.compactMap(\.value).reduce(0, +) }
+        return PortfolioSnapshot(positions: entry.positions, cashByItem: residual.map { [account.item: $0] } ?? [:],
+                                 updated: store.snapshot.updated, costMethodVersion: store.snapshot.costMethodVersion, accountBalances: balances, histories: store.snapshot.histories)
+    }
+
+    private var holdings: [PortfolioHolding] {
+        PortfolioHolding.group(selectedPositions, search: search, sort: sort)
     }
 
     var body: some View {
         NavigationStack {
             List {
-                if !store.credentials.isComplete {
+                if !store.credentials.isComplete && !hasPortfolio {
                     Section {
                         Button { editingKeys = true } label: { Label("Add Plaid Keys", systemImage: "key") }
                     } footer: {
                         Text("Enter your Plaid client ID and secret once. They sync through iCloud Keychain.")
                     }
-                } else if store.activeItems.isEmpty {
+                } else if store.activeItems.isEmpty && !hasPortfolio {
                     Section {
                         connectButton
                     } footer: {
                         Text("Sign in to Fidelity, SoFi, or another brokerage through Plaid. Newswire reads positions only.")
                     }
-                } else if groups.isEmpty {
-                    Section { Text(store.syncing ? "Syncing…" : "No holdings").foregroundStyle(.secondary) }
-                } else {
-                    Section { summary }
                 }
-                ForEach(groups, id: \.symbol) { group in
+                if hasPortfolio {
                     Section {
-                        ForEach(group.positions) { position in
-                            NavigationLink(value: MarketSymbol(id: group.symbol)) { PositionRow(position: position) }
+                        Menu {
+                            Button("All accounts") { account = nil }
+                            ForEach(accounts) { entry in
+                                Button("\(entry.institution) · \(entry.name)") { account = entry.id }
+                            }
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(account.flatMap { id in accounts.first { $0.id == id }?.institution } ?? "All accounts")
+                                        .font(.headline).foregroundStyle(.primary)
+                                    Text(account.flatMap { id in accounts.first { $0.id == id }?.name } ?? "\(accounts.count) accounts · \(store.snapshot.positions.count) positions")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.up.chevron.down").font(.caption.weight(.semibold))
+                            }
+                        }
+                        .accessibilityLabel("Filter holdings by account")
+
+                    }
+                    Section {
+                        PortfolioOverview(snapshot: overviewSnapshot, title: account == nil ? "All accounts" : accounts.first { $0.id == account }?.institution ?? "Account", accounts: account.flatMap { id in accounts.first { $0.id == id }.map { [$0] } } ?? accounts)
+                            .id(account)
+                    }
+                    .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+                    Section {
+                        ForEach(holdings) { holding in
+                            PortfolioHoldingRow(holding: holding)
+                        }
+                        if holdings.isEmpty {
+                            ContentUnavailableView.search(text: search)
                         }
                     } header: {
-                        NavigationLink(value: MarketSymbol(id: group.symbol)) {
-                            HStack(spacing: 4) {
-                                Text(group.symbol).font(.headline).foregroundStyle(.primary)
-                                Image(systemName: "chevron.forward").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
-                            }
+                        HStack {
+                            Text("Holdings · \(holdings.count)")
+                            Spacer()
+                            Menu {
+                                Picker("Sort holdings", selection: $sort) {
+                                    ForEach(PortfolioHolding.Sort.allCases) { Text($0.rawValue).tag($0) }
+                                }
+                            } label: { Label(sort.rawValue, systemImage: "arrow.up.arrow.down") }
+                            .textCase(nil)
                         }
-                        .buttonStyle(.plain)
-                        .textCase(nil)
+                    } footer: {
+                        Text("Tap a holding for positions by account. Partial unrealized gain excludes missing costs; ≈ indicates an estimate from trade history.")
+                    }
+                } else if !store.activeItems.isEmpty {
+                    Section { Text(store.syncing ? "Syncing…" : "No holdings").foregroundStyle(.secondary) }
+                }
+                if account != nil {
+                    Section {
+                        DisclosureGroup("Position totals") {
+                            LabeledContent("Holdings value", value: Money.text(selectedPositions.compactMap(\.value).reduce(0, +))).monospacedDigit()
+                            PortfolioGainSummary(positions: selectedPositions)
+                        }
                     }
                 }
+                if !PaperPortfolio.shared.trades.isEmpty {
+                    Section {
+                        Toggle("Show paper trades", isOn: $showingPaper)
+                    }
+                    if showingPaper { PaperTradesSection() }
+                }
                 if store.credentials.isComplete && !store.activeItems.isEmpty {
-                    Section("Accounts") {
-                        ForEach(store.activeItems) { item in
-                            VStack(alignment: .leading, spacing: 2) {
-                                HStack {
-                                    Text(item.institution)
-                                    Spacer()
-                                    if store.needsRelink.contains(item.id) {
-                                        Button("Sign In") { Task { await store.connect(updating: item) } }
-                                            .buttonStyle(.borderless)
+                    Section {
+                        DisclosureGroup("Manage brokerages", isExpanded: $managingAccounts) {
+                            ForEach(store.activeItems) { item in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack {
+                                        Text(item.institution)
+                                        Spacer()
+                                        if store.needsRelink.contains(item.id) {
+                                            Button("Sign In") { Task { await store.connect(updating: item) } }
+                                                .buttonStyle(.borderless)
+                                        }
+                                        Button(role: .destructive) { removing = item } label: { Image(systemName: "minus.circle") }
+                                            .buttonStyle(.borderless).accessibilityLabel("Remove \(item.institution)")
+                                    }
+                                    if let error = store.itemErrors[item.id] {
+                                        Text(error).font(.footnote).foregroundStyle(.red)
                                     }
                                 }
-                                if let error = store.itemErrors[item.id] {
-                                    Text(error).font(.footnote).foregroundStyle(.red)
-                                }
                             }
-                            .swipeActions {
-                                Button("Remove", role: .destructive) { removing = item }
-                            }
+                            connectButton
                         }
-                        connectButton
                     }
                 }
                 if let error = store.error {
                     Section { Text(error).foregroundStyle(.red) }
                 }
             }
+            .listSectionSpacing(12)
             .scrollEdgeEffectStyle(.soft, for: .all)
-            .animation(reduceMotion ? .easeOut(duration: 0.15) : .smooth(duration: 0.3), value: store.snapshot.positions)
+            .searchable(text: $search, prompt: "Find a symbol or company")
+            .onChange(of: accounts.map(\.id)) { _, ids in
+                if let account, !ids.contains(account) { self.account = nil }
+            }
             .refreshable { await store.sync() }
             .navigationTitle("Portfolio")
             .navigationSubtitle(subtitle)
@@ -100,32 +182,16 @@ struct PortfolioView: View {
                 Text("Newswire stops syncing this account. Plaid does not refund the connection.")
             }
             .task {
+                #if DEBUG
+                if CommandLine.arguments.contains("-portfolioPreview") || CommandLine.arguments.contains("-portfolioAudit") { return }
+                #endif
                 store.reloadFromKeychain()
-                if (store.snapshot.updated ?? .distantPast).timeIntervalSinceNow < -300 { await store.sync() }
+                if store.snapshot.accountBalances == nil || store.snapshot.histories == nil || store.snapshot.histories?.contains(where: { $0.cashSecurityIDs == nil }) == true || store.snapshot.costMethodVersion != 2 || (store.snapshot.updated ?? .distantPast).timeIntervalSinceNow < -300 { await store.sync() }
             }
             .onOpenURL { url in
                 if url.path.hasPrefix("/plaid") { store.resume(from: url) }
             }
         }
-    }
-
-    private var summary: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(Money.text(store.snapshot.totalValue))
-                .font(.largeTitle.weight(.semibold).monospacedDigit())
-                .contentTransition(.numericText())
-            HStack(spacing: 10) {
-                if let gain = store.snapshot.totalGain {
-                    Text("\(Money.signed(gain)) total").foregroundStyle(Money.tint(gain))
-                }
-                if store.snapshot.cash != 0 {
-                    Text("\(Money.text(store.snapshot.cash)) cash").foregroundStyle(.secondary)
-                }
-            }
-            .font(.subheadline.weight(.medium).monospacedDigit())
-        }
-        .padding(.vertical, 4)
-        .accessibilityElement(children: .combine)
     }
 
     private var subtitle: String {
@@ -149,13 +215,14 @@ struct PortfolioView: View {
 
 struct PositionRow: View {
     let position: Position
+    var showsAccount = true
 
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(title).font(.body.weight(.semibold))
                 Text(detail).font(.subheadline).foregroundStyle(.secondary)
-                Text("\(position.institution) · \(position.account)").font(.caption).foregroundStyle(.tertiary)
+                if showsAccount { Text("\(position.institution) · \(position.account)").font(.caption).foregroundStyle(.secondary) }
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 3) {

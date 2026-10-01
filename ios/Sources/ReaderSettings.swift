@@ -19,9 +19,6 @@ import UIKit
     var error: String?
     var lastUpdated: Date?
     var serverURL = UserDefaults.standard.string(forKey: "serverURL") ?? "https://bryce-newswire.bryce-e19.workers.dev"
-    var mode = FeedMode(rawValue: UserDefaults.standard.string(forKey: "feedMode") ?? "") ?? .wire {
-        didSet { UserDefaults.standard.set(mode.rawValue, forKey: "feedMode") }
-    }
     var category = ""
     var query = ""
     var filters: [WireFilter] = []
@@ -53,10 +50,10 @@ import UIKit
     private static let maxSavedStories = 200
     private static let maxSnapshots = 12
 
-    private var cacheKey: String { Self.key(mode: mode, serverURL: serverURL, category: category, query: query, filters: filters) }
+    private var cacheKey: String { Self.key(serverURL: serverURL, category: category, query: query, filters: filters) }
 
-    private static func key(mode: FeedMode, serverURL: String, category: String = "", query: String = "", filters: [WireFilter] = []) -> String {
-        (mode == .wire ? "" : "brain|") + "\(serverURL)|\(category)|\(query)" + filters.map { "|" + $0.id }.joined()
+    private static func key(serverURL: String, category: String = "", query: String = "", filters: [WireFilter] = []) -> String {
+        "feed|\(serverURL)|\(category)|\(query)" + filters.map { "|" + $0.id }.joined()
     }
 
     init() {
@@ -119,7 +116,7 @@ import UIKit
 
     /// The widget always mirrors the unfiltered feed, whatever category or filter is on screen.
     private func publishWidget() {
-        guard let feed = Self.snapshots[Self.key(mode: mode, serverURL: serverURL)]?.stories else { return }
+        guard let feed = Self.snapshots[Self.key(serverURL: serverURL)]?.stories else { return }
         NewsWidgetFeed.publish(feed)
     }
 
@@ -183,36 +180,17 @@ import UIKit
 
     /// Called by background app refresh and by pushes. While the app is in the background the visible feed is
     /// re-ranked and replaced, so the reader opens to a fresh, settled list; while it is on screen, new stories
-    /// are merged in without moving anything. Also warms the other feed, the next page, images and article text.
+    /// are merged in without moving anything. Also warms the next page, images and article text.
     func backgroundRefresh() async {
         Self.scheduleRefresh()
         await ready()
-        guard configured, let baseURL = NewswireAPI.validatedURL(serverURL) else { return }
-        let api = NewswireAPI(baseURL: baseURL)
+        guard configured else { return }
         let active = UIApplication.shared.applicationState == .active
-        let others = FeedMode.allCases.map { ($0, Self.key(mode: $0, serverURL: serverURL)) }.filter { $0.1 != cacheKey }
-        async let visible = self.sync(active ? .merge : .replace, quiet: true)
-        var pages: [(String, StoryPage)] = []
-        await withTaskGroup(of: (String, StoryPage?).self) { group in
-            for (feed, key) in others {
-                group.addTask {
-                    let page = try? await api.page(mode: feed, limit: 100, category: "", query: "")
-                    return (key, page)
-                }
-            }
-            for await (key, page) in group {
-                if let page { pages.append((key, page)) }
-            }
-        }
-        for (key, page) in pages {
-            let ranked = await rank(page.stories, query: "")
-            Self.snapshots[key] = PageSnapshot(stories: ranked, cursor: page.nextCursor, fetchedAt: .now)
-        }
-        _ = await visible
+        await sync(active ? .merge : .replace, quiet: true)
         if !active && stories.count <= 100 { await loadOlder() }
         await Self.persist().value
         guard !Task.isCancelled else { return }
-        let top = Array(stories.prefix(30)) + pages.flatMap { page -> [Story] in Array(Self.snapshots[page.0]?.stories.prefix(15) ?? []) }
+        let top = Array(stories.prefix(30))
         await ThumbnailLoader.shared.prefetch(thumbnailRequests(for: top))
         guard !Task.isCancelled else { return }
         // Article pages give images to stories without one; fetch a few, then warm those images too.
@@ -225,7 +203,7 @@ import UIKit
     /// Image sizes each story will be drawn at: a thumbnail always, plus the full-width size when its row shows a large image.
     private func thumbnailRequests(for stories: [Story]) -> [(URL, CGFloat)] {
         stories.flatMap { story -> [(URL, CGFloat)] in
-            guard let url = story.thumbnail ?? Summarizer.shared.images[story.url.absoluteString] else { return [] }
+            guard let url = Summarizer.shared.poster(for: story) else { return [] }
             let large = UserDefaults.standard.object(forKey: "largeStoryImage.\(story.id)") as? Bool ?? (story.priority == "breaking" || story.priority == "urgent")
             return large ? [(url, ThumbnailLoader.small), (url, ThumbnailLoader.large)] : [(url, ThumbnailLoader.small)]
         }
@@ -339,10 +317,10 @@ import UIKit
     /// First page, retried once after a second for the errors a freshly resumed app typically hits.
     private func first(_ api: NewswireAPI, limit: Int) async throws -> StoryPage {
         do {
-            return try await api.page(mode: mode, limit: limit, category: category, query: query, filters: filters)
+            return try await api.feedPage(limit: limit, category: category, query: query, filters: filters)
         } catch let error as URLError where [.networkConnectionLost, .timedOut, .cannotConnectToHost, .notConnectedToInternet].contains(error.code) {
             try await Task.sleep(for: .seconds(1))
-            return try await api.page(mode: mode, limit: limit, category: category, query: query, filters: filters)
+            return try await api.feedPage(limit: limit, category: category, query: query, filters: filters)
         }
     }
 
@@ -365,7 +343,7 @@ import UIKit
         let current = generation
         loadingOlder = true
         defer { if generation == current { loadingOlder = false } }
-        guard let page = try? await NewswireAPI(baseURL: baseURL).page(mode: mode, cursor: cursor, category: category, query: query, filters: filters),
+        guard let page = try? await NewswireAPI(baseURL: baseURL).feedPage(cursor: cursor, category: category, query: query, filters: filters),
               generation == current, self.cursor == cursor else { return }
         let before = stories.count
         let ids = Set(stories.map(\.id))
@@ -392,12 +370,6 @@ import UIKit
             return "Offline or unreachable. Loaded stories remain available; pull to retry."
         }
         return error.localizedDescription
-    }
-
-    func switchMode() {
-        mode = mode == .wire ? .brain : .wire
-        filters = filters.filter { $0.name != "ticker" && $0.name != "agent" }
-        path = []
     }
 
     func brain(_ story: Story, action: String, body: [String: String] = [:]) async -> Story? {

@@ -157,7 +157,7 @@ nonisolated private final class RSSItems: NSObject, XMLParserDelegate {
         self.symbol = symbol
     }
 
-    static var intelligence: Bool { SystemLanguageModel.default.availability == .available }
+    static var intelligence: Bool { AIRouter.isAvailable(.moveExplanations) }
 
     static func threshold(instrument: String?) -> Double {
         instrument == nil || instrument == "EQUITY" ? 0.04 : 0.02
@@ -209,17 +209,17 @@ nonisolated private final class RSSItems: NSObject, XMLParserDelegate {
             let prompts = excerpts.isEmpty ? [base] : [base + "\n\nArticle excerpts:\n" + excerpts.map { "[\($0.0.publisher)] \($0.0.title)\n\($0.1)" }.joined(separator: "\n\n"), base]
             phase = .writing
             for prompt in prompts {
-                let session = LanguageModelSession(model: SystemLanguageModel(guardrails: .permissiveContentTransformations), instructions: """
+                let instructions = """
                 You explain why a stock or market asset moved today for a news wire, using only the supplied headlines and excerpts. \
                 Write two or three short, plain sentences. Lead with the most likely catalyst and name the source when useful. \
                 If the material does not clearly explain the move, say no specific catalyst was reported and mention only supported context. \
                 Never invent figures, events, or analyst calls. No preamble, markdown, or investment advice.
-                """)
+                """
                 do {
-                    for try await snapshot in session.streamResponse(to: prompt, options: GenerationOptions(temperature: 0.2, maximumResponseTokens: 180)) {
-                        guard !Task.isCancelled else { return }
-                        brief = snapshot.content
+                    brief = try await AIRouter.generate(.moveExplanations, instructions: instructions, prompt: prompt, temperature: 0.2, maxTokens: 180) { [weak self] text in
+                        if !Task.isCancelled { self?.brief = text }
                     }
+                    guard !Task.isCancelled else { return }
                     brief = brief.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !brief.isEmpty else { continue }
                     phase = .done

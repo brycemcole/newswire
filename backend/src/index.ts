@@ -420,14 +420,16 @@ async function route(request: Request, env: Env, ctx?: ExecutionContext): Promis
   if (path.startsWith('/v1/brain/')) return brainRoute(request, url, path, env);
   if (path === '/v1/devices') {
     query(url.searchParams, []);
-    if (request.method === 'GET') return json({ devices: (await env.DB.prepare('SELECT token, environment FROM devices').all()).results });
+    if (request.method === 'GET') return json({ devices: (await env.DB.prepare('SELECT token, environment, stock_symbols FROM devices').all()).results });
     if (request.method === 'POST') {
       const data = await readBody(request) as Record<string, unknown>;
       const token = text(data?.token, 'token', 200).toLowerCase();
       if (!/^[0-9a-f]{64,200}$/.test(token)) invalid('Invalid token');
       const environment = choice(data.environment, 'environment', ['sandbox', 'production']);
+      const symbols = data.stock_symbols === undefined ? [] : data.stock_symbols;
+      if (!Array.isArray(symbols) || symbols.length > 200 || symbols.some(s => typeof s !== 'string' || !/^[A-Z0-9.^=-]{1,30}$/.test(s))) invalid('Invalid stock_symbols');
       const now = new Date().toISOString();
-      await env.DB.prepare('INSERT INTO devices (token, environment, created_at, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(token) DO UPDATE SET environment = excluded.environment, updated_at = excluded.updated_at').bind(token, environment, now, now).run();
+      await env.DB.prepare('INSERT INTO devices (token, environment, created_at, updated_at, stock_symbols) VALUES (?, ?, ?, ?, ?) ON CONFLICT(token) DO UPDATE SET environment = excluded.environment, updated_at = excluded.updated_at, stock_symbols = excluded.stock_symbols').bind(token, environment, now, now, JSON.stringify([...new Set(symbols)])).run();
       return json({ registered: true }, 201);
     }
     throw new ApiError(405, 'method_not_allowed', 'Method not allowed');

@@ -9,7 +9,7 @@ const origin = process.env.NEWSWIRE_URL ?? 'https://bryce-newswire.bryce-e19.wor
 const directory = join(homedir(), '.config', 'newswire');
 const hosts = { sandbox: 'https://api.sandbox.push.apple.com', production: 'https://api.push.apple.com' };
 
-async function credentials() {
+export async function credentials() {
   const config = JSON.parse(await readFile(join(directory, 'apns.json'), 'utf8').catch(() => '{}'));
   const keyId = process.env.APNS_KEY_ID ?? config.key_id;
   const teamId = process.env.APNS_TEAM_ID ?? config.team_id ?? 'A792L5W262';
@@ -20,13 +20,13 @@ async function credentials() {
   return `${unsigned}.${createSign('SHA256').update(unsigned).sign({ key, dsaEncoding: 'ieee-p1363' }).toString('base64url')}`;
 }
 
-async function devices(bearer) {
+export async function devices(bearer) {
   const response = await fetch(new URL('/v1/devices', origin), { headers: { Authorization: `Bearer ${bearer}` }, signal: AbortSignal.timeout(15000) });
   if (!response.ok) throw new Error(`devices ${response.status}`);
   return (await response.json()).devices;
 }
 
-function send(client, jwt, device, payload, type = 'alert') {
+export function send(client, jwt, device, payload, type = 'alert') {
   return new Promise(resolve => {
     const request = client.request({
       ':method': 'POST',

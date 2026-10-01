@@ -133,3 +133,16 @@ test('retraction tombstones a story without deleting or altering it', async () =
   assert.equal((await (await request(`/v1/stories/${story.id}`)).json()).story.retracted_at, removed.story.retracted_at);
   assert.equal((await (await request(`/v1/stories/${story.id}`, 'writer', { method: 'DELETE' })).json()).retracted, false);
 });
+
+test('brokerage alert symbols round trip, validate and clear on removal', async () => {
+  const token = 'b'.repeat(64);
+  const register = stock_symbols => request('/v1/devices', 'reader', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token, environment: 'sandbox', stock_symbols }) });
+  assert.equal((await register(['AAPL', 'AAPL', 'MSFT'])).status, 201);
+  let result = await (await request('/v1/devices', 'writer')).json();
+  assert.deepEqual(JSON.parse(result.devices.find(d => d.token === token).stock_symbols), ['AAPL', 'MSFT']);
+  assert.equal((await register(['bad symbol'])).status, 400);
+  assert.equal((await register([])).status, 201);
+  result = await (await request('/v1/devices', 'writer')).json();
+  assert.deepEqual(JSON.parse(result.devices.find(d => d.token === token).stock_symbols), []);
+  assert.equal((await request('/v1/devices', 'reader')).status, 403);
+});

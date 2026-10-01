@@ -31,12 +31,10 @@ nonisolated enum FeedMode: String, CaseIterable, Sendable {
     case wire, brain
 
     var path: String { self == .brain ? "v1/brain/stories" : "v1/stories" }
-    var title: String { self == .brain ? "BRAIN" : "NEWSWIRE" }
-    var symbol: String { self == .brain ? "brain" : "antenna.radiowaves.left.and.right" }
 }
 
 nonisolated enum WireFilter: Hashable, Identifiable, Sendable {
-    case category(String), priority(String), source(String), ticker(String), tag(String)
+    case category(String), priority(String), source(String), ticker(String), tag(String), agent(String)
 
     var id: String { name + ":" + value }
 
@@ -47,12 +45,13 @@ nonisolated enum WireFilter: Hashable, Identifiable, Sendable {
         case .source: "source"
         case .ticker: "ticker"
         case .tag: "tag"
+        case .agent: "agent"
         }
     }
 
     var value: String {
         switch self {
-        case .category(let value), .priority(let value), .source(let value), .ticker(let value), .tag(let value): value
+        case .category(let value), .priority(let value), .source(let value), .ticker(let value), .tag(let value), .agent(let value): value
         }
     }
 
@@ -61,6 +60,7 @@ nonisolated enum WireFilter: Hashable, Identifiable, Sendable {
         case .category(let value), .priority(let value): value.capitalized
         case .source(let value), .ticker(let value): value
         case .tag(let value): "#" + value
+        case .agent(let value): value == "brain" ? "Brain" : value
         }
     }
 
@@ -71,6 +71,7 @@ nonisolated enum WireFilter: Hashable, Identifiable, Sendable {
         case .source: "newspaper"
         case .ticker: "chart.line.uptrend.xyaxis"
         case .tag: "number"
+        case .agent(let value): value == "brain" ? "brain" : "person"
         }
     }
 
@@ -92,6 +93,7 @@ nonisolated enum WireFilter: Hashable, Identifiable, Sendable {
         case "source": self = .source(value)
         case "ticker": self = .ticker(value)
         case "tag": self = .tag(value)
+        case "agent": self = .agent(value)
         default: return nil
         }
     }
@@ -188,6 +190,42 @@ nonisolated struct NewswireAPI: Sendable {
         return try Self.decoder().decode(StoryPage.self, from: data)
     }
 
+    private nonisolated struct FeedCursor: Codable, Sendable {
+        var wire: String?
+        var brain: String?
+        var wireDone = false
+        var brainDone = false
+    }
+
+    /// The wire and Brain interleaved by time. A source's cursor only advances once its whole page has been shown;
+    /// otherwise its older rows would land above newer rows from the other source on the next page.
+    @concurrent func feedPage(cursor: String? = nil, limit: Int = 50, category: String, query: String, filters: [WireFilter] = []) async throws -> StoryPage {
+        var state = cursor.flatMap { try? JSONDecoder().decode(FeedCursor.self, from: Data($0.utf8)) } ?? FeedCursor()
+        let agent = filters.first { $0.name == "agent" }?.value
+        if agent == "brain" { state.wireDone = true }
+        if (agent != nil && agent != "brain") || filters.contains(where: { $0.name == "ticker" }) { state.brainDone = true }
+        let useWire = !state.wireDone, useBrain = !state.brainDone
+        let brainFilters = filters.filter { $0.name != "agent" }
+        let wireCursor = state.wire, brainCursor = state.brain
+        async let wireResult: StoryPage? = useWire ? page(mode: .wire, cursor: wireCursor, limit: limit, category: category, query: query, filters: filters) : nil
+        async let brainResult: StoryPage? = useBrain ? page(mode: .brain, cursor: brainCursor, limit: limit, category: category, query: query, filters: brainFilters) : nil
+        let brain = try? await brainResult
+        let wire = try await wireResult
+        let parts = [wire, brain ?? nil].compactMap { $0 }
+        let cutoff = parts.filter { $0.nextCursor != nil }.compactMap { $0.stories.last?.publishedAt }.max()
+        func complete(_ part: StoryPage?) -> Bool {
+            guard let part, let cutoff, let oldest = part.stories.last?.publishedAt else { return true }
+            return oldest >= cutoff
+        }
+        if let wire, complete(wire) { state.wire = wire.nextCursor; state.wireDone = wire.nextCursor == nil }
+        if let brain = brain ?? nil, complete(brain) { state.brain = brain.nextCursor; state.brainDone = brain.nextCursor == nil }
+        let stories = parts.flatMap(\.stories)
+            .filter { cutoff == nil || $0.publishedAt >= cutoff! }
+            .sorted { $0.publishedAt > $1.publishedAt }
+        let next = state.wireDone && state.brainDone ? nil : (try? JSONEncoder().encode(state)).map { String(decoding: $0, as: UTF8.self) }
+        return StoryPage(stories: stories, nextCursor: next)
+    }
+
     nonisolated struct StoryEnvelope: Decodable { let story: Story }
 
     func brain(_ story: Story, action: String, body: [String: String] = [:]) async throws -> Story? {
@@ -200,11 +238,11 @@ nonisolated struct NewswireAPI: Sendable {
         return try? Self.decoder().decode(StoryEnvelope.self, from: data).story
     }
 
-    func register(device: String, environment: String) async throws {
+    func register(device: String, environment: String, symbols: [String] = []) async throws {
         var request = URLRequest(url: baseURL.appending(path: "v1/devices"), timeoutInterval: 20)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(["token": device, "environment": environment])
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["token": device, "environment": environment, "stock_symbols": symbols])
         let (_, response) = try await send(request)
         guard (200..<300).contains(response.statusCode) else { throw WireError.status(response.statusCode) }
     }

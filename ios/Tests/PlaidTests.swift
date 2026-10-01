@@ -49,7 +49,7 @@ struct PlaidTests {
         let trades = try decoder.decode([PlaidClient.Transactions.Transaction].self, from: Data(json.utf8))
         #expect(HoldingsResponse.estimatedCost(quantity: 1, trades: trades) == 250)
         #expect(HoldingsResponse.estimatedCost(quantity: 2, trades: trades) == nil)
-        #expect(HoldingsResponse.estimatedCost(quantity: -1, trades: trades) == -300)
+        #expect(HoldingsResponse.estimatedCost(quantity: -1, trades: trades) == nil)
         #expect(HoldingsResponse.estimatedCost(quantity: 1, trades: []) == nil)
     }
 

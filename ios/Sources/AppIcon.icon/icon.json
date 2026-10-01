@@ -1,21 +1,28 @@
 {
-  "fill": "automatic",
+  "fill-specializations": [
+    { "value": { "solid": "srgb:0.98000,0.28000,0.08000,1.00000" } },
+    { "appearance": "dark", "value": { "solid": "srgb:0.48000,0.11000,0.04000,1.00000" } }
+  ],
   "groups": [
     {
       "layers": [
         {
-          "glass": true,
-          "image-name": "Wire.png",
-          "name": "Wire"
+          "glass": false,
+          "image-name": "FoldedN.png",
+          "name": "Folded N"
         }
       ],
+      "position": {
+        "scale": 0.84,
+        "translation-in-points": [0, 0]
+      },
       "shadow": {
         "kind": "neutral",
-        "opacity": 0.4
+        "opacity": 0.25
       },
       "translucency": {
-        "enabled": true,
-        "value": 0.2
+        "enabled": false,
+        "value": 0
       }
     }
   ],

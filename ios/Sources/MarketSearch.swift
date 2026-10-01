@@ -40,17 +40,31 @@ nonisolated struct MarketQuote: Sendable, Hashable, Identifiable {
         name = value["longName"]?.text ?? value["shortName"]?.text ?? value["displayName"]?.text ?? symbol
         type = value["quoteType"]?.text
         exchange = value["fullExchangeName"]?.text
-        self.price = price
-        change = value["regularMarketChange"]?.raw ?? 0
-        changePercent = value["regularMarketChangePercent"]?.raw ?? 0
         marketCap = value["marketCap"]?.raw
         let state = value["marketState"]?.text ?? ""
-        if state.hasPrefix("PRE"), let pre = value["preMarketChangePercent"]?.raw {
-            extendedLabel = "Pre"; extendedPercent = pre
-        } else if state.hasPrefix("POST") || state == "CLOSED", let post = value["postMarketChangePercent"]?.raw, post != 0 {
-            extendedLabel = "After"; extendedPercent = post
+        let regularTime = value["regularMarketTime"]?.raw ?? 0
+        let pre = value["preMarketPrice"]?.raw
+        let post = value["postMarketPrice"]?.raw
+        if state.hasPrefix("PRE"), let pre, pre > 0,
+           (value["preMarketTime"]?.raw ?? 0) >= regularTime {
+            self.price = pre
+            change = value["preMarketChange"]?.raw ?? pre - price
+            changePercent = value["preMarketChangePercent"]?.raw ?? (pre - price) / price * 100
+            extendedLabel = "Pre"
+            extendedPercent = changePercent
+        } else if state.hasPrefix("POST") || state == "CLOSED", let post, post > 0,
+                  (value["postMarketTime"]?.raw ?? 0) >= regularTime {
+            self.price = post
+            change = value["postMarketChange"]?.raw ?? post - price
+            changePercent = value["postMarketChangePercent"]?.raw ?? (post - price) / price * 100
+            extendedLabel = "After"
+            extendedPercent = changePercent
         } else {
-            extendedLabel = nil; extendedPercent = nil
+            self.price = price
+            change = value["regularMarketChange"]?.raw ?? 0
+            changePercent = value["regularMarketChangePercent"]?.raw ?? 0
+            extendedLabel = nil
+            extendedPercent = nil
         }
         earnings = value["earningsTimestampStart"]?.date ?? value["earningsTimestamp"]?.date
         if case .bool(true)? = value["isEarningsDateEstimate"] { earningsEstimated = true } else { earningsEstimated = false }
@@ -147,7 +161,7 @@ struct MarketSearchSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             searchBar
-                .padding(.horizontal, 16)
+                .padding(.horizontal, MarketDock.barInset)
                 .padding(.bottom, MarketDock.barInset)
             if trimmed.isEmpty {
                 overview
@@ -364,6 +378,11 @@ struct MarketRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(symbol).font(.body.weight(.semibold).monospaced())
+                    if let label = quote?.extendedLabel {
+                        Image(systemName: label == "Pre" ? "sunrise" : "moon")
+                            .font(.caption2).foregroundStyle(.secondary)
+                            .accessibilityLabel(label == "Pre" ? "Premarket" : "After hours")
+                    }
                     if let tag, !tag.isEmpty {
                         Text(tag).font(.caption2.weight(.medium)).foregroundStyle(.tertiary).lineLimit(1)
                     }
@@ -391,7 +410,7 @@ struct MarketRow: View {
 
     private var accessibility: String {
         guard let quote else { return "\(symbol), \(title)" }
-        return "\(symbol), \(title), \(QuoteFormat.price(quote.price)), \(QuoteFormat.percent(quote.changePercent))"
+        return "\(symbol), \(title), \(quote.extendedLabel ?? "Regular"), \(QuoteFormat.price(quote.price)), \(QuoteFormat.percent(quote.changePercent))"
     }
 }
 
@@ -446,7 +465,14 @@ private struct IndexCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             VStack(alignment: .leading, spacing: 1) {
-                Text(symbol).font(.footnote.weight(.bold).monospaced())
+                HStack(spacing: 4) {
+                    Text(symbol).font(.footnote.weight(.bold).monospaced())
+                    if let label = quote?.extendedLabel {
+                        Image(systemName: label == "Pre" ? "sunrise" : "moon")
+                            .font(.caption2).foregroundStyle(.secondary)
+                            .accessibilityLabel(label == "Pre" ? "Premarket" : "After hours")
+                    }
+                }
                 Text(quote?.name ?? " ").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
             }
             SparkLine(spark: spark, fallbackUp: (quote?.changePercent ?? 0) >= 0).frame(height: 24)

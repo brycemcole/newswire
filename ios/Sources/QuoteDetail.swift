@@ -18,25 +18,44 @@ enum MarketRecents {
     }
 }
 
+nonisolated struct WatchEntry: Codable, Hashable, Sendable {
+    let added: Date
+    let price: Double
+
+    func change(to price: Double) -> Double? { self.price > 0 ? price / self.price - 1 : nil }
+
+    func caption(at price: Double) -> String? {
+        change(to: price).map { "\(Money.percent($0)) since \(added.formatted(.dateTime.month(.abbreviated).day()))" }
+    }
+}
+
 @Observable final class Watchlist {
     static let shared = Watchlist()
     private(set) var symbols: [String]
+    private(set) var entries: [String: WatchEntry]
 
     private init() {
         symbols = UserDefaults.standard.stringArray(forKey: "watchlist") ?? MarketRecents.all
+        entries = UserDefaults.standard.data(forKey: "watchlistEntries").flatMap { try? JSONDecoder().decode([String: WatchEntry].self, from: $0) } ?? [:]
     }
 
     func contains(_ symbol: String) -> Bool { symbols.contains(symbol) }
 
-    func toggle(_ symbol: String) {
-        contains(symbol) ? remove(symbol) : save(symbols + [symbol])
+    func toggle(_ symbol: String, price: Double? = nil) {
+        if contains(symbol) { return remove(symbol) }
+        if let price, price > 0 { entries[symbol] = WatchEntry(added: .now, price: price) }
+        save(symbols + [symbol])
     }
 
-    func remove(_ symbol: String) { save(symbols.filter { $0 != symbol }) }
+    func remove(_ symbol: String) {
+        entries[symbol] = nil
+        save(symbols.filter { $0 != symbol })
+    }
 
     private func save(_ next: [String]) {
         symbols = next
         UserDefaults.standard.set(next, forKey: "watchlist")
+        UserDefaults.standard.set(try? JSONEncoder().encode(entries), forKey: "watchlistEntries")
     }
 }
 
@@ -114,6 +133,8 @@ struct QuoteDetail: View {
     @State private var model: QuoteModel
     @State private var scrub = Scrub()
     @State private var holding: MarketSymbol?
+    @State private var showingOptions = false
+    @State private var showingQuestions = false
     @State private var aboutExpanded = false
     @State private var watchlist = Watchlist.shared
     @Environment(\.scenePhase) private var phase
@@ -157,10 +178,12 @@ struct QuoteDetail: View {
                 hero
                 rangePicker
                 HoldingSection(symbol: symbol, chart: model.live)
+                optionsLink
                 Divider()
                 QuoteNewsSection(symbol: symbol, name: name, instrument: summary?.text("price", "quoteType") ?? model.live?.instrument,
                                  move: dayMove, price: model.live.map { $0.money($0.price) })
                 sections
+                SimulatorSection(symbol: symbol, price: model.live?.price)
                 Link(destination: yahooURL) {
                     Label("Data from Yahoo Finance", systemImage: "arrow.up.right")
                         .font(.caption).foregroundStyle(.secondary)
@@ -177,19 +200,40 @@ struct QuoteDetail: View {
         .navigationSubtitle(symbol)
         .navigationBarTitleDisplayMode(.inline)
         .navigationDestination(item: $holding) { QuoteDetail(symbol: $0.id) }
+        .navigationDestination(isPresented: $showingOptions) { OptionChainView(symbol: symbol) }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 let watching = watchlist.contains(symbol)
-                Button { watchlist.toggle(symbol) } label: {
+                Button { watchlist.toggle(symbol, price: model.live?.price) } label: {
                     Image(systemName: watching ? "star.fill" : "star")
                         .contentTransition(.symbolEffect(.replace))
                 }
                 .sensoryFeedback(.selection, trigger: watching)
                 .accessibilityLabel(watching ? "Remove from watchlist" : "Add to watchlist")
             }
-            ToolbarItem(placement: .topBarTrailing) { ShareLink(item: yahooURL) }
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button("Ask about \(symbol)", systemImage: "bubble.left.and.text.bubble.right") { showingQuestions = true }
+                    ShareLink(item: yahooURL)
+                } label: { Image(systemName: "ellipsis") }
+                .accessibilityLabel("Stock actions")
+            }
+        }
+        .sheet(isPresented: $showingQuestions) {
+            StockQuestionSheet(symbol: symbol, name: name, price: model.live.map { $0.money($0.price) })
         }
         .onAppear { MarketRecents.add(symbol) }
+        #if DEBUG
+        .task {
+            if CommandLine.arguments.contains("-stockQuestions") {
+                try? await Task.sleep(for: .seconds(1))
+                showingQuestions = true
+            }
+            guard CommandLine.arguments.contains("-options"), OptionSymbol(symbol) == nil else { return }
+            try? await Task.sleep(for: .seconds(1))
+            showingOptions = true
+        }
+        #endif
         .task { await model.refreshSummary() }
         .task(id: phase == .active) {
             guard phase == .active else { return }
@@ -256,6 +300,30 @@ struct QuoteDetail: View {
             .glassEffect(.regular, in: .capsule)
         }
         .sensoryFeedback(.selection, trigger: model.range)
+    }
+
+    @ViewBuilder
+    private var optionsLink: some View {
+        if let contract = OptionSymbol(symbol) {
+            linkRow("Underlying \(contract.underlying)", systemImage: "arrow.turn.left.up") { holding = MarketSymbol(id: contract.underlying) }
+        } else if ["EQUITY", "ETF", "INDEX"].contains(summary?.text("price", "quoteType") ?? model.live?.instrument) {
+            linkRow("Options chain", systemImage: "list.bullet.rectangle") { showingOptions = true }
+        }
+    }
+
+    private func linkRow(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack {
+                Label(title, systemImage: systemImage).font(.body.weight(.semibold))
+                Spacer()
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 18)
+            .frame(minHeight: 52)
+            .contentShape(.rect(cornerRadius: 24))
+            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 24))
+        }
+        .buttonStyle(.plain)
     }
 
     private var liveBadge: some View {
@@ -587,7 +655,7 @@ struct QuoteSection<Content: View>: View {
     }
 }
 
-private struct StatGrid: View {
+struct StatGrid: View {
     let stats: [(String, String)]
 
     var body: some View {

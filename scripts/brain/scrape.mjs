@@ -167,21 +167,7 @@ const deepMind = () => rss('https://deepmind.google/blog/rss.xml', { key: 'deepm
 const semafor = () => rss('https://www.semafor.com/rss.xml', { key: 'semafor', source: 'Semafor', limit: 20 });
 const yahooFinance = () => rss('https://finance.yahoo.com/news/rssindex', { key: 'yahoo', source: 'Yahoo Finance', kind: 'markets', limit: 20 });
 
-async function polymarket() {
-  const markets = await get('https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=30&order=volume24hr&ascending=false', { as: 'json' });
-  return markets.filter(market => market.question && Number(market.volume24hr ?? 0) >= 100000).map(market => {
-    const outcomes = JSON.parse(market.outcomes ?? '[]');
-    const prices = JSON.parse(market.outcomePrices ?? '[]').map(Number);
-    const odds = outcomes.map((outcome, index) => `${outcome} ${Math.round((prices[index] ?? 0) * 100)}%`).join(', ');
-    const eventSlug = market.events?.[0]?.slug ?? market.slug;
-    return {
-      key: `polymarket:${market.id}`, kind: 'markets', title: squash(market.question), abstract: `Current market odds: ${odds}. 24-hour volume: $${Math.round(Number(market.volume24hr)).toLocaleString('en-US')}.`,
-      url: `https://polymarket.com/event/${eventSlug}`, source: 'Polymarket', boost: Math.min(1.25, Number(market.volume24hr) / 1000000), note: 'Active prediction market',
-    };
-  });
-}
-
-const sources = { hn: hackerNews, lobsters, devto: devCommunity, deepmind: deepMind, semafor, yahoo: yahooFinance, polymarket, arxiv, huggingface: huggingFace };
+const sources = { hn: hackerNews, lobsters, devto: devCommunity, deepmind: deepMind, semafor, yahoo: yahooFinance, arxiv, huggingface: huggingFace };
 
 async function collect() {
   const merged = new Map();
@@ -208,7 +194,7 @@ const rankPrompt = `You choose stories for Bryce's personal reading feed. Score 
 5-7: relevant but incremental, narrow, or routine.
 1-4: off-topic, generic, a repeat of something already in the feed, or like his disliked items.
 Papers need a concrete notable result, new capability, surprising finding, or practical tool; incremental benchmark gains, narrow domain applications, and surveys score low.
-Prefer fresh reporting, major product/model releases, useful tools, market-moving developments, security incidents, and strong analysis over academic papers. Prediction markets are signals, not facts; only score them highly when the topic and volume are meaningful.
+Prefer fresh reporting, major product/model releases, useful tools, market-moving developments, security incidents, and strong analysis over academic papers.
 Choose category from: ${categories.join(', ')}.
 Reply with only a JSON array like [{"i":0,"score":7,"category":"AI"}] covering every candidate.`;
 

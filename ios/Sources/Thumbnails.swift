@@ -1,10 +1,11 @@
+import CryptoKit
 import ImageIO
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
-/// Downloads article images, scales them to display size off the main thread with ImageIO, and keeps the
-/// decoded results in memory. `AsyncImage` decodes full-size photos (often 2000px) on the main thread while
-/// scrolling and re-downloads them through a tiny default cache; this avoids both.
+/// Downloads article images, scales them to display size off the main thread with ImageIO, keeps the decoded
+/// results in memory and the scaled files on disk, so images survive relaunches without another download.
 nonisolated final class ThumbnailLoader: Sendable {
     static let shared = ThumbnailLoader()
 
@@ -18,12 +19,13 @@ nonisolated final class ThumbnailLoader: Sendable {
         return cache
     }()
     private let inflight = Inflight()
+    private let disk = DiskStore()
 
     private let session: URLSession = {
         let configuration = URLSessionConfiguration.default
-        let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appending(path: "thumbnails")
-        configuration.urlCache = URLCache(memoryCapacity: 8 * 1024 * 1024, diskCapacity: 300 * 1024 * 1024, directory: directory)
-        configuration.requestCachePolicy = .returnCacheDataElseLoad
+        // The scaled copies on disk are the cache; keeping full-size originals as well would double the storage.
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.httpMaximumConnectionsPerHost = 4
         configuration.timeoutIntervalForRequest = 20
         return URLSession(configuration: configuration)
@@ -36,13 +38,26 @@ nonisolated final class ThumbnailLoader: Sendable {
         memory.object(forKey: Self.key(url, size))
     }
 
+    /// Memory, then disk. Never touches the network.
+    @concurrent func stored(_ url: URL, size: CGFloat) async -> UIImage? {
+        let key = Self.key(url, size)
+        if let hit = memory.object(forKey: key) { return hit }
+        guard let data = await disk.read(key as String), let image = Self.decode(data) else { return nil }
+        memory.setObject(image, forKey: key, cost: image.cost)
+        return image
+    }
+
     @concurrent func image(_ url: URL, size: CGFloat) async -> UIImage? {
-        if let hit = cached(url, size: size) { return hit }
-        return await inflight.run(Self.key(url, size) as String) { [self] in
+        if let hit = await stored(url, size: size) { return hit }
+        let name = Self.key(url, size) as String
+        return await inflight.run(name) { [self] in
+            let key = name as NSString
+            if let hit = memory.object(forKey: key) { return hit }
             guard let (data, response) = try? await session.data(from: url),
                   (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? true,
-                  let image = Self.downsample(data, size: size) else { return nil }
-            memory.setObject(image, forKey: Self.key(url, size), cost: image.cost)
+                  let (image, encoded) = Self.downsample(data, size: size) else { return nil }
+            memory.setObject(image, forKey: key, cost: image.cost)
+            await disk.write(encoded, for: key as String)
             return image
         }
     }
@@ -62,7 +77,9 @@ nonisolated final class ThumbnailLoader: Sendable {
         }
     }
 
-    private static func downsample(_ data: Data, size: CGFloat) -> UIImage? {
+    /// Returns the scaled image and the file to keep on disk: the original bytes when they are already small
+    /// enough, otherwise the scaled image as JPEG.
+    private static func downsample(_ data: Data, size: CGFloat) -> (UIImage, Data)? {
         guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary) else { return nil }
         let options = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -71,6 +88,20 @@ nonisolated final class ThumbnailLoader: Sendable {
             kCGImageSourceThumbnailMaxPixelSize: size,
         ] as [CFString: Any] as CFDictionary
         guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options) else { return nil }
+        let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        let width = properties?[kCGImagePropertyPixelWidth] as? CGFloat ?? .infinity
+        let height = properties?[kCGImagePropertyPixelHeight] as? CGFloat ?? .infinity
+        if max(width, height) <= size, data.count <= 600_000 { return (UIImage(cgImage: image), data) }
+        let output = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(output, UTType.jpeg.identifier as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.85] as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return (UIImage(cgImage: image), output as Data)
+    }
+
+    private static func decode(_ data: Data) -> UIImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary) else { return nil }
         return UIImage(cgImage: image)
     }
 
@@ -85,6 +116,62 @@ nonisolated final class ThumbnailLoader: Sendable {
             let result = await task.value
             tasks[key] = nil
             return result
+        }
+    }
+
+    /// Scaled image files in Caches, evicted least recently used first once they pass the budget.
+    private actor DiskStore {
+        private static let budget = 320 * 1024 * 1024
+        private static let trimmedSize = 260 * 1024 * 1024
+        private let directory: URL
+        private var total: Int?
+
+        init() {
+            let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            directory = caches.appending(path: "images-v1")
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            // The old URLCache of full-size originals.
+            try? FileManager.default.removeItem(at: caches.appending(path: "thumbnails"))
+        }
+
+        private func file(_ key: String) -> URL {
+            directory.appending(path: SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined())
+        }
+
+        func read(_ key: String) -> Data? {
+            let url = file(key)
+            guard let data = try? Data(contentsOf: url) else { return nil }
+            try? FileManager.default.setAttributes([.modificationDate: Date.now], ofItemAtPath: url.path)
+            return data
+        }
+
+        func write(_ data: Data, for key: String) {
+            guard (try? data.write(to: file(key), options: .atomic)) != nil else { return }
+            total = (total ?? measure()) + data.count
+            if let total, total > Self.budget { trim() }
+        }
+
+        private func entries() -> [(url: URL, size: Int, used: Date)] {
+            let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey]
+            let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: keys)) ?? []
+            return files.compactMap { url in
+                guard let values = try? url.resourceValues(forKeys: Set(keys)) else { return nil }
+                return (url, values.fileSize ?? 0, values.contentModificationDate ?? .distantPast)
+            }
+        }
+
+        private func measure() -> Int { entries().reduce(0) { $0 + $1.size } }
+
+        private func trim() {
+            var size = 0
+            for entry in entries().sorted(by: { $0.used > $1.used }) {
+                if size + entry.size <= Self.trimmedSize {
+                    size += entry.size
+                } else {
+                    try? FileManager.default.removeItem(at: entry.url)
+                }
+            }
+            total = size
         }
     }
 }
@@ -120,8 +207,15 @@ struct ThumbnailImage: View {
             }
             .clipped()
             .task(id: url) {
-                if let image, ThumbnailLoader.shared.cached(url, size: size) === image { return }
-                guard let loaded = await ThumbnailLoader.shared.image(url, size: size), !Task.isCancelled else { return }
+                let loader = ThumbnailLoader.shared
+                if let image, loader.cached(url, size: size) === image { return }
+                // Images already on disk replace the placeholder at once; only downloads fade in.
+                if let stored = await loader.stored(url, size: size) {
+                    guard !Task.isCancelled else { return }
+                    image = stored
+                    return
+                }
+                guard let loaded = await loader.image(url, size: size), !Task.isCancelled else { return }
                 if image == nil {
                     withAnimation(.easeOut(duration: 0.2)) { image = loaded }
                 } else {

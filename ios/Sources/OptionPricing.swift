@@ -86,7 +86,100 @@ nonisolated struct OptionEstimate: Sendable {
     }
 }
 
+nonisolated struct OptionContract: Identifiable, Hashable, Sendable {
+    let symbol: String
+    let strike: Double
+    let bid: Double
+    let ask: Double
+    let last: Double
+    let changePercent: Double
+    let volume: Double
+    let openInterest: Double
+    let volatility: Double?
+    let inTheMoney: Bool
+
+    var id: String { symbol }
+    var mark: Double { bid > 0 && ask > 0 ? (bid + ask) / 2 : last }
+
+    init?(_ value: YValue) {
+        guard case .string(let symbol)? = value["contractSymbol"], let strike = value["strike"]?.raw else { return nil }
+        self.symbol = symbol
+        self.strike = strike
+        bid = value["bid"]?.raw ?? 0
+        ask = value["ask"]?.raw ?? 0
+        last = value["lastPrice"]?.raw ?? 0
+        changePercent = value["percentChange"]?.raw ?? 0
+        volume = value["volume"]?.raw ?? 0
+        openInterest = value["openInterest"]?.raw ?? 0
+        volatility = value["impliedVolatility"]?.raw
+        if case .bool(true)? = value["inTheMoney"] { inTheMoney = true } else { inTheMoney = false }
+    }
+}
+
+nonisolated struct OptionChainPage: Sendable {
+    let expirations: [Date]
+    let expiration: Date?
+    let spot: Double
+    let calls: [OptionContract]
+    let puts: [OptionContract]
+
+    static func parse(_ data: Data) -> OptionChainPage? {
+        guard let result = (try? JSONDecoder().decode(YValue.self, from: data))?["optionChain"]?["result"]?.array.first,
+              let spot = result["quote"]?["regularMarketPrice"]?.raw else { return nil }
+        let chain = result["options"]?.array.first
+        return OptionChainPage(expirations: (result["expirationDates"]?.array ?? []).compactMap(\.date),
+                               expiration: chain?["expirationDate"]?.date,
+                               spot: spot,
+                               calls: (chain?["calls"]?.array ?? []).compactMap(OptionContract.init),
+                               puts: (chain?["puts"]?.array ?? []).compactMap(OptionContract.init))
+    }
+}
+
+/// OCC option symbols such as AAPL260116C00150000.
+nonisolated struct OptionSymbol: Hashable, Sendable {
+    let underlying: String
+    let expiration: Date
+    let isCall: Bool
+    let strike: Double
+
+    init?(_ symbol: String) {
+        guard let match = symbol.wholeMatch(of: /([A-Z0-9.\-^]{1,6})(\d{2})(\d{2})(\d{2})([CP])(\d{8})/),
+              let year = Int(match.2), let month = Int(match.3), let day = Int(match.4), let strike = Double(match.6) else { return nil }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        guard let date = calendar.date(from: DateComponents(year: 2000 + year, month: month, day: day)) else { return nil }
+        underlying = String(match.1)
+        expiration = date
+        isCall = match.5 == "C"
+        self.strike = strike / 1000
+    }
+
+    var title: String {
+        let day = expiration.formatted(Date.FormatStyle(timeZone: TimeZone(identifier: "UTC")!).month(.defaultDigits).day().year(.twoDigits))
+        return "\(underlying) \(strike.formatted(.number.precision(.fractionLength(0...2))))\(isCall ? "C" : "P") \(day)"
+    }
+
+    static func display(_ symbol: String) -> String { OptionSymbol(symbol)?.title ?? symbol }
+}
+
 nonisolated enum OptionChain {
+    @concurrent static func page(symbol: String, expiration: Date?) async throws -> OptionChainPage {
+        for attempt in 0..<2 {
+            let crumb = try await YahooAuth.shared.crumb(refresh: attempt > 0)
+            var components = URLComponents(string: "https://query2.finance.yahoo.com")!
+            components.path = "/v7/finance/options/\(symbol)"
+            components.queryItems = [URLQueryItem(name: "crumb", value: crumb)]
+                + (expiration.map { [URLQueryItem(name: "date", value: String(Int($0.timeIntervalSince1970)))] } ?? [])
+            guard let url = components.url else { throw MarketError.status(0) }
+            let (data, code) = try await MarketClient.load(url)
+            if code == 401 || code == 403 { continue }
+            guard (200..<300).contains(code) else { throw code == 404 ? MarketError.notFound(symbol) : MarketError.status(code) }
+            guard let page = OptionChainPage.parse(data) else { throw MarketError.notFound(symbol) }
+            return page
+        }
+        throw MarketError.status(401)
+    }
+
     @concurrent static func quote(symbol: String, option: OptionDetail) async throws -> OptionQuote? {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC")!

@@ -25,11 +25,20 @@ nonisolated struct PerformanceSeries: Sendable {
     private(set) var series: [ChartRange: PerformanceSeries] = [:]
     private var fetchedAt: [ChartRange: Date] = [:]
     private var signature = ""
+    private let publishesWidgets: Bool
+
+    init(publishesWidgets: Bool = true) { self.publishesWidgets = publishesWidgets }
+
+    #if DEBUG
+    func preview(_ range: ChartRange, series: PerformanceSeries) {
+        self.series[range] = series
+    }
+    #endif
 
     func refresh(_ snapshot: PortfolioSnapshot) async {
         let holdings = Dictionary(grouping: snapshot.positions.filter { $0.option == nil }, by: \.symbol)
             .mapValues { $0.reduce(0) { $0 + $1.quantity } }
-        let fixed = snapshot.cash + snapshot.positions.filter { $0.option != nil }.compactMap(\.value).reduce(0, +)
+        let fixed = snapshot.totalValue - snapshot.positions.filter { $0.option == nil }.compactMap(\.value).reduce(0, +)
         let key = holdings.sorted { $0.key < $1.key }.map { "\($0.key):\($0.value)" }.joined(separator: ",") + "|\(fixed)"
         var changed = key != signature
         if changed {
@@ -45,7 +54,7 @@ nonisolated struct PerformanceSeries: Sendable {
             fetchedAt[wanted] = .now
             if wanted == .day { changed = true }
         }
-        if changed { WidgetFeed.publish(snapshot, day: series[.day]) }
+        if changed && publishesWidgets { WidgetFeed.publish(snapshot, day: series[.day]) }
     }
 
     @concurrent private static func build(holdings: [String: Double], snapshot: PortfolioSnapshot, fixed: Double, range: ChartRange) async -> PerformanceSeries? {

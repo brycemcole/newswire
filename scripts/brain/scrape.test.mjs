@@ -30,12 +30,12 @@ test('chooseBalanced enforces paper and source quotas', () => {
 
 test('chooseBalanced drops the same story from another source', () => {
   const items = [
-    { kind: 'markets', source: 'Polymarket', title: 'Iran offers UN deal to reopen Hormuz after cease-fire collapsed' },
+    { kind: 'markets', source: 'Yahoo Finance', title: 'Iran offers UN deal to reopen Hormuz after cease-fire collapsed' },
     { kind: 'news', source: 'Semafor', title: 'Iran offers a seven-day plan to reopen the Strait of Hormuz' },
     { kind: 'tech', source: 'Lobsters', title: 'A new local database tool ships today' },
   ];
   const chosen = chooseBalanced(items, 3);
-  assert.deepEqual(chosen.map(item => item.source), ['Polymarket', 'Lobsters']);
+  assert.deepEqual(chosen.map(item => item.source), ['Yahoo Finance', 'Lobsters']);
 });
 
 test('capForRanking bounds each source and the total paper pool', () => {

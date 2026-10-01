@@ -7,6 +7,8 @@ import { getText } from '../fetch.mjs';
 import { ask } from '../jev.mjs';
 import { recent } from '../publish.mjs';
 import { load } from '../state.mjs';
+import { timeline } from '../x.mjs';
+import { readableCopy, walled } from '../syndication.mjs';
 
 export const id = 'headlines';
 
@@ -52,6 +54,21 @@ export const duplicateQuestion = {
     instructions: 'Would publishing the new story repeat news already on the wire?',
   },
 };
+const formats = new Set(config.skip_sections ?? ['video', 'videos', 'live', 'live-updates', 'live-news', 'opinion', 'opinions', 'briefing', 'podcast', 'podcasts', 'newsletters', 'gallery', 'pictures', 'interactive']);
+
+// Formats Jev always rejects, decided from the URL alone: clips, live blogs, opinion, briefings, galleries.
+// X posts mostly in another script are local promos, never US news.
+export function prefiltered(item) {
+  let segments = [];
+  try { segments = new URL(item.url).pathname.toLowerCase().split('/'); } catch { return false; }
+  if (!item.x && segments.some(segment => formats.has(segment))) return true;
+  if (item.x) {
+    const letters = item.title.match(/\p{L}/gu) ?? [];
+    return letters.length > 0 && letters.filter(letter => /[a-z]/i.test(letter)).length / letters.length < 0.5;
+  }
+  return false;
+}
+
 const stopwords = new Set('the and for with from that this after over into amid about says said will its his her their has have had are was were but not new more than out off who what how why when year years report reports'.split(' '));
 
 function decode(text) {
@@ -188,6 +205,10 @@ export async function run() {
     const xml = await getText(source.url);
     return parseFeed(xml, source.name).map(item => ({ ...item, via: source.via }));
   }));
+  if (config.x !== false) {
+    sources.push({ name: 'X Following' });
+    settled.push(...await Promise.allSettled([timeline().then(posts => posts.map(item => ({ ...item, via: [] })))]));
+  }
 
   settled.forEach((entry, index) => {
     if (entry.status === 'rejected') {
@@ -195,7 +216,7 @@ export async function run() {
       return;
     }
     for (const item of entry.value) {
-      if (Date.now() - item.stamp > windowMs) continue;
+      if (Date.now() - item.stamp > windowMs || prefiltered(item)) continue;
       const key = `headlines:${slug(item.publisher)}:${createHash('sha256').update(item.guid).digest('hex').slice(0, 24)}`;
       const matched = topics.filter(topic => item.via.includes(topic.id));
       if (!seen.has(key)) seen.set(key, { key, item, matched: [] });
@@ -285,8 +306,15 @@ export async function run() {
 
   const publishable = [...seen.values()].filter(entry => entry.matched.length && !state[entry.key] && !entry.duplicate);
   await Promise.all(publishable.map(async entry => { entry.item.url = await resolveGoogleNews(entry.item.url); }));
+  // A Bloomberg story waits up to `syndication_wait_minutes` for Yahoo's readable copy, then publishes with its own link.
+  const wait = (config.syndication_wait_minutes ?? 10) * 60000;
+  await Promise.all(publishable.filter(entry => walled(entry.item.url)).map(async entry => {
+    const copy = await readableCopy(entry.item.title, entry.item.url, resolveGoogleNews).catch(error => { failures.push(`headlines syndication: ${error.message}`); return null; });
+    if (copy) entry.item.url = copy;
+    else if (Date.now() - entry.item.stamp < wait) entry.held = true;
+  }));
 
-  for (const { key, item, matched, priority } of publishable) {
+  for (const { key, item, matched, priority } of publishable.filter(entry => !entry.held)) {
     const best = matched.reduce((top, topic) => (rank[topic.priority ?? 'normal'] < rank[top.priority ?? 'normal'] ? topic : top), matched[0]);
     const labels = matched.map(topic => topic.label ?? topic.id).join(', ');
     const when = new Date(item.stamp).toISOString().replace('T', ' ').slice(0, 16);
@@ -294,7 +322,7 @@ export async function run() {
       key,
       title: item.title,
       summary: item.summary,
-      body: `Matched watchlist: ${labels}. Headline and link as published by ${item.publisher} at ${when} UTC; topic classification establishes coverage of a topic, not the accuracy of the claim.`,
+      body: `Matched watchlist: ${labels}. ${item.x ? `Post by ${item.publisher} on X` : `Headline and link as published by ${item.publisher}`} at ${when} UTC; topic classification establishes coverage of a topic, not the accuracy of the claim.`,
       source: item.publisher,
       url: item.url,
       image_url: item.image,
@@ -302,7 +330,7 @@ export async function run() {
       category: best.category ?? 'general',
       priority: priority ?? best.priority ?? 'normal',
       tickers: [],
-      tags: [...new Set(['deterministic', 'headlines', ...matched.map(topic => topic.id)])],
+      tags: [...new Set(['deterministic', item.x ? 'x' : 'headlines', ...matched.map(topic => topic.id)])],
     });
   }
 

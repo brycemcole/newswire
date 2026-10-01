@@ -46,6 +46,23 @@ nonisolated struct PricePoint: Identifiable, Hashable, Sendable {
     let run: Int
 }
 
+nonisolated struct HistoryPoint: Hashable, Sendable {
+    let date: Date
+    let close: Double
+    let adjusted: Double
+
+    static func parse(_ result: YValue) -> [HistoryPoint] {
+        let stamps = result["timestamp"]?.array ?? []
+        let closes = result["indicators"]?["quote"]?.array.first?["close"]?.array ?? []
+        let adjusted = result["indicators"]?["adjclose"]?.array.first?["adjclose"]?.array ?? []
+        return stamps.indices.compactMap { index in
+            guard let stamp = stamps[index].raw, index < closes.count, let close = closes[index].raw, close > 0 else { return nil }
+            let adjustedClose = index < adjusted.count ? adjusted[index].raw ?? close : close
+            return HistoryPoint(date: Date(timeIntervalSince1970: stamp), close: close, adjusted: adjustedClose)
+        }
+    }
+}
+
 nonisolated struct MarketSession: Sendable {
     let start: Date
     let end: Date
@@ -408,6 +425,7 @@ nonisolated enum MarketClient {
         let data = try await get("/v7/finance/spark", [
             URLQueryItem(name: "symbols", value: symbols.prefix(20).joined(separator: ",")),
             URLQueryItem(name: "range", value: "1d"), URLQueryItem(name: "interval", value: "5m"),
+            URLQueryItem(name: "includePrePost", value: "true"),
         ])
         var result: [String: Spark] = [:]
         for item in try JSONDecoder().decode(YValue.self, from: data)["spark"]?["result"]?.array ?? [] {
@@ -426,6 +444,19 @@ nonisolated enum MarketClient {
             URLQueryItem(name: "newsCount", value: "0"), URLQueryItem(name: "listsCount", value: "0"),
         ])
         return try JSONDecoder().decode(SearchEnvelope.self, from: data).quotes
+    }
+
+    @concurrent static func history(_ symbol: String, from start: Date) async throws -> [HistoryPoint] {
+        let data: Data
+        do {
+            data = try await get("/v8/finance/chart/\(symbol)", [
+                URLQueryItem(name: "period1", value: String(Int(start.timeIntervalSince1970))),
+                URLQueryItem(name: "period2", value: String(Int(Date.now.timeIntervalSince1970))),
+                URLQueryItem(name: "interval", value: "1d"), URLQueryItem(name: "events", value: "div,split"),
+            ])
+        } catch MarketError.notFound { throw MarketError.notFound(symbol) }
+        guard let result = try JSONDecoder().decode(YValue.self, from: data)["chart"]?["result"]?.array.first else { throw MarketError.notFound(symbol) }
+        return HistoryPoint.parse(result)
     }
 
     @concurrent static func chart(_ symbol: String, range: ChartRange) async throws -> MarketChart {

@@ -7,7 +7,7 @@ nonisolated enum ArticleExtractor {
         let complete: Bool
         var targeted = false
         var video: URL?
-        var text: String { String(paragraphs.joined(separator: "\n").prefix(6000)) }
+        var text: String { paragraphs.joined(separator: "\n") }
     }
 
     private static let hidden = try! NSRegularExpression(
@@ -22,9 +22,10 @@ nonisolated enum ArticleExtractor {
     private static let articleBody = try! NSRegularExpression(pattern: #""articleBody"\s*:\s*""# + jsonString)
     private static let embeddedHTML = try! NSRegularExpression(pattern: #""(?:content|body|html|articleHtml|bodyHtml)"\s*:\s*""# + jsonString)
 
-    /// Article containers that publishers mark explicitly. When one is present its paragraphs are the story, and the
-    /// rest of the page (related stories, app data, FAQs) is ignored.
-    private static let containers = [#"data-test-id="content-container""#, #"itemprop="articleBody""#, #"data-component="body-content""#]
+    private static let container = try! NSRegularExpression(
+        pattern: #"<([a-z][a-z0-9]*)\b[^>]*(?:data-test-id\s*=\s*["'](?:content-container|article-content)["']|itemprop\s*=\s*["']articleBody["']|data-component\s*=\s*["']body-content["']|class\s*=\s*["'][^"']*\b(?:ArticleBody-articleBody)\b[^"']*["'])[^>]*>"#,
+        options: [.caseInsensitive]
+    )
 
     static func extract(html: String, baseURL: URL) -> Result {
         var result = content(html: html, baseURL: baseURL)
@@ -81,24 +82,37 @@ nonisolated enum ArticleExtractor {
 
     private static func content(html: String, baseURL: URL) -> Result {
         let image = metaImage(in: html, relativeTo: baseURL)
-        for marker in containers {
-            guard let start = html.range(of: marker) else { continue }
-            let rest = html[start.upperBound...]
-            let end = rest.range(of: marker)?.lowerBound ?? rest.index(rest.startIndex, offsetBy: 80_000, limitedBy: rest.endIndex) ?? rest.endIndex
-            let paragraphs = clean(blocks(in: String(rest[..<end])), minimum: 40)
-            if paragraphs.joined().count >= 150 { return Result(paragraphs: paragraphs, image: image, complete: true, targeted: true) }
+        var targeted: [String] = []
+        let source = html as NSString
+        for match in container.matches(in: html, range: NSRange(location: 0, length: source.length)).prefix(30) {
+            let tag = source.substring(with: match.range(at: 1))
+            guard let boundary = try? NSRegularExpression(pattern: "</?" + tag + #"\b[^>]*>"#, options: [.caseInsensitive]) else { continue }
+            let start = NSMaxRange(match.range)
+            var depth = 1
+            var end: Int?
+            for boundaryMatch in boundary.matches(in: html, range: NSRange(location: start, length: source.length - start)) {
+                let markup = source.substring(with: boundaryMatch.range)
+                depth += markup.hasPrefix("</") ? -1 : (markup.hasSuffix("/>") ? 0 : 1)
+                if depth == 0 { end = boundaryMatch.range.location; break }
+            }
+            guard let end else { continue }
+            let paragraphs = clean(blocks(in: source.substring(with: NSRange(location: start, length: end - start))), minimum: 40)
+            if paragraphs.joined().count > targeted.joined().count { targeted = paragraphs }
         }
         if let body = strings(articleBody, in: html).max(by: { $0.count < $1.count }) {
             let paragraphs = clean(body.split(whereSeparator: \.isNewline).map(String.init), minimum: 20)
-            if paragraphs.joined().count >= 200 { return Result(paragraphs: paragraphs, image: image, complete: true) }
+            if paragraphs.joined().count >= 200, paragraphs.joined().count > targeted.joined().count { return Result(paragraphs: paragraphs, image: image, complete: true) }
         }
         let embedded = strings(embeddedHTML, in: html)
             .filter { $0.range(of: #"<p\b"#, options: [.regularExpression, .caseInsensitive]) != nil }
             .map { clean(blocks(in: $0), minimum: 20) }
             .max { $0.joined().count < $1.joined().count } ?? []
+        if targeted.joined().count >= 150, targeted.joined().count >= embedded.joined().count {
+            return Result(paragraphs: targeted, image: image, complete: true, targeted: true)
+        }
         let dom = clean(blocks(in: html), minimum: 40)
         var paragraphs = embedded.joined().count >= dom.joined().count ? embedded : dom
-        let complete = paragraphs.joined().count >= 400 || (!embedded.isEmpty && paragraphs == embedded)
+        let complete = !embedded.isEmpty && paragraphs == embedded
         if paragraphs.isEmpty, let summary = metaDescription(in: html) { paragraphs = [summary] }
         return Result(paragraphs: paragraphs, image: image, complete: complete)
     }
@@ -129,7 +143,7 @@ nonisolated enum ArticleExtractor {
     static func blocks(in html: String) -> [String] {
         let visible = hidden.stringByReplacingMatches(in: html, range: NSRange(html.startIndex..., in: html), withTemplate: " ")
         let source = visible as NSString
-        return block.matches(in: visible, range: NSRange(location: 0, length: source.length)).prefix(80).compactMap { match in
+        return block.matches(in: visible, range: NSRange(location: 0, length: source.length)).prefix(1000).compactMap { match in
             let inner = source.substring(with: match.range(at: 2))
             guard source.substring(with: match.range(at: 1)).lowercased() == "li" else { return strip(inner) }
             guard inner.range(of: #"<(div|h[1-6]|img|picture|time|ul|ol)\b"#, options: [.regularExpression, .caseInsensitive]) == nil else { return nil }

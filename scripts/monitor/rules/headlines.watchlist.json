@@ -17,10 +17,6 @@
     { "name": "CNBC", "url": "https://www.cnbc.com/id/19854910/device/rss/rss.html" },
     { "name": "Yahoo Finance", "url": "https://finance.yahoo.com/rss/topstories" },
     { "name": "Yahoo Finance", "url": "https://finance.yahoo.com/news/rssindex" },
-    { "name": "Bloomberg", "url": "https://feeds.bloomberg.com/markets/news.rss" },
-    { "name": "Bloomberg", "url": "https://feeds.bloomberg.com/politics/news.rss" },
-    { "name": "Bloomberg", "url": "https://feeds.bloomberg.com/technology/news.rss" },
-    { "name": "Bloomberg", "url": "https://feeds.bloomberg.com/economics/news.rss" },
     { "name": "MarketWatch", "url": "https://feeds.content.dowjones.io/public/rss/mw_marketpulse" },
     { "name": "New York Times", "url": "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml" },
     { "name": "New York Times", "url": "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml" },
@@ -47,6 +43,7 @@
     { "name": "Mistral AI", "url": "https://mistral.ai/rss.xml", "via": ["ai-labs"] }
   ],
   "topics": [
+    {"id": "us-market-movers", "label": "US market movers", "category": "markets", "priority": "normal", "description": "News that moves or is likely to move US markets: a Fed decision or Fed official signaling policy, a major US economic data release, or a foreign event with a clear, direct channel into US stocks, Treasury yields, the dollar, or oil, such as a foreign central bank (Bank of Japan, ECB, Bank of England, PBOC) deciding or signaling a rate change, a sharp yen or yuan move, Japanese or Chinese selling or buying of US assets, an OPEC output decision, or a foreign crisis markets are reacting to. Not routine foreign data or commentary that only matters to that country's own economy."},
     {
       "id": "tariffs",
       "label": "tariffs and trade",

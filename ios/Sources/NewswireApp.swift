@@ -7,7 +7,16 @@ import SwiftUI
     var body: some Scene {
         WindowGroup {
             #if DEBUG
-            if let index = CommandLine.arguments.firstIndex(of: "-widgetGallery") {
+            if let index = CommandLine.arguments.firstIndex(of: "-articlePreview"),
+               let raw = CommandLine.arguments.dropFirst(index + 1).first, let url = URL(string: raw) {
+                ArticleReaderPreview(url: url)
+            } else if CommandLine.arguments.contains("-storyDesignPreview") {
+                StoryDesignPreview()
+            } else if CommandLine.arguments.contains("-portfolioPreview") {
+                PortfolioPreview()
+            } else if CommandLine.arguments.contains("-portfolioAudit") {
+                PortfolioView()
+            } else if let index = CommandLine.arguments.firstIndex(of: "-widgetGallery") {
                 WidgetGallery(page: CommandLine.arguments.dropFirst(index + 1).first ?? "home")
             } else {
                 FeedView()
@@ -189,26 +198,18 @@ struct FeedView: View {
                 .onScrollPhaseChange { _, phase in
                     Summarizer.shared.scrolling = phase.isScrolling
                 }
-                .searchable(text: $search, tokens: $store.filters, placement: .navigationBarDrawer(displayMode: .automatic), prompt: store.mode == .brain ? "Search Brain" : "Search the wire") { filter in
+                .task(id: store.stories.prefix(40).map(\.id)) {
+                    Summarizer.shared.preload(store.stories)
+                }
+                .searchable(text: $search, tokens: $store.filters, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search the wire") { filter in
                     Label(filter.title, systemImage: filter.symbol)
                 }
                 .navigationDestination(for: Story.self) { StoryDetail(story: $0) }
                 .navigationDestination(item: $quoteRoute) { QuoteDetail(symbol: $0.id).id($0.id).dockClearance() }
-                .navigationTitle(store.mode.title)
+                .navigationTitle("NEWSWIRE")
                 .navigationSubtitle(subtitle)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button {
-                            withAnimation(selectionAnimation) { store.switchMode() }
-                        } label: {
-                            Image(systemName: store.mode.symbol)
-                                .contentTransition(.symbolEffect(.replace))
-                        }
-                        .sensoryFeedback(.selection, trigger: store.mode)
-                        .accessibilityLabel(store.mode == .brain ? "Brain feed" : "Wire feed")
-                        .accessibilityHint(store.mode == .brain ? "Switches to the wire" : "Switches to Brain")
-                    }
                     ToolbarItem(placement: .topBarTrailing) {
                         Button { portfolio = true } label: { Image(systemName: "briefcase") }
                             .accessibilityLabel("Portfolio")
@@ -221,7 +222,7 @@ struct FeedView: View {
             }
             .sheet(isPresented: $settings) { SettingsView(store: store) }
             .sheet(isPresented: $portfolio) { PortfolioView() }
-            .task(id: store.mode.rawValue + "|" + store.category + "|" + search + "|" + store.filters.map(\.id).joined(separator: "|") + "|" + store.serverURL) {
+            .task(id: store.category + "|" + search + "|" + store.filters.map(\.id).joined(separator: "|") + "|" + store.serverURL) {
                 store.query = search.trimmingCharacters(in: .whitespacesAndNewlines)
                 store.reset()
                 // Debounce typing only; category and filter taps load immediately.
@@ -241,6 +242,11 @@ struct FeedView: View {
                 }
                 guard phase == .active else { return }
                 await store.ready()
+                PortfolioStore.shared.reloadFromKeychain()
+                await PushDelegate.syncStockAlerts()
+                if (PortfolioStore.shared.snapshot.updated ?? .distantPast).timeIntervalSinceNow < -300 {
+                    await PortfolioStore.shared.sync()
+                }
                 // Skipped when background refresh just brought the feed up to date; at launch the feed-key task
                 // above usually wins and this returns at once because a load is already in flight. After an hour
                 // away the list is re-ranked as it opens rather than gaining a block of new stories over stale ones.
@@ -251,6 +257,7 @@ struct FeedView: View {
                 while !Task.isCancelled {
                     do { try await Task.sleep(for: .seconds(60)) } catch { return }
                     await store.sync(.merge, quiet: true)
+                    await PushDelegate.syncStockAlerts()
                 }
             }
             .task(id: phase == .active ? watchlist.symbols : []) {
@@ -292,6 +299,7 @@ struct FeedView: View {
         }
         #if DEBUG
         .task {
+            if CommandLine.arguments.contains("-marketSearch") { dock = .large }
             if let index = CommandLine.arguments.firstIndex(of: "-quote"), let symbol = CommandLine.arguments.dropFirst(index + 1).first {
                 try? await Task.sleep(for: .seconds(1))
                 quoteRoute = MarketSymbol(id: symbol)
@@ -341,7 +349,9 @@ struct FeedView: View {
             ForEach(shown, id: \.self) { symbol in
                 let quote = board.quotes[symbol]
                 watchlistMenu(for: symbol) {
-                    MarketRow(symbol: symbol, title: quote?.name ?? " ", tag: nil, quote: quote, spark: board.sparks[symbol], inset: 16)
+                    MarketRow(symbol: OptionSymbol.display(symbol), title: quote?.name ?? " ",
+                              tag: quote.flatMap { watchlist.entries[symbol]?.caption(at: $0.price) },
+                              quote: quote, spark: board.sparks[symbol], inset: 16)
                 }
                 if symbol != shown.last { Divider().padding(.leading, 16) }
             }
@@ -411,7 +421,7 @@ struct FeedView: View {
                 let quote = board.quotes[symbol]
                 watchlistMenu(for: symbol) {
                     HStack(alignment: .firstTextBaseline, spacing: 4) {
-                        Text(symbol).font(.subheadline.weight(.semibold).monospaced())
+                        Text(OptionSymbol.display(symbol)).font(.subheadline.weight(.semibold).monospaced())
                             .lineLimit(1).minimumScaleFactor(0.7)
                         Spacer(minLength: 4)
                         VStack(alignment: .trailing, spacing: 1) {
@@ -563,6 +573,9 @@ struct StoryRow: View {
                 }
             }
             Button { feedStore?.apply(.source(story.source)) } label: { Label("More from \(story.source)", systemImage: "newspaper") }
+            if story.isBrain {
+                Button { feedStore?.apply(.agent("brain")) } label: { Label("Only Brain picks", systemImage: "brain") }
+            }
             Link(destination: story.url) { Label("Read Source", systemImage: "safari") }
             ShareLink(item: story.url)
         }
@@ -598,6 +611,12 @@ struct StoryRow: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .accessibilityLabel("Urgent")
+                }
+                if story.isBrain {
+                    Image(systemName: "brain")
+                        .font(.caption)
+                        .foregroundStyle(Color.wireAccent)
+                        .accessibilityLabel("Brain pick")
                 }
                 Text(story.source).font(.footnote.weight(.bold)).foregroundStyle(.secondary).lineLimit(1)
                 Text("·").foregroundStyle(.tertiary)
@@ -693,7 +712,7 @@ struct StoryDetail: View {
         QuoteInline.annotate(text, quotes: inline[index] ?? [])
     }
     private var excerpt: [String] {
-        Array((Summarizer.shared.texts[key] ?? "").split(separator: "\n").map(String.init).prefix(8))
+        Array((Summarizer.shared.texts[key] ?? "").split(separator: "\n").map(String.init))
     }
     var body: some View {
         // The summarizer's dictionaries are unobserved; this makes the detail (and only the detail) update live.
@@ -741,6 +760,7 @@ struct StoryDetail: View {
                 Divider()
                 if glance != nil || preparingGlance {
                     glanceCard.transition(.opacity)
+                    Divider()
                 }
                 if story.isBrain && story.opensInReader && story.hasDistinctSummary, let lead {
                     Text(annotated(lead, at: 0))
@@ -767,9 +787,6 @@ struct StoryDetail: View {
                         Button { attempt += 1 } label: { Label("Load article", systemImage: "arrow.clockwise") }
                             .font(.subheadline.weight(.semibold)).foregroundStyle(.secondary).buttonStyle(.plain)
                     }
-                    if let topics = story.watchlistTopics {
-                        Label(topics, systemImage: "scope").font(.caption).foregroundStyle(.tertiary)
-                    }
                 } else {
                     StoryBodyView(html: story.body.isEmpty ? story.summary : story.body, quotes: quotes)
                 }
@@ -778,8 +795,13 @@ struct StoryDetail: View {
                         .font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
                 }
                 sourceActions
+                topicsNote
+                relatedSection
             }.padding(20).frame(maxWidth: 760, alignment: .leading).frame(maxWidth: .infinity)
         }
+        #if DEBUG
+        .defaultScrollAnchor(CommandLine.arguments.contains("-articlePreviewEnd") ? .bottom : .top)
+        #endif
         .animation(.easeOut(duration: 0.2), value: excerpt)
         .animation(.easeOut(duration: 0.2), value: loading)
         .animation(.easeOut(duration: 0.2), value: quotes)
@@ -793,14 +815,19 @@ struct StoryDetail: View {
         }
         .navigationDestination(item: $selectedQuote) { QuoteDetail(symbol: $0.symbol).dockClearance() }
         .task(id: attempt) {
-            guard story.opensInReader, story.url.host() != "news.google.com", excerpt.isEmpty || rerender else { return }
+            if !rerender, let pending = Summarizer.shared.pendingPreload(story) {
+                loading = true
+                await pending.value
+                loading = false
+            }
+            guard story.opensInReader, story.url.host() != "news.google.com", Summarizer.shared.needsArticle(story) || rerender else { return }
             loading = true
             defer { loading = false; rerender = false }
             // Let the navigation push finish first: extraction can create a web view, which would drop frames mid-transition.
             if attempt == 0 {
                 do { try await Task.sleep(for: .milliseconds(450)) } catch { return }
             }
-            if let page = await Summarizer.page(story.url, force: rerender) { Summarizer.shared.remember(page, for: story) }
+            if let page = await Summarizer.page(story.url, force: rerender) { Summarizer.shared.remember(page, for: story, reload: rerender) }
         }
         .task(id: excerpt.count) {
             await QuoteStore.shared.scan(story, article: Summarizer.shared.texts[key] ?? "")
@@ -872,47 +899,96 @@ struct StoryDetail: View {
     }
 
     private var glanceCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("At a glance", systemImage: "sparkles")
-                .font(.system(.caption, design: .monospaced).weight(.semibold))
-                .textCase(.uppercase)
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Summary").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
             if let glance {
-                ForEach(Array(glance.enumerated()), id: \.offset) { _, point in
-                    HStack(alignment: .firstTextBaseline, spacing: 10) {
-                        Text("•").fontWeight(.heavy).foregroundStyle(Color.wireAccent)
-                        Text(point).fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(glance.enumerated()), id: \.offset) { _, point in
+                        HStack(alignment: .firstTextBaseline, spacing: 10) {
+                            Circle().fill(.tertiary).frame(width: 5, height: 5).alignmentGuide(.firstTextBaseline) { $0[.bottom] + 3 }
+                            Text(point).fixedSize(horizontal: false, vertical: true)
+                        }
                     }
-                    .font(.body.weight(.medium))
                 }
+                .font(.body)
                 let brief = Summarizer.shared.briefs[key]
                 if moreDetail {
-                    if let brief {
-                        Text(brief).font(.body).foregroundStyle(.primary.opacity(0.85)).lineSpacing(3)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .transition(.opacity)
-                    } else {
-                        Text("Writing a longer summary…").font(.subheadline).foregroundStyle(.secondary)
-                            .symbolEffect(.pulse, options: .repeating)
+                    Group {
+                        if let brief {
+                            Text(brief).foregroundStyle(.secondary).lineSpacing(3).fixedSize(horizontal: false, vertical: true)
+                        } else {
+                            Text("Writing a longer summary…").foregroundStyle(.tertiary)
+                        }
                     }
+                    .font(.callout).padding(.top, 2).transition(.opacity)
                 }
                 if brief != nil || (Summarizer.shared.texts[key]?.count ?? 0) >= 800 {
-                    Button {
+                    Button(moreDetail ? "Show Less" : "Show More") {
                         withAnimation(.easeOut(duration: 0.2)) { moreDetail.toggle() }
-                    } label: {
-                        Text(moreDetail ? "Show less" : "More detail").font(.subheadline.weight(.semibold)).foregroundStyle(Color.wireAccent)
+                    }
+                    .font(.subheadline).foregroundStyle(Color.wireAccent).buttonStyle(.plain)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("A short line standing in for the first point of the summary")
+                    Text("Another line standing in for a point")
+                    Text("A third, shorter placeholder line")
+                }
+                .font(.body).redacted(reason: .placeholder)
+                .phaseAnimator([0.35, 0.7]) { view, opacity in view.opacity(opacity) } animation: { _ in .easeInOut(duration: 0.9) }
+                .accessibilityLabel("Summarizing")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .animation(.easeOut(duration: 0.2), value: glance)
+    }
+
+    private var related: (title: String, stories: [Story])? {
+        guard let all = feedStore?.stories else { return nil }
+        let tickers = Set(story.tickers), topics = Set(story.matchedTopics), tags = Set(story.tags).subtracting(["headlines"])
+        let others = all.filter { $0.id != story.id && $0.url != story.url && $0.title != story.title }
+        let scored = others.map { other -> (Story, Int) in
+            let score = 3 * tickers.intersection(other.tickers).count + 2 * topics.intersection(other.matchedTopics).count
+                + tags.intersection(other.tags).count
+            return (other, score)
+        }
+        .filter { $0.1 >= 2 }
+        .sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.0.publishedAt > $1.0.publishedAt }
+        if !scored.isEmpty { return ("Related", scored.prefix(3).map(\.0)) }
+        let sameCategory = others.filter { $0.category == story.category }.sorted { $0.publishedAt > $1.publishedAt }
+        return sameCategory.isEmpty ? nil : ("More in \(story.category.capitalized)", Array(sameCategory.prefix(3)))
+    }
+
+    @ViewBuilder private var relatedSection: some View {
+        if let related {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(related.title).font(.title3.weight(.semibold)).padding(.bottom, 6)
+                ForEach(Array(related.stories.enumerated()), id: \.element.id) { index, other in
+                    if index > 0 { Divider() }
+                    NavigationLink(value: other) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("\(other.source) · \(other.publishedAt.wireAge)")
+                                .font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                            Text(other.title).font(.body.weight(.semibold)).foregroundStyle(.primary)
+                                .multilineTextAlignment(.leading).lineLimit(3)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 12)
+                        .contentShape(.rect)
                     }
                     .buttonStyle(.plain)
                 }
-            } else {
-                Text("Reading the story…").font(.subheadline).foregroundStyle(.secondary)
-                    .phaseAnimator([0.4, 1]) { view, opacity in view.opacity(opacity) } animation: { _ in .easeInOut(duration: 0.8) }
             }
+            .padding(.top, 8)
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.fill.quaternary, in: .rect(cornerRadius: 16))
-        .animation(.easeOut(duration: 0.2), value: glance)
+    }
+
+    @ViewBuilder private var topicsNote: some View {
+        let topics = story.matchedTopics
+        if !topics.isEmpty {
+            Text("Flagged by your headline monitor for \(topics.formatted(.list(type: .and))).")
+                .font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     @ViewBuilder private var sourceActions: some View {
@@ -995,8 +1071,9 @@ struct SafariView: UIViewControllerRepresentable {
 
 extension Story {
     var opensInReader: Bool { (tags.contains("headlines") || (isBrain && body.isEmpty)) && ["http", "https"].contains(url.scheme?.lowercased() ?? "") }
-    var watchlistTopics: String? {
-        (body.firstMatch(of: /Matched watchlist: ([^.]+)\./)?.1).map { "Watchlist: " + String($0) }
+    var matchedTopics: [String] {
+        guard let match = body.firstMatch(of: /Matched watchlist: ([^.]+)\./)?.1 else { return [] }
+        return match.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
     }
     var hasDistinctSummary: Bool {
         let plain = StoryHTML.plainText(summary).lowercased().filter { $0.isLetter || $0.isNumber }
@@ -1046,6 +1123,9 @@ struct SettingsView: View {
                 }
                 Section("Brokerage Sync") {
                     NavigationLink { BrokerageSyncView() } label: { Label("Set up Plaid", systemImage: "building.columns") }
+                }
+                Section("Stock Questions") {
+                    NavigationLink { StockAISettings() } label: { Label("AI", systemImage: "sparkles") }
                 }
                 Section("Connection") {
                     TextField("https://your-server", text: $url).keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()

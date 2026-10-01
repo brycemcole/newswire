@@ -12,7 +12,9 @@ struct MarketDock: View {
     /// Space above the search bar when collapsed, matching the search sheet's space below it.
     static let barInset: CGFloat = 12
     /// Space under the floating dock, measured from the bottom edge of the screen.
-    static let floatGap: CGFloat = 14
+    static let floatGap: CGFloat = 24
+    /// Side margin of the floating dock, matching the content margin of the screens under it.
+    static let sideInset: CGFloat = 16
     /// How much room screens under the dock reserve at the bottom (dock top edge, less the home-indicator inset it already sits above).
     static let clearance: CGFloat = peekHeight + floatGap - 34
 
@@ -45,7 +47,7 @@ struct MarketDock: View {
             .shadow(color: .black.opacity(0.10), radius: 14, y: 4)
             .animation(animation, value: detent)
             .simultaneousGesture(dragGesture(stops), including: detent == .peek ? .all : .subviews)
-            .padding(.horizontal, 8 * (1 - docked))
+            .padding(.horizontal, Self.sideInset * (1 - docked))
             .padding(.bottom, Self.floatGap * (1 - docked))
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         }

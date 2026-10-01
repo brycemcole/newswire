@@ -8,6 +8,7 @@ nonisolated struct ArticlePage: Sendable {
     var text: String
     var image: URL?
     var video: URL?
+    var validated = false
 
     init(text: String, image: URL?, video: URL?) {
         self.text = text
@@ -33,6 +34,7 @@ nonisolated struct ArticlePage: Sendable {
     @ObservationIgnored private(set) var images: [String: URL] = [:]
     @ObservationIgnored private(set) var videos: [String: URL] = [:]
     @ObservationIgnored private(set) var texts: [String: String] = [:]
+    @ObservationIgnored private var validated: Set<String> = []
     @ObservationIgnored private var stamps: [String: Date] = [:]
     /// Set by the feed while the list is moving; results wait for it to settle before they change a row.
     @ObservationIgnored var scrolling = false
@@ -42,11 +44,23 @@ nonisolated struct ArticlePage: Sendable {
     @ObservationIgnored private var done: Set<String> = []
     @ObservationIgnored private var inFlight: Set<String> = []
     @ObservationIgnored private var writing: Set<String> = []
+    /// Digests and briefs written from a teaser that has since been replaced by the full article. They stay on
+    /// screen until the rewrite lands, so nothing blanks out while the reader is looking at it.
+    @ObservationIgnored private var staleDigests: Set<String> = []
+    @ObservationIgnored private var staleBriefs: Set<String> = []
     /// Stories the model declined or failed to summarize this session, so the detail stops waiting for them.
     @ObservationIgnored private(set) var unsummarizable: Set<String> = []
     @ObservationIgnored private var running = false
     @ObservationIgnored private var loading: Task<Void, Never>?
     @ObservationIgnored private var saving: Task<Void, Never>?
+    /// Home-page preloading: full rendered articles fetched in hidden web views, highest priority first.
+    @ObservationIgnored private var preloadQueue: [Story] = []
+    @ObservationIgnored private var preloadAttempted: Set<String> = []
+    @ObservationIgnored private var preloadPending: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var preloadDomains: [String: Int] = [:]
+    @ObservationIgnored private var preloadRunner: Task<Void, Never>?
+    private static let preloadLimit = 3
+    private static let preloadPerDomain = 1
 
     private nonisolated struct Cache: Codable, Sendable {
         var summaries: [String: String]
@@ -56,6 +70,7 @@ nonisolated struct ArticlePage: Sendable {
         var glances: [String: [String]]?
         var briefs: [String: String]?
         var videos: [String: URL]?
+        var validated: Set<String>?
     }
 
     /// Entries older than this are dropped when the cache is read, so the file stays small and fast to load.
@@ -64,7 +79,7 @@ nonisolated struct ArticlePage: Sendable {
     private init() {}
 
     nonisolated private static var cacheURL: URL {
-        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appending(path: "newswire-pages-v5.json")
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appending(path: "newswire-pages-v6.json")
     }
 
     func load() async {
@@ -78,6 +93,7 @@ nonisolated struct ArticlePage: Sendable {
             for (key, value) in saved.briefs ?? [:] where briefs[key] == nil { briefs[key] = value }
             for (key, value) in saved.videos ?? [:] where videos[key] == nil { videos[key] = value }
             for (key, value) in saved.stamps ?? [:] where stamps[key] == nil { stamps[key] = value }
+            validated.formUnion(saved.validated ?? [])
             revision += 1
         }
         loading = task
@@ -98,6 +114,7 @@ nonisolated struct ArticlePage: Sendable {
             cache.briefs?[key] = nil
             cache.videos?[key] = nil
             stamps[key] = nil
+            cache.validated?.remove(key)
         }
         cache.stamps = stamps
         return cache
@@ -107,7 +124,7 @@ nonisolated struct ArticlePage: Sendable {
         try? JSONEncoder().encode(cache).write(to: cacheURL, options: .atomic)
     }
 
-    var available: Bool { SystemLanguageModel.default.availability == .available }
+    var available: Bool { AIRouter.isAvailable(.articleSummaries) }
 
     /// The image to show for a story: the page's own share image (or video poster), which is far larger than the feed's thumbnail.
     func poster(for story: Story) -> URL? {
@@ -190,6 +207,65 @@ nonisolated struct ArticlePage: Sendable {
         }
     }
 
+    /// Queues the home feed's stories for full rendered loading in hidden web views. Breaking and urgent stories go
+    /// first, then feed order. At most three pages load at once and only one per site, with staggered starts, so no
+    /// publisher sees a burst. Stories already holding validated text are skipped.
+    func preload(_ stories: [Story]) {
+        func rank(_ story: Story) -> Int { story.priority == "breaking" ? 0 : story.priority == "urgent" ? 1 : 2 }
+        preloadQueue = stories.prefix(40).enumerated()
+            .filter { wantsPreload($0.element) }
+            .sorted { (rank($0.element), $0.offset) < (rank($1.element), $1.offset) }
+            .map(\.element)
+        guard preloadRunner == nil, !preloadQueue.isEmpty else { return }
+        preloadRunner = Task {
+            await load()
+            await runPreload()
+            preloadRunner = nil
+        }
+    }
+
+    /// A preload already running for this story, so the reader can wait for it instead of opening a second web view.
+    func pendingPreload(_ story: Story) -> Task<Void, Never>? { preloadPending[story.url.absoluteString] }
+
+    private func wantsPreload(_ story: Story) -> Bool {
+        let key = story.url.absoluteString
+        return !story.isBrain && story.opensInReader && story.url.host() != "news.google.com"
+            && !preloadAttempted.contains(key) && preloadPending[key] == nil && needsArticle(story)
+    }
+
+    private nonisolated static func domain(_ url: URL) -> String {
+        let parts = (url.host()?.lowercased() ?? "").split(separator: ".")
+        return parts.suffix(parts.count > 2 && ["co", "com", "org", "net", "ac"].contains(parts[parts.count - 2]) ? 3 : 2).joined(separator: ".")
+    }
+
+    private func runPreload() async {
+        while !Task.isCancelled {
+            preloadQueue.removeAll { !wantsPreload($0) }
+            if preloadQueue.isEmpty && preloadPending.isEmpty { return }
+            let active = UIApplication.shared.applicationState == .active
+            if active, !scrolling, preloadPending.count < Self.preloadLimit,
+               let index = preloadQueue.firstIndex(where: { preloadDomains[Self.domain($0.url), default: 0] < Self.preloadPerDomain }) {
+                startPreload(preloadQueue.remove(at: index))
+                // A short, uneven gap between starts so requests never arrive as a burst.
+                try? await Task.sleep(for: .milliseconds(Int.random(in: 700...1500)))
+            } else {
+                try? await Task.sleep(for: .milliseconds(400))
+            }
+        }
+    }
+
+    private func startPreload(_ story: Story) {
+        let key = story.url.absoluteString
+        let domain = Self.domain(story.url)
+        preloadAttempted.insert(key)
+        preloadDomains[domain, default: 0] += 1
+        preloadPending[key] = Task {
+            if let page = await Self.page(story.url) { apply(page, for: story) }
+            preloadDomains[domain, default: 1] -= 1
+            preloadPending[key] = nil
+        }
+    }
+
     /// Fetches article text, images and digests for the top stories ahead of time. Background refresh and
     /// overnight processing call this so the feed opens with everything ready. Stops early when cancelled.
     func prepare(_ stories: [Story], summarize wantsSummaries: Bool) async {
@@ -208,29 +284,56 @@ nonisolated struct ArticlePage: Sendable {
         await flush()
     }
 
-    private func apply(_ page: ArticlePage, for story: Story) {
+    /// `reload` is the reader asking for a fresh copy: it replaces the text outright and rewrites the digest.
+    private func apply(_ page: ArticlePage, for story: Story, reload: Bool = false) {
         let key = story.url.absoluteString
-        if !page.text.isEmpty { texts[key] = page.text }
-        if let video = page.video { videos[key] = video }
-        if images[key] == nil, let image = page.image { images[key] = image }
-        changed(key)
+        var modified = false
+        if ArticleQuality.assess(page.text) != .invalid, !validated.contains(key) || page.validated || reload {
+            let current = texts[key]
+            let readable = current.map { ArticleQuality.assess($0) == .usable } ?? false
+            let replace: Bool
+            if let current {
+                if current == page.text {
+                    replace = false
+                } else if reload {
+                    replace = true
+                } else if readable {
+                    // Text the reader may already be reading is only swapped for clearly more of the article.
+                    replace = page.text.count >= current.count + max(600, current.count / 4)
+                } else {
+                    replace = (page.validated && !validated.contains(key)) || page.text.count >= current.count
+                }
+            } else {
+                replace = true
+            }
+            if replace {
+                if current != nil && (!readable || reload) {
+                    if glances[key] != nil || summaries[key] != nil { staleDigests.insert(key) }
+                    if briefs[key] != nil { staleBriefs.insert(key) }
+                }
+                unsummarizable.remove(key)
+                texts[key] = page.text
+                modified = true
+            }
+            if page.validated, validated.insert(key).inserted { modified = true }
+        }
+        if let video = page.video, videos[key] != video { videos[key] = video; modified = true }
+        if images[key] == nil, let image = page.image { images[key] = image; modified = true }
+        if modified { changed(key) }
     }
 
-    func remember(_ page: ArticlePage, for story: Story) {
-        apply(page, for: story)
+    func remember(_ page: ArticlePage, for story: Story, reload: Bool = false) {
+        apply(page, for: story, reload: reload)
         Task { await digest(story) }
     }
-
-    /// News is often about violence or crime; the permissive guardrails let the model summarize it instead of refusing.
-    private static var model: SystemLanguageModel { SystemLanguageModel(guardrails: .permissiveContentTransformations) }
 
     /// One model call gives both the feed's one-line summary and the detail's "At a glance" points.
     func digest(_ story: Story) async {
         let key = story.url.absoluteString
-        guard available, glances[key] == nil, !unsummarizable.contains(key), let article = texts[key], article.count >= 400,
+        guard available, glances[key] == nil || staleDigests.contains(key), !unsummarizable.contains(key), let article = texts[key], article.count >= 400,
               writing.insert("digest " + key).inserted else { return }
         defer { writing.remove("digest " + key) }
-        let session = LanguageModelSession(model: Self.model, instructions: """
+        let response = try? await AIRouter.generate(.articleSummaries, instructions: """
         You write quick briefings for a news wire reader. Use only facts stated in the article. Be specific: names, numbers, dates. No opinions, no preamble, no markdown.
         Reply in exactly this format and nothing else:
         SUMMARY: one plain factual sentence of at most 25 words saying what happened, without repeating the headline
@@ -238,18 +341,20 @@ nonisolated struct ArticlePage: Sendable {
         - the key numbers, dates or details
         - why it matters or what happens next
         Each point is under 20 words.
-        """)
-        let response = try? await session.respond(to: "Headline: \(story.title)\n\nArticle:\n\(article)", options: GenerationOptions(temperature: 0.2, maximumResponseTokens: 220))
-        let lines = (response?.content ?? "").split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
+        """, prompt: "Headline: \(story.title)\n\nArticle:\n\(article.prefix(6000))", temperature: 0.2, maxTokens: 220)
+        guard texts[key] == article else { return }
+        let lines = (response ?? "").split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
         let summary = lines.first { $0.uppercased().hasPrefix("SUMMARY:") }.map { String($0.dropFirst(8)).trimmingCharacters(in: .whitespaces) } ?? ""
         let points = lines.filter { $0.hasPrefix("-") || $0.hasPrefix("•") || $0.hasPrefix("*") }
             .map { String($0.dropFirst()).trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "**", with: "") }
             .filter { $0.count > 3 }
         guard !summary.isEmpty || !points.isEmpty else {
-            unsummarizable.insert(key)
+            // A failed rewrite keeps the earlier digest rather than taking it away.
+            if staleDigests.remove(key) == nil { unsummarizable.insert(key) }
             changed(key)
             return
         }
+        staleDigests.remove(key)
         if !summary.isEmpty { summaries[key] = summary }
         if !points.isEmpty { glances[key] = Array(points.prefix(4)) }
         changed(key)
@@ -258,12 +363,14 @@ nonisolated struct ArticlePage: Sendable {
     /// The longer explanation behind "More detail". Written when a story opens, and ahead of time for the top few stories.
     func brief(_ story: Story) async {
         let key = story.url.absoluteString
-        guard available, briefs[key] == nil, let article = texts[key], article.count >= 800, writing.insert("brief " + key).inserted else { return }
+        guard available, briefs[key] == nil || staleBriefs.contains(key), let article = texts[key], article.count >= 800,
+              writing.insert("brief " + key).inserted else { return }
         defer { writing.remove("brief " + key) }
-        let session = LanguageModelSession(model: Self.model, instructions: "You explain news stories for a news wire reader in two short paragraphs, 90 to 140 words in total. First paragraph: what happened, with the key names and numbers. Second paragraph: the background and what it means or what happens next. Use only facts from the article. Plain prose, no markdown, no preamble.")
-        guard let response = try? await session.respond(to: "Headline: \(story.title)\n\nArticle:\n\(article)", options: GenerationOptions(temperature: 0.3, maximumResponseTokens: 280)) else { return }
-        let text = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let response = try? await AIRouter.generate(.articleSummaries, instructions: "You explain news stories for a news wire reader in two short paragraphs, 90 to 140 words in total. First paragraph: what happened, with the key names and numbers. Second paragraph: the background and what it means or what happens next. Use only facts from the article. Plain prose, no markdown, no preamble.", prompt: "Headline: \(story.title)\n\nArticle:\n\(article.prefix(6000))", temperature: 0.3, maxTokens: 280) else { return }
+        guard texts[key] == article else { return }
+        let text = response.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
+        staleBriefs.remove(key)
         briefs[key] = text
         changed(key)
     }
@@ -289,7 +396,7 @@ nonisolated struct ArticlePage: Sendable {
     }
 
     private var snapshot: Cache {
-        Cache(summaries: summaries, images: images, articleText: texts, stamps: stamps, glances: glances, briefs: briefs, videos: videos)
+        Cache(summaries: summaries, images: images, articleText: texts, stamps: stamps, glances: glances, briefs: briefs, videos: videos, validated: validated)
     }
 
     /// Sites whose raw HTML carries related stories and app data that the static extractor mistakes for the article.
@@ -299,38 +406,23 @@ nonisolated struct ArticlePage: Sendable {
         return ["seekingalpha.com", "bloomberg.com"].contains { host == $0 || host.hasSuffix("." + $0) }
     }
 
-    nonisolated static func page(_ url: URL, render: Bool = true, force: Bool = false) async -> ArticlePage? {
-        let url = URL(string: url.absoluteString.replacingOccurrences(of: "&amp;", with: "&")) ?? url
-        if force || rendersFirst(url) {
-            // The site's own article container in the raw HTML is trustworthy; anything else from these pages is not.
-            let targeted = await fetched(url).flatMap { $0.targeted ? ArticlePage($0) : nil }
-            guard render else { return ArticlePage(text: targeted?.text ?? "", image: targeted?.image, video: targeted?.video) }
-            if var rendered = await RenderedPage.load(url), rendered.text.count > (targeted?.text.count ?? 0) {
-                rendered.image = rendered.image ?? targeted?.image
-                rendered.video = rendered.video ?? targeted?.video
-                return rendered
-            }
-            if let targeted { return targeted }
-            return force && !rendersFirst(url) ? await page(url) : nil
-        }
-        let result = await fetched(url)
-        if let result, result.complete || !render { return ArticlePage(result) }
-        guard render else { return nil }
-        let rendered = await RenderedPage.load(url)
-        guard let result, !result.paragraphs.isEmpty else { return rendered ?? result.map(ArticlePage.init) }
-        guard var rendered, rendered.text.count > result.text.count else {
-            var page = ArticlePage(result)
-            page.image = page.image ?? rendered?.image
-            page.video = page.video ?? rendered?.video
-            return page
-        }
-        rendered.image = rendered.image ?? result.image
-        rendered.video = rendered.video ?? result.video
-        return rendered
+    func needsArticle(_ story: Story) -> Bool {
+        let key = story.url.absoluteString
+        guard let text = texts[key], ArticleQuality.assess(text) != .invalid else { return true }
+        return !validated.contains(key)
     }
 
-    @concurrent nonisolated private static func fetched(_ url: URL) async -> ArticleExtractor.Result? {
-        var request = URLRequest(url: url, timeoutInterval: 15)
+    nonisolated static func page(_ url: URL, render: Bool = true, force: Bool = false) async -> ArticlePage? {
+        let url = URL(string: url.absoluteString.replacingOccurrences(of: "&amp;", with: "&")) ?? url
+        return await ArticleLoader.load(render: render, rendersFirst: rendersFirst(url), fetch: { retry in
+            await fetched(url, refresh: force || retry)
+        }, rendered: {
+            await RenderedPage.load(url, refresh: force)
+        })
+    }
+
+    @concurrent nonisolated private static func fetched(_ url: URL, refresh: Bool) async -> ArticleExtractor.Result? {
+        var request = URLRequest(url: url, cachePolicy: refresh ? .reloadIgnoringLocalCacheData : .useProtocolCachePolicy, timeoutInterval: 15)
         request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
         guard let (data, response) = try? await URLSession.shared.data(for: request),
               (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) == true,
@@ -397,14 +489,15 @@ nonisolated struct ArticlePage: Sendable {
           if (src && !src.startsWith('blob:')) { video = src; break; }
         }
       }
-      return JSON.stringify({ image, video, paragraphs: paragraphs.slice(0, 40) });
+      return JSON.stringify({ image, video, paragraphs: paragraphs.slice(0, 1000) });
     })()
     """
 
     private struct Extracted: Decodable { let image: String; let video: String?; let paragraphs: [String] }
 
-    static func load(_ url: URL) async -> ArticlePage? {
+    static func load(_ url: URL, refresh: Bool = false) async -> ArticlePage? {
         let configuration = WKWebViewConfiguration()
+        if refresh { configuration.websiteDataStore = .nonPersistent() }
         configuration.applicationNameForUserAgent = "Version/26.0 Mobile/15E148 Safari/604.1"
         configuration.mediaTypesRequiringUserActionForPlayback = .all
         let view = WKWebView(frame: CGRect(x: -2000, y: 0, width: 390, height: 844), configuration: configuration)
@@ -413,19 +506,37 @@ nonisolated struct ArticlePage: Sendable {
         let window = UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.keyWindow }.first
         window?.addSubview(view)
         defer { view.stopLoading(); view.removeFromSuperview() }
-        view.load(URLRequest(url: url, timeoutInterval: 20))
+        view.load(URLRequest(url: url, cachePolicy: refresh ? .reloadIgnoringLocalCacheData : .useProtocolCachePolicy, timeoutInterval: 20))
         var best: Extracted?
+        var bestLength = 0
+        var previous = ""
+        var stable = 0
         for _ in 0..<30 {
             do { try await Task.sleep(for: .milliseconds(500)) } catch { return nil }
             guard let json = try? await view.evaluateJavaScript(extract) as? String,
                   let found = try? JSONDecoder().decode(Extracted.self, from: Data(json.utf8)) else { continue }
-            best = found
-            if found.paragraphs.count >= 3 { break }
+            let text = ArticleExtractor.clean(found.paragraphs, minimum: 30).joined(separator: "\n")
+            if ArticleQuality.assess(text) != .invalid,
+               text.count > bestLength { best = found; bestLength = text.count }
+            stable = text == previous ? stable + 1 : 0
+            previous = text
+            if !view.isLoading, ArticleQuality.assess(text) == .usable, stable >= 4 { break }
         }
         guard let best, !best.paragraphs.isEmpty || !best.image.isEmpty else { return nil }
         let image = URL(string: best.image, relativeTo: url)?.absoluteURL
         let paragraphs = ArticleExtractor.clean(best.paragraphs, minimum: 30)
-        return ArticlePage(text: String(paragraphs.joined(separator: "\n").prefix(6000)), image: image?.scheme == "https" ? image : nil,
+        return ArticlePage(text: paragraphs.joined(separator: "\n"), image: image?.scheme == "https" ? image : nil,
                            video: ArticleExtractor.playable(best.video ?? "", relativeTo: url))
     }
 }
+
+#if DEBUG
+extension Summarizer {
+    func seedPreview(key: String, text: String, glance: [String], brief: String?) {
+        texts[key] = text
+        glances[key] = glance
+        briefs[key] = brief
+        revision += 1
+    }
+}
+#endif

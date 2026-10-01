@@ -1,0 +1,1 @@
+ALTER TABLE devices ADD COLUMN stock_symbols TEXT NOT NULL DEFAULT '[]';
