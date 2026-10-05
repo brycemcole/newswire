@@ -61,9 +61,7 @@ nonisolated struct WatchEntry: Codable, Hashable, Sendable {
 
 @Observable final class QuoteModel {
     let symbol: String
-    var range = ChartRange(rawValue: UserDefaults.standard.string(forKey: "marketRange") ?? "") ?? .day {
-        didSet { UserDefaults.standard.set(range.rawValue, forKey: "marketRange") }
-    }
+    var range = ChartRange.day
     var live: MarketChart?
     var charts: [ChartRange: MarketChart] = [:]
     var summary: QuoteSummary?
@@ -491,6 +489,41 @@ struct QuoteDetail: View {
         }
     }
 
+    private func mergedQuarters(_ summary: QuoteSummary, financials: [String: YValue]) -> ([EarningsQuarter], (date: Date, actual: Double, estimate: Double?, surprise: Double?)?) {
+        var quarters = (summary.value("earnings", "earningsChart")?["quarterly"]?.array ?? []).compactMap { item in
+            EarningsQuarter(item, financials: item["date"]?.text.flatMap { financials[$0] })
+        }
+        let history = (summary.value("earningsHistory", "history")?.array ?? []).compactMap { item -> (date: Date, actual: Double, estimate: Double?, surprise: Double?)? in
+            guard let date = item["quarter"]?.date, let actual = item["epsActual"]?.raw else { return nil }
+            return (date, actual, item["epsEstimate"]?.raw, item["surprisePercent"]?.raw)
+        }.sorted { $0.date < $1.date }
+        let latest = history.last
+        if let latest, quarters.last.map({ $0.reported.map { latest.date > $0 } ?? true }) ?? false {
+            var utc = Calendar(identifier: .gregorian)
+            utc.timeZone = TimeZone(identifier: "UTC")!
+            let month = utc.component(.month, from: latest.date)
+            let label = "\((month - 1) / 3 + 1)Q\(utc.component(.year, from: latest.date))"
+            if !quarters.contains(where: { $0.id == label }) {
+                quarters.append(EarningsQuarter(id: label, actual: latest.actual, estimate: latest.estimate,
+                                                surprise: latest.surprise.map { String(format: "%.1f", $0 * 100) },
+                                                fiscalQuarter: nil, reported: nil, revenue: nil, earnings: nil))
+            }
+        }
+        return (quarters, latest)
+    }
+
+    private func withNext(_ quarters: [EarningsQuarter], calendar: YValue?) -> [EarningsQuarter] {
+        guard let next = calendar?["earningsDate"]?.array.first?.date, next > Date.now.addingTimeInterval(-86_400),
+              let estimate = calendar?["earningsAverage"]?.raw else { return quarters }
+        var estimated = false
+        if case .bool(true)? = calendar?["isEarningsDateEstimate"] { estimated = true }
+        let upcoming = EarningsQuarter.Upcoming(date: next, estimated: estimated,
+                                                range: span(calendar?["earningsLow"]?.text, calendar?["earningsHigh"]?.text),
+                                                revenue: calendar?["revenueAverage"]?.text)
+        return quarters + [EarningsQuarter(id: "Next", actual: nil, estimate: estimate, surprise: nil, fiscalQuarter: nil,
+                                           reported: nil, revenue: nil, earnings: nil, upcoming: upcoming)]
+    }
+
     @ViewBuilder
     private func earnings(_ summary: QuoteSummary) -> some View {
         let calendar = summary.value("calendarEvents", "earnings")
@@ -498,14 +531,17 @@ struct QuoteDetail: View {
         let financials = Dictionary((summary.value("earnings", "financialsChart")?["quarterly"]?.array ?? []).compactMap { item in
             item["date"]?.text.map { ($0, item) }
         }, uniquingKeysWith: { first, _ in first })
-        let quarters = (summary.value("earnings", "earningsChart")?["quarterly"]?.array ?? []).compactMap { item in
-            EarningsQuarter(item, financials: item["date"]?.text.flatMap { financials[$0] })
-        }
+        let (merged, latest) = mergedQuarters(summary, financials: financials)
+        let quarters = withNext(merged, calendar: calendar)
         let years = (summary.value("earnings", "financialsChart")?["yearly"]?.array ?? []).compactMap(FiscalYear.init)
         let currency = summary.text("earnings", "financialCurrency") ?? "USD"
         if next != nil || !quarters.isEmpty || !years.isEmpty {
             QuoteSection("Earnings") {
                 let upcoming = stats([
+                    ("Latest EPS", latest.map { item in
+                        String(format: "%.2f", item.actual) + (item.estimate.map { String(format: " vs %.2f est.", $0) } ?? "")
+                    }),
+                    ("Latest quarter", latest.map { $0.date.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: TimeZone(identifier: "UTC")!)) }),
                     ("Next report", next.map { date in
                         date.formatted(date: .abbreviated, time: .omitted) + (calendar?["isEarningsDateEstimate"].map { if case .bool(true) = $0 { " (est.)" } else { "" } } ?? "")
                     }),
@@ -751,14 +787,28 @@ private struct RecommendationBar: View {
 }
 
 private struct EarningsQuarter: Identifiable {
+    struct Upcoming {
+        let date: Date
+        let estimated: Bool
+        let range: String?
+        let revenue: String?
+    }
+
     let id: String
-    let actual: Double
+    let actual: Double?
     let estimate: Double?
     let surprise: String?
     let fiscalQuarter: String?
     let reported: Date?
     let revenue: Double?
     let earnings: Double?
+    var upcoming: Upcoming?
+
+    init(id: String, actual: Double?, estimate: Double?, surprise: String?, fiscalQuarter: String?, reported: Date?, revenue: Double?, earnings: Double?, upcoming: Upcoming? = nil) {
+        self.id = id; self.actual = actual; self.estimate = estimate; self.surprise = surprise
+        self.fiscalQuarter = fiscalQuarter; self.reported = reported; self.revenue = revenue; self.earnings = earnings
+        self.upcoming = upcoming
+    }
 
     init?(_ value: YValue, financials: YValue?) {
         guard let label = value["date"]?.text, let actual = value["actual"]?.raw else { return nil }
@@ -803,15 +853,17 @@ private struct EarningsChart: View {
                             .symbolSize(110)
                             .foregroundStyle(.gray.opacity(dim ? 0.15 : 0.35))
                     }
-                    PointMark(x: .value("Quarter", quarter.id), y: .value("EPS", quarter.actual))
-                        .symbolSize(110)
-                        .foregroundStyle(quarter.actual >= (quarter.estimate ?? quarter.actual) ? Color.green : Color.red)
-                        .opacity(dim ? 0.3 : 1)
-                        .annotation(position: .top, spacing: 4) {
-                            if let surprise = quarter.surprise, let value = Double(surprise) {
-                                Text((value >= 0 ? "+" : "") + surprise + "%").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                    if let actual = quarter.actual {
+                        PointMark(x: .value("Quarter", quarter.id), y: .value("EPS", actual))
+                            .symbolSize(110)
+                            .foregroundStyle(actual >= (quarter.estimate ?? actual) ? Color.green : Color.red)
+                            .opacity(dim ? 0.3 : 1)
+                            .annotation(position: .top, spacing: 4) {
+                                if let surprise = quarter.surprise, let value = Double(surprise) {
+                                    Text((value >= 0 ? "+" : "") + surprise + "%").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                                }
                             }
-                        }
+                    }
                 }
             }
             .chartYAxis { AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) }
@@ -839,10 +891,16 @@ private struct EarningsChart: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            ReadoutRow(label: "EPS actual", value: eps(quarter.actual))
-            if let estimate = quarter.estimate {
+            if let upcoming = quarter.upcoming {
+                ReadoutRow(label: "Reports", value: upcoming.date.formatted(date: .abbreviated, time: .omitted) + (upcoming.estimated ? " (est.)" : ""))
+                if let estimate = quarter.estimate { ReadoutRow(label: "EPS estimate", value: eps(estimate)) }
+                if let range = upcoming.range { ReadoutRow(label: "EPS range", value: range) }
+                if let revenue = upcoming.revenue { ReadoutRow(label: "Revenue estimate", value: revenue) }
+            }
+            if let actual = quarter.actual { ReadoutRow(label: "EPS actual", value: eps(actual)) }
+            if let actual = quarter.actual, let estimate = quarter.estimate {
                 ReadoutRow(label: "EPS estimate", value: eps(estimate))
-                let difference = quarter.actual - estimate
+                let difference = actual - estimate
                 ReadoutRow(label: difference >= 0 ? "Beat" : "Missed",
                            value: eps(abs(difference)) + (quarter.surprise.map { " (\($0)%)" } ?? ""),
                            tint: difference >= 0 ? .green : .red)

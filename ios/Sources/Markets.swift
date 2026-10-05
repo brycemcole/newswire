@@ -398,7 +398,7 @@ nonisolated enum MarketClient {
     }
 
     @concurrent static func summary(_ symbol: String) async throws -> QuoteSummary {
-        let modules = "price,summaryDetail,defaultKeyStatistics,financialData,assetProfile,calendarEvents,recommendationTrend,earnings,fundProfile,topHoldings"
+        let modules = "price,summaryDetail,defaultKeyStatistics,financialData,assetProfile,calendarEvents,recommendationTrend,earnings,earningsHistory,fundProfile,topHoldings"
         let root: YValue
         do {
             root = try await authed("/v10/finance/quoteSummary/\(symbol)", [URLQueryItem(name: "modules", value: modules)])

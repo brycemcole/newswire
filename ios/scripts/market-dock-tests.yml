@@ -1,0 +1,49 @@
+name: DockValidation
+options:
+  deploymentTarget:
+    iOS: '26.0'
+settings:
+  base:
+    SWIFT_VERSION: '6.0'
+    SWIFT_APPROACHABLE_CONCURRENCY: YES
+    SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
+    TARGETED_DEVICE_FAMILY: '1,2'
+targets:
+  Newswire:
+    type: application
+    platform: iOS
+    sources: ['${NEWSWIRE_ROOT}/ios/Sources', '${NEWSWIRE_ROOT}/ios/Shared']
+    dependencies:
+      - framework: '${NEWSWIRE_ROOT}/ios/Vendor/LinkKit.xcframework'
+        embed: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.brycecole.newswire
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+  NewswireTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: ['${NEWSWIRE_ROOT}/ios/Tests']
+    dependencies:
+      - target: Newswire
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+  DockUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: ['${NEWSWIRE_ROOT}/ios/UITests']
+    dependencies:
+      - target: Newswire
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_DEFAULT_ACTOR_ISOLATION: nonisolated
+schemes:
+  DockValidation:
+    build:
+      targets:
+        Newswire: all
+    test:
+      targets: [NewswireTests, DockUITests]

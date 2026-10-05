@@ -25,6 +25,11 @@ function render() {
   $('#count').textContent = `${state.stories.length} STORIES LOADED`;
   if (!state.stories.length) notice('The wire is quiet. Stories uploaded by your agents will appear here.');
 }
+function resetInspector() {
+  const detail = $('#detail');
+  detail.classList.remove('open');
+  detail.innerHTML = '<div class="detail-label">STORY INSPECTOR <span>02</span></div><div class="inspector-empty"><div class="crosshair">+</div><h2>Follow the signal.</h2><p>Select a headline to read the report, inspect its source, and see which agent sent it.</p><div class="legend"><span><i class="amber"></i> NORMAL</span><span><i class="red"></i> BREAKING</span></div></div>';
+}
 async function load(older = false) {
   if (!state.token || (older && state.busy)) return;
   const generation = ++state.generation;
@@ -36,9 +41,14 @@ async function load(older = false) {
     const data = await request(older ? state.cursor : null);
     if (generation !== state.generation) return;
     state.stories = older ? [...state.stories, ...data.stories.filter((s) => !state.stories.some((existing) => existing.id === s.id))] : data.stories;
+    if (!older && state.selected && !state.stories.some((story) => story.id === state.selected)) {
+      state.selected = null; resetInspector();
+    }
     state.cursor = data.next_cursor;
     $('#new-stories').hidden = true;
-    notice(''); render(); status('CONNECTED', true);
+    notice(''); render();
+    if ($('#detail').classList.contains('open') && state.selected) detail(state.selected);
+    status('CONNECTED', true);
     $('#updated').textContent = `UPDATED ${formatTime(Date.now())} UTC`;
   } catch (error) {
     if (generation === state.generation) { status('CONNECTION ERROR'); notice(error.message, true); }
@@ -46,22 +56,42 @@ async function load(older = false) {
     if (generation === state.generation) { state.busy = false; $('#load-more').disabled = false; }
   }
 }
-function closeDetail() { $('#detail').classList.remove('open'); state.selected = null; render(); }
-function detail(id) {
+function closeDetail() {
+  const id = state.selected;
+  state.selected = null; resetInspector(); render();
+  document.querySelector(`#stories [data-id="${CSS.escape(id || '')}"]`)?.focus();
+}
+function detail(id, preserveAction = null) {
   const s = state.stories.find((story) => story.id === id);
   if (!s) return;
+  const currentAction = $('#detail').contains(document.activeElement) ? document.activeElement.dataset.inspectorAction : null;
+  preserveAction ||= currentAction;
   state.selected = id; render();
+  const index = state.stories.findIndex((story) => story.id === id);
+  const controls = `<div class="report-controls"><button id="report-prev" data-inspector-action="previous" ${index === 0 ? 'disabled' : ''}>← PREVIOUS</button><span id="report-position">${index + 1} OF ${state.stories.length} LOADED</span><button id="report-next" data-inspector-action="next" ${index === state.stories.length - 1 ? 'disabled' : ''}>NEXT →</button><button id="report-close" class="close-detail" data-inspector-action="close">CLOSE</button></div>`;
   const url = new URL(s.url);
   const sourceLink = ['https:', 'http:'].includes(url.protocol) ? `<a href="${escape(url.href)}" target="_blank" rel="noopener noreferrer">OPEN ORIGINAL SOURCE ↗</a>` : '';
-  $('#detail').innerHTML = `<div class="detail-label">STORY INSPECTOR <span>02</span></div><article class="report"><span class="eyebrow">${escape(s.category.toUpperCase())} / ${escape(s.priority.toUpperCase())}</span><h2>${escape(s.title)}</h2><p class="summary">${escape(s.summary)}</p><div class="body">${escape(s.body)}</div><dl><dt>SOURCE</dt><dd>${escape(s.source)}</dd><dt>PUBLISHED / UTC</dt><dd>${escape(new Date(s.published_at).toUTCString())}</dd><dt>REPORTING AGENT</dt><dd>${escape(s.agent)}</dd>${s.tags.length ? `<dt>TAGS</dt><dd>${s.tags.map(escape).join(' / ')}</dd>` : ''}</dl>${sourceLink}<button class="close-detail">CLOSE REPORT</button></article>`;
+  $('#detail').innerHTML = `<div class="detail-label">STORY INSPECTOR <span>02</span></div>${controls}<article class="report"><span class="eyebrow">${escape(s.category.toUpperCase())} / ${escape(s.priority.toUpperCase())}</span><h2>${escape(s.title)}</h2><p class="summary">${escape(s.summary)}</p><div class="body">${escape(s.body)}</div><dl><dt>SOURCE</dt><dd>${escape(s.source)}</dd><dt>PUBLISHED / UTC</dt><dd>${escape(new Date(s.published_at).toUTCString())}</dd><dt>REPORTING AGENT</dt><dd>${escape(s.agent)}</dd>${s.tags.length ? `<dt>TAGS</dt><dd>${s.tags.map(escape).join(' / ')}</dd>` : ''}</dl>${sourceLink}</article>`;
   $('#detail').classList.add('open');
-  $('.close-detail').onclick = closeDetail;
+  $('#detail').scrollTop = 0;
+  if (preserveAction) {
+    const target = $(`[data-inspector-action="${preserveAction}"]`);
+    (target && !target.disabled ? target : $('#report-close')).focus({ preventScroll: true });
+  }
 }
+$('#detail').onclick = (event) => {
+  const action = event.target.closest('[data-inspector-action]')?.dataset.inspectorAction;
+  if (!action) return;
+  const index = state.stories.findIndex((story) => story.id === state.selected);
+  if (action === 'close') closeDetail();
+  else if (action === 'previous' && index > 0) detail(state.stories[index - 1].id, action);
+  else if (action === 'next' && index < state.stories.length - 1) detail(state.stories[index + 1].id, action);
+};
 $('#stories').onclick = (event) => { const row = event.target.closest('[data-id]'); if (row) detail(row.dataset.id); };
 $('#connect').onclick = () => $('#settings').showModal();
 $('#cancel').onclick = () => $('#settings').close();
 $('#connection-form').onsubmit = (event) => { event.preventDefault(); state.token = $('#token').value.trim(); $('#token').value = ''; $('#settings').close(); $('#connect').textContent = 'CONNECTION'; load(); };
-function filterChanged() { state.stories = []; state.cursor = null; $('#new-stories').hidden = true; render(); load(); }
+function filterChanged() { state.stories = []; state.cursor = null; state.selected = null; resetInspector(); $('#new-stories').hidden = true; render(); load(); }
 $('#categories').onclick = (event) => {
   const button = event.target.closest('[data-category]');
   if (!button) return;

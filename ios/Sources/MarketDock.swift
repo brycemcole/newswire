@@ -3,6 +3,49 @@ import UIKit
 
 enum DockDetent { case peek, medium, large }
 
+struct DockBackgroundInteraction: UIGestureRecognizerRepresentable {
+    var excludedFrame: CGRect
+    var onInteraction: () -> Void
+
+    func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator {
+        Coordinator(excludedFrame: excludedFrame)
+    }
+
+    func makeUIGestureRecognizer(context: Context) -> DockBackgroundTouchRecognizer {
+        let recognizer = DockBackgroundTouchRecognizer()
+        recognizer.cancelsTouchesInView = false
+        recognizer.delaysTouchesBegan = false
+        recognizer.delaysTouchesEnded = false
+        recognizer.delegate = context.coordinator
+        recognizer.onInteraction = onInteraction
+        return recognizer
+    }
+
+    func updateUIGestureRecognizer(_ recognizer: DockBackgroundTouchRecognizer, context: Context) {
+        context.coordinator.excludedFrame = excludedFrame
+        recognizer.onInteraction = onInteraction
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var excludedFrame: CGRect
+
+        init(excludedFrame: CGRect) { self.excludedFrame = excludedFrame }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            !excludedFrame.contains(touch.location(in: touch.view?.window))
+        }
+    }
+}
+
+final class DockBackgroundTouchRecognizer: UIGestureRecognizer {
+    var onInteraction: (() -> Void)?
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        onInteraction?()
+        state = .failed
+    }
+}
+
 /// A persistent bottom sheet over the whole app. At rest only the search bar shows; drag it up
 /// (or tap the search field) to reach indices, movers and earnings from any screen.
 /// It is an overlay, not a system sheet, so alerts, sheets and Safari covers can still present from the screens under it.
@@ -20,6 +63,7 @@ struct MarketDock: View {
 
     @Binding var detent: DockDetent
     let onSelect: (String) -> Void
+    var onFrameChange: (CGRect) -> Void = { _ in }
     @State private var drag: CGFloat = 0
     @State private var keyboard: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -47,6 +91,7 @@ struct MarketDock: View {
             .shadow(color: .black.opacity(0.10), radius: 14, y: 4)
             .animation(animation, value: detent)
             .simultaneousGesture(dragGesture(stops), including: detent == .peek ? .all : .subviews)
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { onFrameChange($0) }
             .padding(.horizontal, Self.sideInset * (1 - docked))
             .padding(.bottom, Self.floatGap * (1 - docked))
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
@@ -71,6 +116,7 @@ struct MarketDock: View {
             .gesture(dragGesture(stops), including: detent == .peek ? .none : .all)
             .accessibilityElement()
             .accessibilityLabel("Markets")
+            .accessibilityIdentifier("market-dock-handle")
             .accessibilityValue(detent == .peek ? "Collapsed" : "Expanded")
             .accessibilityAddTraits(.isButton)
             .accessibilityAction { detent = detent == .peek ? .medium : .peek }

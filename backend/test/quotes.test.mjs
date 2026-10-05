@@ -40,3 +40,36 @@ test('quote shape separates the regular session from after hours', () => {
   assert.equal(open.extended, null);
   assert.equal(shape({ meta: { symbol: 'X' } }), null);
 });
+
+test('a failed Yahoo lookup is not cached as "no match"', async () => {
+  const { resolve, quote } = await import(`data:text/javascript,${encodeURIComponent(source)}#cache`);
+  const store = new Map();
+  const realCaches = globalThis.caches;
+  const realFetch = globalThis.fetch;
+  globalThis.caches = { default: {
+    match: async url => store.get(url)?.clone(),
+    put: async (url, response) => { store.set(url, response); },
+  } };
+  let calls = 0;
+  let healthy = false;
+  globalThis.fetch = async url => {
+    calls++;
+    if (!healthy) return new Response('rate limited', { status: 429 });
+    if (String(url).includes('/v1/finance/search')) return Response.json({ quotes: [{ symbol: 'NVDA', quoteType: 'EQUITY', longname: 'NVIDIA Corporation', shortname: 'NVIDIA Corp' }] });
+    return Response.json({ chart: { result: [{ meta: { symbol: 'NVDA', regularMarketPrice: 110, previousClose: 100 } }] } });
+  };
+  try {
+    assert.deepEqual(await resolve('Nvidia Jumps on Demand'), []);
+    assert.equal(await quote('NVDA'), null);
+    healthy = true;
+    const mentions = await resolve('Nvidia Jumps on Demand');
+    assert.deepEqual(mentions.map(item => item.symbol), ['NVDA']);
+    assert.equal((await quote('NVDA'))?.price, 110);
+    const before = calls;
+    await resolve('Nvidia Jumps on Demand');
+    assert.equal(calls, before, 'successful lookups are still cached');
+  } finally {
+    globalThis.caches = realCaches;
+    globalThis.fetch = realFetch;
+  }
+});

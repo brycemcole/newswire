@@ -82,11 +82,10 @@ async function lookup(phrase: string): Promise<string | null> {
   if (nickname) return nickname;
   return cached(`search/v2/${encodeURIComponent(phrase.toLowerCase())}`, 604800, async () => {
     const url = `https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(phrase)}&quotesCount=5&newsCount=0&listsCount=0&enableFuzzyQuery=false`;
-    const data = await yahoo(url).catch(() => null) as { quotes?: SearchQuote[] } | null;
-    if (!data) return null;
+    const data = await yahoo(url) as { quotes?: SearchQuote[] };
     const hit = (data.quotes ?? []).find(quote => quote.symbol && quote.quoteType === 'EQUITY' && !/\.(?:HA|F|DU|MU|SG|BE|HM|TWO|BA|MX|VI|NE)$/.test(quote.symbol) && [quote.longname, quote.shortname].some(name => name && accepts(phrase, name)));
     return hit?.symbol ?? null;
-  });
+  }).catch(() => null);
 }
 
 export async function resolve(text: string, limit = 4): Promise<Mention[]> {
@@ -166,10 +165,10 @@ export async function quote(symbol: string): Promise<Omit<Quote, 'match'> | null
   const target = aliases[symbol.toUpperCase()] ?? symbol;
   return cached(`quote/${encodeURIComponent(target)}`, 20, async () => {
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(target)}?range=1d&interval=5m&includePrePost=true`;
-    const data = await yahoo(url).catch(() => null) as { chart?: { result?: Chart[] } } | null;
+    const data = await yahoo(url) as { chart?: { result?: Chart[] } } | null;
     const chart = data?.chart?.result?.[0];
     return chart?.meta ? shape(chart) : null;
-  });
+  }).catch(() => null);
 }
 
 export async function quotes(mentions: Mention[]): Promise<Quote[]> {

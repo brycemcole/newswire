@@ -116,6 +116,7 @@ struct FeedView: View {
     @State private var settings = false
     @State private var portfolio = false
     @State private var dock = DockDetent.peek
+    @State private var dockFrame = CGRect.zero
     @State private var quoteRoute: MarketSymbol?
     @State private var watchlist = Watchlist.shared
     @State private var board = MarketBoard.shared
@@ -130,7 +131,7 @@ struct FeedView: View {
 
     private var selectionAnimation: Animation { reduceMotion ? .easeOut(duration: 0.15) : .spring(duration: 0.38, bounce: 0.18) }
 
-    var body: some View {
+    private var navigation: some View {
         NavigationStack(path: $store.path) {
             Group {
                 List {
@@ -268,11 +269,22 @@ struct FeedView: View {
                 }
             }
         }
+    }
+
+    var body: some View {
+        navigation
+        .gesture(DockBackgroundInteraction(excludedFrame: dockFrame) {
+            if dock != .peek { dock = .peek }
+        })
+        .onChange(of: store.path) { _, _ in dock = .peek }
+        .onChange(of: quoteRoute) { _, _ in dock = .peek }
+        .onChange(of: settings) { _, _ in dock = .peek }
+        .onChange(of: portfolio) { _, _ in dock = .peek }
         .overlay {
-            MarketDock(detent: $dock) { symbol in
+            MarketDock(detent: $dock, onSelect: { symbol in
                 dock = .peek
                 open(quote: symbol)
-            }
+            }, onFrameChange: { dockFrame = $0 })
         }
         .environment(\.feedStore, store)
         .onOpenURL { url in
