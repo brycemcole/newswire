@@ -1,5 +1,12 @@
 import SwiftUI
 
+enum MarketSearchSelection {
+    static func symbol(query: String, matchesQuery: String, firstMatch: String?) -> String {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return matchesQuery == trimmed ? firstMatch ?? trimmed : trimmed
+    }
+}
+
 nonisolated struct Spark: Sendable, Hashable {
     let points: [Double]
     let baseline: Double?
@@ -149,6 +156,7 @@ struct MarketSearchSheet: View {
     let onSelect: (String) -> Void
     @State private var query = ""
     @State private var matches: [TickerMatch] = []
+    @State private var matchesQuery = ""
     @State private var loading = false
     @State private var recents = MarketRecents.all
     @State private var moverList = MoverList(rawValue: UserDefaults.standard.string(forKey: "marketMovers") ?? "") ?? .gainers
@@ -180,12 +188,17 @@ struct MarketSearchSheet: View {
         }
         .task(id: trimmed) {
             let text = trimmed
-            guard !text.isEmpty else { matches = []; loading = false; return }
+            matches = []
+            matchesQuery = ""
+            loading = false
+            guard !text.isEmpty else { return }
             do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+            guard !Task.isCancelled else { return }
             loading = true
             defer { if !Task.isCancelled { loading = false } }
             guard let found = try? await MarketClient.search(text), !Task.isCancelled else { return }
             matches = found
+            matchesQuery = text
             let symbols = found.map(\.symbol)
             await board.refresh(quotes: symbols, sparks: symbols)
         }
@@ -215,7 +228,7 @@ struct MarketSearchSheet: View {
                 .autocorrectionDisabled()
                 .submitLabel(.search)
                 .focused($searching)
-                .onSubmit { choose(matches.first?.symbol ?? query) }
+                .onSubmit { choose(MarketSearchSelection.symbol(query: query, matchesQuery: matchesQuery, firstMatch: matches.first?.symbol)) }
             if loading {
                 ProgressView().controlSize(.small)
             }
