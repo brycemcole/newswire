@@ -6,6 +6,8 @@ nonisolated struct InvestmentHistory: Codable, Sendable {
     let end: Date
     let transactions: [PlaidClient.Transactions.Transaction]
     var cashSecurityIDs: [String]?
+    var securities: [HoldingsResponse.Security]?
+    var version: Int?
 }
 
 nonisolated struct InvestmentCashFlows {
@@ -17,12 +19,7 @@ nonisolated struct InvestmentCashFlows {
     let records: [PlaidClient.Transactions.Transaction]
 
     init(history: InvestmentHistory, accountID: String, institution: String? = nil) {
-        var seen = Set<String>()
-        let records = history.transactions.filter { record in
-            guard record.accountId == accountID, record.type != "cancel" else { return false }
-            if let id = record.investmentTransactionId { return seen.insert(id).inserted }
-            return true
-        }
+        let records = InvestmentActivity.active(history.transactions).filter { $0.accountId == accountID }
         var contributed = 0.0, withdrawn = 0.0, buys = 0.0, sells = 0.0
         var unknown = 0
         for transaction in records {
@@ -54,7 +51,7 @@ nonisolated struct InvestmentCashFlows {
                       transaction.securityId.map({ (history.cashSecurityIDs ?? []).contains($0) }) == true {
                 if transaction.amount < 0 { contributed -= transaction.amount }
                 else { withdrawn += transaction.amount }
-            } else if transaction.type == "transfer", ["transfer", "send", "request"].contains(subtype) {
+            } else if transaction.type == "transfer" || transaction.type == "cancel" {
                 unknown += 1
             } else if transaction.type == "cash", subtype.isEmpty || ["adjustment", "transfer"].contains(subtype) {
                 unknown += 1

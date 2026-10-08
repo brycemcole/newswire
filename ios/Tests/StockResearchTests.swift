@@ -34,6 +34,56 @@ import Testing
             _ = try await StockChat().deepSeek(key: "test-only", instructions: "test", history: "", question: "truncate", research: tools, session: session)
         }
     }
+
+    @Test func retryReusesQuestionAndOriginalContextWithoutDuplicateMessage() async throws {
+        var attempts = 0
+        var captured: [(String, String, String, String?, String)] = []
+        let chat = StockChat { question, symbol, name, price, history in
+            attempts += 1
+            captured.append((question, symbol, name, price, history))
+            if attempts == 1 { throw StockAIError.incomplete }
+            return "Recovered answer"
+        }
+        chat.messages = [StockChatMessage(user: true, text: "Earlier question"), StockChatMessage(user: false, text: "Earlier answer")]
+        chat.send("Why did AAPL move?", symbol: "AAPL", name: "Apple", price: "$200")
+        try await waitUntil { chat.canRetry }
+        #expect(chat.messages.filter(\.user).map(\.text) == ["Earlier question", "Why did AAPL move?"])
+        chat.retry()
+        try await waitUntil { !chat.busy }
+        #expect(attempts == 2)
+        #expect(captured.map(\.0) == ["Why did AAPL move?", "Why did AAPL move?"])
+        #expect(captured.allSatisfy { $0.1 == "AAPL" && $0.2 == "Apple" && $0.3 == "$200" })
+        #expect(captured[0].4 == "User: Earlier question\nAssistant: Earlier answer")
+        #expect(captured[1].4 == captured[0].4)
+        #expect(chat.messages.filter(\.user).count == 2)
+        #expect(chat.messages.last?.text == "Recovered answer")
+        #expect(!chat.canRetry)
+    }
+
+    @Test func cancelledRequestCannotAppendAfterNewRequest() async throws {
+        let chat = StockChat { question, _, _, _, _ in
+            if question == "Old request" {
+                try await Task.sleep(for: .milliseconds(100))
+                return "Stale answer"
+            }
+            return "Current answer"
+        }
+        chat.send("Old request", symbol: "", name: "Markets", price: nil)
+        chat.cancel()
+        chat.send("New request", symbol: "", name: "Markets", price: nil)
+        try await waitUntil { !chat.busy }
+        #expect(chat.messages.filter { !$0.user }.map(\.text) == ["Current answer"])
+        #expect(chat.messages.filter(\.user).map(\.text) == ["Old request", "New request"])
+    }
+
+    private func waitUntil(_ condition: @MainActor () -> Bool) async throws {
+        for _ in 0..<200 {
+            if condition() { return }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        Issue.record("Timed out waiting for chat state")
+    }
+
 }
 
 nonisolated private final class StockMockProtocol: URLProtocol, @unchecked Sendable {

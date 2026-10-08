@@ -146,3 +146,86 @@ test('brokerage alert symbols round trip, validate and clear on removal', async 
   assert.deepEqual(JSON.parse(result.devices.find(d => d.token === token).stock_symbols), []);
   assert.equal((await request('/v1/devices', 'reader')).status, 403);
 });
+
+test('data layer: tool catalog, wire full-text search, retraction filter and MCP', async () => {
+  assert.equal((await request('/v1/data/tools.json', null)).status, 401);
+  const catalog = await (await request('/v1/data/tools.json')).json();
+  const names = catalog.tools.map(t => t.name);
+  for (const name of ['macro', 'series', 'series_search', 'calendar', 'fed_odds', 'yield_curve', 'board', 'quote', 'screener', 'wire_search', 'sec_filings', 'insider_trades', 'holders', 'contracts', 'chokepoints', 'world_economy']) assert.ok(names.includes(name), name);
+  assert.deepEqual(catalog.tools.find(t => t.name === 'series').parameters.required, ['id']);
+  const story = { ...base, external_id: 'fts-1', url: 'https://example.com/fts-1', title: 'Powell signals patience on rate cuts', summary: 'The Federal Reserve chair spoke on inflation.', published_at: new Date(Date.now() - 3600000).toISOString() };
+  const created = await (await post(story)).json();
+  await post({ ...story, external_id: 'fts-2', url: 'https://example.com/fts-2', title: 'Retracted Powell item' }).then(r => r.json()).then(({ story: s }) => request(`/v1/stories/${s.id}`, 'writer', { method: 'DELETE' }));
+  const found = await (await request('/v1/data/wire/search?q=powell%20cuts')).json();
+  assert.equal(found.sections[0].rows.length, 1);
+  assert.equal(found.sections[0].rows[0].story, created.story.id);
+  assert.match(found.text, /Powell signals patience/);
+  assert.match(found.as_of, /^\d{4}-/);
+  assert.equal((await (await request('/v1/data/wire/search?q=inflat')).json()).sections[0].rows.length, 1);
+  assert.equal((await request('/v1/data/wire/search')).status, 400);
+  assert.equal((await request('/v1/data/wire/search?q=x&bogus=1')).status, 400);
+  assert.equal((await request('/v1/data/nowhere')).status, 404);
+  assert.match((await (await request('/v1/data/tool/wire_search?q=powell')).json()).text, /Powell/);
+  assert.equal((await request('/v1/data/tool/nope')).status, 404);
+  assert.equal((await request('/v1/data/board/moon')).status, 400);
+  const rpc = (body, token = 'reader') => request('/v1/mcp', token, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  assert.equal((await rpc({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }, null)).status, 401);
+  const init = await (await rpc({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } })).json();
+  assert.equal(init.result.serverInfo.name, 'newswire-data');
+  assert.equal((await rpc({ jsonrpc: '2.0', method: 'notifications/initialized' })).status, 202);
+  const listed = await (await rpc({ jsonrpc: '2.0', id: 2, method: 'tools/list' })).json();
+  assert.ok(listed.result.tools.some(t => t.name === 'wire_search' && t.inputSchema.required.includes('q')));
+  const called = await (await rpc({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'wire_search', arguments: { q: 'powell' } } })).json();
+  assert.equal(called.result.isError, false);
+  assert.match(called.result.content[0].text, /Powell signals patience/);
+  const bad = await (await rpc({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'wire_search', arguments: { nope: 1 } } })).json();
+  assert.equal(bad.result.isError, true);
+  assert.equal((await (await rpc({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'nope' } })).json()).error.code, -32602);
+});
+
+test('ship positions ingest for writers and read back through the ships tool; devices keep muted topics', async () => {
+  const ship = { mmsi: '123456789', name: 'TEST TANKER', kind: 'Tanker', lat: 26.5, lon: 56.3, speed: 12.4, course: 280, at: new Date().toISOString() };
+  const send = (body, token = 'writer') => request('/v1/ships', token, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  assert.equal((await send({ area: 'hormuz', ships: [ship] }, 'reader')).status, 403);
+  assert.equal((await send({ area: 'mars', ships: [ship] })).status, 400);
+  assert.equal((await send({ area: 'hormuz', ships: [{ ...ship, lat: 200 }] })).status, 400);
+  assert.equal((await send({ area: 'hormuz', ships: [ship, { ...ship, mmsi: '2', speed: 0, kind: 'Cargo' }] })).status, 201);
+  const result = await (await request('/v1/data/ships?area=hormuz')).json();
+  assert.equal(result.map.pins.length, 2);
+  assert.match(result.note, /2 vessels/);
+  assert.equal(result.sections[1].rows[0].label, 'TEST TANKER');
+  const token = 'c'.repeat(64);
+  const register = body => request('/v1/devices', 'reader', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token, environment: 'sandbox', ...body }) });
+  assert.equal((await register({ muted_topics: ['crypto', 'world'] })).status, 201);
+  assert.equal((await register({ stock_symbols: ['AAPL'] })).status, 201);
+  const device = (await (await request('/v1/devices', 'writer')).json()).devices.find(d => d.token === token);
+  assert.deepEqual(JSON.parse(device.muted_topics), ['crypto', 'world']);
+  assert.equal((await register({ muted_topics: ['Bad Topic'] })).status, 400);
+});
+
+test('economic history requires writer auth and makes missing monthly forecasts available', async () => {
+  const date = new Date(Date.now() - 20 * 86400000).toISOString().slice(0, 10);
+  const body = JSON.stringify({ date, rows: [{ label: 'USD Nonfarm Payrolls', actual: '29K', forecast: '89K', previous: '133K' }] });
+  const init = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body };
+  assert.equal((await request('/v1/econ/history', 'reader', init)).status, 403);
+  assert.equal((await request('/v1/econ/history', 'writer', init)).status, 201);
+  const history = await (await request('/v1/data/economic/history?q=payrolls&countries=USD', 'reader')).json();
+  assert.equal(history.sections[0].rows[0].forecast, '89K');
+  const releases = await (await request('/v1/data/releases?countries=USD', 'reader')).json();
+  assert.match(releases.text, /Nonfarm Payrolls: 29K.*Forecast 89K/);
+  assert.equal(releases.sections[0].rows[0].actual, '29K');
+  assert.equal((await request('/v1/econ/history', 'writer', { ...init, body: JSON.stringify({ date: '2026-02-31', rows: [] }) })).status, 400);
+});
+
+test('collector snapshots require writer auth and remain attributed through source search', async () => {
+  const init = body => ({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const source = { rows: [{ label: 'Payrolls fall below forecasts', value: 'Publisher', url: 'https://news.google.com/rss/articles/test', date: new Date().toISOString(), detail: 'Reported consensus' }] };
+  assert.equal((await request('/v1/econ/sources', 'reader', init(source))).status, 403);
+  assert.equal((await request('/v1/econ/sources', 'writer', init(source))).status, 201);
+  const result = await (await request('/v1/data/sources/search?q=payrolls', 'reader')).json();
+  assert.equal(result.sections[0].rows[0].value, 'Publisher');
+  assert.match(result.note, /not an exhaustive web search/);
+  assert.equal((await request('/v1/econ/series', 'reader', init({ id: 'UNRATE', observations: [{ date: '2026-09-01', value: 4.2 }] }))).status, 403);
+  assert.equal((await request('/v1/econ/series', 'writer', init({ id: 'UNRATE', observations: [{ date: '2026-09-01', value: 4.2 }] }))).status, 201);
+  assert.equal((await request('/v1/econ/series', 'writer', init({ id: 'UNRATE', observations: [{ date: '2026-02-31', value: 4.2 }] }))).status, 400);
+});

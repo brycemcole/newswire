@@ -83,3 +83,26 @@ test('Form 4 transaction totals sum by code and price', async () => {
   assert.equal(totals.get('S').value, 1500);
   assert.equal(totals.size, 1);
 });
+
+test('shipping flags chokepoint transit shifts against the prior 30 days', async () => {
+  const { shifts } = await import('../../scripts/monitor/rules/shipping.mjs');
+  const records = Array.from({ length: 37 }, (_, i) => ({ date: new Date(Date.UTC(2026, 8, 1 + i)).toISOString().slice(0, 10), portname: 'Strait of Hormuz', n_total: i >= 30 ? 20 : 40, n_tanker: 10 }));
+  const [event] = shifts([...records, ...records.map(r => ({ ...r, portname: 'Kerch Strait' }))]);
+  assert.equal(event.title, 'Strait of Hormuz transits down 50% from their 30-day average');
+  assert.equal(event.priority, 'urgent');
+  assert.equal(shifts(records.map(r => ({ ...r, n_total: 40 }))).length, 0);
+});
+
+test('global flags overseas index and currency moves once per session bucket', async () => {
+  const { indexEvents, currencyEvents } = await import('../../scripts/monitor/rules/global.mjs');
+  const now = Date.parse('2026-10-06T07:00:00Z');
+  const data = { price: 2400, previousClose: 2465, changePercent: -2.64, peakClose: 2700, troughClose: 2300, session: '2026-10-06', quotedAt: '2026-10-06T06:30:00Z' };
+  const [event] = indexEvents({ symbol: '^KS11', name: 'KOSPI', place: 'Seoul', ticker: 'KOSPI' }, data, now);
+  assert.equal(event.title, 'KOSPI drops 2.64% in Seoul trading');
+  assert.equal(event.priority, 'urgent');
+  assert.equal(event.key, 'global:^KS11:2026-10-06:down:2');
+  assert.equal(indexEvents({ symbol: '^KS11', name: 'KOSPI', place: 'Seoul', ticker: 'KOSPI' }, { ...data, changePercent: 0.8 }, now).length, 0);
+  assert.equal(indexEvents({ symbol: '^KS11', name: 'KOSPI', place: 'Seoul', ticker: 'KOSPI' }, data, now + 2 * 86400000).length, 0);
+  const [fx] = currencyEvents({ symbol: 'JPY=X', name: 'Dollar-yen', ticker: 'USDJPY', move: 1, digits: 2 }, { ...data, price: 160.2, previousClose: 158, changePercent: 1.39 }, now);
+  assert.equal(fx.title, 'Dollar strengthens 1.39% against the JPY to 160.20');
+});

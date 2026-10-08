@@ -8,10 +8,6 @@ nonisolated struct AccountFunding: Codable, Equatable {
     var historyBeginning: String?
     var netContributed: Double? { withdrawn.map { contributed - $0 } }
     func gain(value: Double) -> Double? { withdrawn.map { value + $0 - contributed } }
-    func percent(value: Double) -> Double? {
-        guard let netContributed, netContributed > 0 else { return nil }
-        return gain(value: value).map { $0 / netContributed }
-    }
 }
 
 @Observable final class PortfolioFundingStore {
@@ -142,7 +138,7 @@ struct PortfolioFundingEditor: View {
                     Text("Include money and the starting value of securities transferred into or out of the account. Include payouts taken out. Do not count purchases, sales or reinvested dividends as contributions.")
                 }
                 Section {
-                    Text("Account gain = current brokerage value + withdrawals − contributions. Percentage return compares this gain with net contributions (deposits minus withdrawals); it is not annualized.")
+                    Text("Account gain = current brokerage value + withdrawals − contributions. Lifetime totals alone cannot determine a timing-aware percentage return. The chart calculates an estimated percentage from dated transactions.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 if let error { Text(error).foregroundStyle(.red) }

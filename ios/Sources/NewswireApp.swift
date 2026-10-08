@@ -7,9 +7,22 @@ import SwiftUI
     var body: some Scene {
         WindowGroup {
             #if DEBUG
-            if let index = CommandLine.arguments.firstIndex(of: "-articlePreview"),
+            if CommandLine.arguments.contains("-notificationSetupPreview") {
+                NavigationStack { PushSettingsView(preview: PushStatusPreview.fromArguments) }
+            } else if CommandLine.arguments.contains("-savedStoriesPreview") {
+                SavedStoriesPreview()
+            } else if CommandLine.arguments.contains("-institutionalPreview") {
+                InstitutionalPreview()
+            } else if let index = CommandLine.arguments.firstIndex(of: "-articlePreview"),
                let raw = CommandLine.arguments.dropFirst(index + 1).first, let url = URL(string: raw) {
                 ArticleReaderPreview(url: url)
+            } else if let index = CommandLine.arguments.firstIndex(of: "-dataPreview"), let route = CommandLine.arguments.dropFirst(index + 1).first {
+                DataReadingPreview(path: route)
+            } else if CommandLine.arguments.contains("-ptrReportPreview"),
+                      let source = URL(string: "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/20035408.pdf") {
+                HousePTRDetailView(member: "April McClain Delaney", filed: "2026-09-09", filingID: "20035408", year: 2026, source: source)
+            } else if CommandLine.arguments.contains("-statsPreview") {
+                MarketStatsPreview()
             } else if CommandLine.arguments.contains("-storyDesignPreview") {
                 StoryDesignPreview()
             } else if CommandLine.arguments.contains("-portfolioPreview") {
@@ -103,6 +116,80 @@ nonisolated enum Accent: String, CaseIterable, Identifiable {
     }
 }
 
+@Observable final class SavedStories {
+    static let shared = SavedStories()
+    private(set) var items: [SavedStory]
+    @ObservationIgnored private let defaults: UserDefaults
+    private let key: String
+    private let limit = 100
+    private let articleLimit = 40_000
+
+    init(defaults: UserDefaults = .standard, key: String = "savedStorySnapshots") {
+        self.defaults = defaults
+        self.key = key
+        if let data = defaults.data(forKey: key), let saved = try? JSONDecoder().decode([SavedStory].self, from: data) {
+            items = Array(saved.prefix(limit))
+        } else {
+            items = []
+        }
+    }
+
+    func contains(_ story: Story) -> Bool { items.contains { $0.story.id == story.id } }
+
+    func search(_ query: String) -> [SavedStory] {
+        guard !query.isEmpty else { return items }
+        return items.filter { $0.matches(query) }
+    }
+
+    func toggle(_ story: Story, articleText: String?) {
+        if let index = items.firstIndex(where: { $0.story.id == story.id }) {
+            items.remove(at: index)
+        } else {
+            let snapshot = Story(id: story.id, externalId: story.externalId,
+                                 title: String(story.title.prefix(500)), summary: String(story.summary.prefix(10_000)),
+                                 body: String(story.body.prefix(20_000)), source: String(story.source.prefix(300)),
+                                 url: story.url, publishedAt: story.publishedAt, receivedAt: story.receivedAt,
+                                 category: story.category, priority: story.priority, tickers: story.tickers,
+                                 tags: story.tags, agent: story.agent, imageUrl: nil, interaction: story.interaction)
+            items.insert(SavedStory(story: snapshot, articleText: articleText.map { String($0.prefix(articleLimit)) }), at: 0)
+            if items.count > limit { items.removeLast(items.count - limit) }
+        }
+        persist()
+    }
+
+    func remove(_ story: Story) {
+        guard items.contains(where: { $0.story.id == story.id }) else { return }
+        items.removeAll { $0.story.id == story.id }
+        persist()
+    }
+
+    func updateOfflineText(_ text: String, for story: Story) {
+        guard let index = items.firstIndex(where: { $0.story.id == story.id }) else { return }
+        items[index] = SavedStory(story: items[index].story, articleText: String(text.prefix(articleLimit)))
+        persist()
+    }
+
+    private func persist() {
+        if let data = try? JSONEncoder().encode(items) { defaults.set(data, forKey: key) }
+    }
+}
+
+struct SavedStory: Codable, Identifiable {
+    var id: String { story.id }
+    let story: Story
+    let articleText: String?
+
+    func matches(_ query: String) -> Bool {
+        story.title.localizedCaseInsensitiveContains(query)
+            || story.source.localizedCaseInsensitiveContains(query)
+            || story.summary.localizedCaseInsensitiveContains(query)
+            || story.body.localizedCaseInsensitiveContains(query)
+            || (articleText?.localizedCaseInsensitiveContains(query) ?? false)
+            || story.tickers.contains { $0.localizedCaseInsensitiveContains(query) }
+            || story.tags.contains { $0.localizedCaseInsensitiveContains(query) }
+    }
+}
+
 @Observable final class Theme {
     static let shared = Theme()
     var accent = Accent(rawValue: UserDefaults.standard.string(forKey: "accent") ?? "") ?? .amber {
@@ -110,24 +197,35 @@ nonisolated enum Accent: String, CaseIterable, Identifiable {
     }
 }
 
+private enum FeedDestination: Hashable { case explore }
+
 struct FeedView: View {
     @Environment(\.scenePhase) private var phase
     @State private var store = FeedStore.shared
     @State private var settings = false
+    @State private var showingSaved = false
     @State private var portfolio = false
     @State private var dock = DockDetent.peek
     @State private var dockFrame = CGRect.zero
     @State private var quoteRoute: MarketSymbol?
+    @State private var dataRoute: DataRoute?
+    @State private var marketDepth: Int?
+    @State private var asking: AskContext?
     @State private var watchlist = Watchlist.shared
     @State private var board = MarketBoard.shared
     @State private var watchlistExpanded = UserDefaults.standard.bool(forKey: "watchlistExpanded")
     @State private var portfolioExpanded = UserDefaults.standard.bool(forKey: "portfolioExpanded")
-    @State private var dashboardFaded = false
     @State private var search = ""
     @AppStorage("headlinesOnly") private var headlinesOnly = false
+    @AppStorage("compactHome") private var compactHome = false
+    @AppStorage("homeOrder") private var homeOrder = "marketsFirst"
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var pillNamespace
     private let categories = ["", "general", "markets", "technology", "economy", "politics", "world", "science"]
+
+    private var hidesMarketDock: Bool {
+        TerminalExploreVisibility.shared.isVisible || DataScreen.designedPaths.contains(dataRoute?.path ?? "")
+    }
 
     private var selectionAnimation: Animation { reduceMotion ? .easeOut(duration: 0.15) : .spring(duration: 0.38, bounce: 0.18) }
 
@@ -135,7 +233,17 @@ struct FeedView: View {
         NavigationStack(path: $store.path) {
             Group {
                 List {
-                    if search.isEmpty && store.filters.isEmpty {
+                    if search.isEmpty && store.filters.isEmpty && homeOrder == "marketsFirst" {
+                        dashboard
+                            .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 14, trailing: 16))
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
+                        MarketsHome(open: open(quote:))
+                            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 14, trailing: 16))
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
+                    }
+                    if search.isEmpty && store.filters.isEmpty && homeOrder == "newsFirst" {
                         dashboard
                             .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 14, trailing: 16))
                             .listRowSeparator(.hidden)
@@ -183,6 +291,12 @@ struct FeedView: View {
                         }.disabled(store.loadingOlder)
                             .task(id: store.cursor) { await store.loadOlder() }
                     }
+                    if search.isEmpty && store.filters.isEmpty && homeOrder == "newsFirst" {
+                        MarketsHome(open: open(quote:))
+                            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 14, trailing: 16))
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
+                    }
                 }
                 .listStyle(.plain)
                 .dockClearance()
@@ -206,11 +320,32 @@ struct FeedView: View {
                     Label(filter.title, systemImage: filter.symbol)
                 }
                 .navigationDestination(for: Story.self) { StoryDetail(story: $0) }
-                .navigationDestination(item: $quoteRoute) { QuoteDetail(symbol: $0.id).id($0.id).dockClearance() }
+                .navigationDestination(for: MarketSymbol.self) { QuoteDetail(symbol: $0.id).id($0.id).dockClearance() }
+                .navigationDestination(for: DataRoute.self) { route in
+                    if DataScreen.designedPaths.contains(route.path) {
+                        DataScreen(route: route).id(route.id)
+                    } else {
+                        DataScreen(route: route).id(route.id).dockClearance()
+                    }
+                }
+                .navigationDestination(for: FeedDestination.self) { _ in
+                    TerminalExploreView { token in
+                        marketDepth = nil
+                        open(quote: token)
+                    }
+                }
                 .navigationTitle("NEWSWIRE")
                 .navigationSubtitle(subtitle)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button { asking = .markets } label: { Image(systemName: "sparkles") }
+                            .accessibilityLabel("Ask AI")
+                    }
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button { showingSaved = true } label: { Image(systemName: "bookmark") }
+                            .accessibilityLabel("Saved stories")
+                    }
                     ToolbarItem(placement: .topBarTrailing) {
                         Button { portfolio = true } label: { Image(systemName: "briefcase") }
                             .accessibilityLabel("Portfolio")
@@ -222,7 +357,9 @@ struct FeedView: View {
                 }
             }
             .sheet(isPresented: $settings) { SettingsView(store: store) }
+            .sheet(isPresented: $showingSaved) { SavedStoriesView() }
             .sheet(isPresented: $portfolio) { PortfolioView() }
+            .sheet(item: $asking) { AskSheet(context: $0) }
             .task(id: store.category + "|" + search + "|" + store.filters.map(\.id).joined(separator: "|") + "|" + store.serverURL) {
                 store.query = search.trimmingCharacters(in: .whitespacesAndNewlines)
                 store.reset()
@@ -274,17 +411,25 @@ struct FeedView: View {
     var body: some View {
         navigation
         .gesture(DockBackgroundInteraction(excludedFrame: dockFrame) {
-            if dock != .peek { dock = .peek }
+            if dock != .peek {
+                withAnimation(selectionAnimation) { dock = .peek }
+            }
         })
-        .onChange(of: store.path) { _, _ in dock = .peek }
-        .onChange(of: quoteRoute) { _, _ in dock = .peek }
         .onChange(of: settings) { _, _ in dock = .peek }
         .onChange(of: portfolio) { _, _ in dock = .peek }
         .overlay {
-            MarketDock(detent: $dock, onSelect: { symbol in
-                dock = .peek
-                open(quote: symbol)
-            }, onFrameChange: { dockFrame = $0 })
+            if !hidesMarketDock {
+                MarketDock(detent: $dock, onSelect: { symbol in
+                    if symbol == TerminalExploreView.token {
+                        withAnimation(selectionAnimation) { dock = .peek }
+                        marketDepth = nil
+                        store.path.append(FeedDestination.explore)
+                        return
+                    }
+                    withAnimation(selectionAnimation) { dock = .medium }
+                    open(quote: symbol)
+                }, onFrameChange: { dockFrame = $0 })
+            }
         }
         .environment(\.feedStore, store)
         .onOpenURL { url in
@@ -296,12 +441,12 @@ struct FeedView: View {
             case "quote":
                 guard let symbol = url.pathComponents.dropFirst().first else { return }
                 portfolio = false
-                quoteRoute = MarketSymbol(id: symbol)
+                open(quote: symbol)
             case "story":
                 portfolio = false
                 guard let id = url.pathComponents.dropFirst().first else { return }
                 if let story = store.story(id: id) {
-                    store.path = [story]
+                    store.path = NavigationPath([story])
                 } else if let link = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "url" })?.value,
                           let web = URL(string: link), web.scheme == "https" {
                     UIApplication.shared.open(web)
@@ -311,37 +456,83 @@ struct FeedView: View {
         }
         #if DEBUG
         .task {
+            if CommandLine.arguments.contains("-exploreDataTools") {
+                try? await Task.sleep(for: .milliseconds(500))
+                store.path.append(FeedDestination.explore)
+            }
+            if CommandLine.arguments.contains("-savedSheet") { showingSaved = true }
             if CommandLine.arguments.contains("-marketSearch") { dock = .large }
+            if CommandLine.arguments.contains("-marketSearchMedium") { dock = .medium }
+            if CommandLine.arguments.contains("-askMarkets") { asking = .markets }
+            if CommandLine.arguments.contains("-dashboardDemo") {
+                for _ in 0..<2 {
+                    try? await Task.sleep(for: .seconds(2))
+                    morphDashboard { watchlistExpanded = true }
+                    try? await Task.sleep(for: .seconds(2))
+                    morphDashboard { watchlistExpanded = false }
+                }
+            }
+            if let index = CommandLine.arguments.firstIndex(of: "-command"), let text = CommandLine.arguments.dropFirst(index + 1).first, let command = TerminalCommand.parse(text) {
+                try? await Task.sleep(for: .seconds(1))
+                open(quote: command.token)
+            }
             if let index = CommandLine.arguments.firstIndex(of: "-quote"), let symbol = CommandLine.arguments.dropFirst(index + 1).first {
                 try? await Task.sleep(for: .seconds(1))
-                quoteRoute = MarketSymbol(id: symbol)
+                open(quote: symbol)
             }
             if let index = CommandLine.arguments.firstIndex(of: "-storyURL"), let link = CommandLine.arguments.dropFirst(index + 1).first.flatMap(URL.init(string:)) {
                 try? await Task.sleep(for: .seconds(1))
                 let title = CommandLine.arguments.dropFirst(index + 2).first ?? link.lastPathComponent
-                store.path = [Story(id: "debug", externalId: "debug", title: title, summary: "", body: "", source: link.host() ?? "", url: link,
+                store.path = NavigationPath([Story(id: "debug", externalId: "debug", title: title, summary: "", body: "", source: link.host() ?? "", url: link,
                                     publishedAt: .now, receivedAt: .now, category: "markets", priority: "normal",
-                                    tickers: [], tags: ["headlines"], agent: "debug", imageUrl: nil)]
+                                    tickers: [], tags: ["headlines"], agent: "debug", imageUrl: nil)])
             }
         }
         #endif
+        .onChange(of: store.path.count) { _, count in
+            if let depth = marketDepth, count < depth {
+                marketDepth = nil
+                quoteRoute = nil
+                dataRoute = nil
+            }
+        }
         .onChange(of: watchlistExpanded) { _, value in UserDefaults.standard.set(value, forKey: "watchlistExpanded") }
         .onChange(of: portfolioExpanded) { _, value in UserDefaults.standard.set(value, forKey: "portfolioExpanded") }
     }
 
-    /// A quote opens from the feed root; from inside a story or another quote, return there first so it never stacks under a screen the reader left.
     private func open(quote symbol: String) {
-        guard !store.path.isEmpty else { quoteRoute = MarketSymbol(id: symbol); return }
-        store.path = []
-        Task {
-            try? await Task.sleep(for: .milliseconds(400))
-            quoteRoute = MarketSymbol(id: symbol)
+        if let depth = marketDepth, store.path.count >= depth {
+            store.path.removeLast(store.path.count - depth + 1)
         }
+        if let route = DataRoute(token: symbol) {
+            quoteRoute = nil
+            dataRoute = route
+            store.path.append(route)
+        } else {
+            dataRoute = nil
+            let route = MarketSymbol(id: symbol)
+            quoteRoute = route
+            store.path.append(route)
+        }
+        marketDepth = store.path.count
     }
 
     private var watchlistHeader: some View {
         HomeSectionHeader("Watchlist", action: watchlist.symbols.count > 3 ? (watchlistExpanded ? "Show Less" : "Show All") : nil) {
             morphDashboard { watchlistExpanded.toggle() }
+        }
+    }
+
+    /// Biggest gain today first, biggest loss last; symbols still waiting on a quote keep their saved order at the end.
+    private var moversFirst: [String] {
+        let order = Dictionary(watchlist.symbols.enumerated().map { ($1, $0) }, uniquingKeysWith: min)
+        return watchlist.symbols.sorted { a, b in
+            switch (board.quotes[a]?.changePercent, board.quotes[b]?.changePercent) {
+            case let (x?, y?) where x != y: x > y
+            case (_?, nil): true
+            case (nil, _?): false
+            default: order[a, default: 0] < order[b, default: 0]
+            }
         }
     }
 
@@ -357,7 +548,7 @@ struct FeedView: View {
                 }
                 .buttonStyle(.plain)
             }
-            let shown = watchlistExpanded ? watchlist.symbols : Array(watchlist.symbols.prefix(3))
+            let shown = watchlistExpanded ? moversFirst : Array(moversFirst.prefix(3))
             ForEach(shown, id: \.self) { symbol in
                 let quote = board.quotes[symbol]
                 watchlistMenu(for: symbol) {
@@ -371,21 +562,44 @@ struct FeedView: View {
     }
 
     private var dashboard: some View {
+        if compactHome {
+            return AnyView(compactDashboard)
+        }
         let stacked = watchlistExpanded || portfolioExpanded
         let layout = stacked ? AnyLayout(VStackLayout(alignment: .leading, spacing: 20)) : AnyLayout(HStackLayout(alignment: .top, spacing: 12))
-        return layout {
+        return AnyView(layout {
             VStack(alignment: .leading, spacing: 8) {
-                if stacked { watchlistHeader.opacity(dashboardFaded ? 0 : 1).transition(.cardSwap) }
+                if stacked { watchlistHeader.transition(.cardSwap) }
                 ZStack(alignment: .topLeading) {
                     if stacked { watchlistRows.transition(.cardSwap) } else { compactWatchlist.transition(.cardSwap) }
                 }
-                .opacity(dashboardFaded ? 0 : 1)
                 .frame(maxWidth: .infinity, maxHeight: stacked ? nil : .infinity, alignment: .topLeading)
+                .clipShape(.rect(cornerRadius: 24, style: .continuous))
                 .homeCard()
             }
-            PortfolioCard(compact: !stacked, expanded: portfolioExpanded, contentHidden: dashboardFaded,
+            PortfolioCard(compact: !stacked, expanded: portfolioExpanded,
                           setExpanded: { value in morphDashboard { portfolioExpanded = value } }) { portfolio = true }
         }
+        .fixedSize(horizontal: false, vertical: true))
+    }
+
+    private var compactDashboard: some View {
+        HStack(spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "star.fill").foregroundStyle(Color.wireAccent)
+                Text("Watchlist").font(.subheadline.weight(.semibold))
+                Text(watchlist.symbols.isEmpty ? "Add symbols" : watchlist.symbols.prefix(3).map(OptionSymbol.display).joined(separator: " · "))
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(.rect)
+            .onTapGesture { dock = .large }
+            Button { portfolio = true } label: {
+                Label("Portfolio", systemImage: "briefcase").font(.caption.weight(.semibold))
+            }.buttonStyle(.plain)
+        }
+        .padding(14)
+        .homeCard()
         .fixedSize(horizontal: false, vertical: true)
     }
 
@@ -400,67 +614,57 @@ struct FeedView: View {
         } label: {
             label().contentShape(.rect)
         } primaryAction: {
-            quoteRoute = MarketSymbol(id: symbol)
+            open(quote: symbol)
         }
         .buttonStyle(.plain)
     }
 
-    /// Fades the card contents out, resizes the (empty) cards with a smooth, non-bouncy curve so the
-    /// list row height doesn't overshoot, then fades the new contents in once the resize has settled.
+    /// The dashboard is a single `List` row, and the list repositions that row while SwiftUI animates inside it,
+    /// so a sliding resize lurches. The layout switches at once and the new contents fade in instead.
     private func morphDashboard(_ change: @escaping () -> Void) {
-        guard !reduceMotion else {
-            withAnimation(.easeOut(duration: 0.15)) { change() }
-            return
-        }
-        withAnimation(.easeOut(duration: 0.12)) { dashboardFaded = true } completion: {
-            withAnimation(.dashboard(false)) { change() } completion: {
-                withAnimation(.easeOut(duration: 0.2)) { dashboardFaded = false }
-            }
-        }
+        withTransaction(Transaction(animation: nil)) { change() }
     }
 
     private var compactWatchlist: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Watchlist").font(.headline)
+        VStack(alignment: .leading, spacing: 0) {
             if watchlist.symbols.isEmpty {
                 Button { dock = .large } label: {
-                    Text("Star any quote to add it here.").font(.caption).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading).contentShape(.rect)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Watchlist").font(.subheadline.weight(.semibold))
+                        Text("Star any quote to add it here.").font(.caption).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading).contentShape(.rect)
                 }
                 .buttonStyle(.plain)
+                .padding(14)
             }
-            ForEach(watchlist.symbols.prefix(3), id: \.self) { symbol in
+            let shown = Array(moversFirst.prefix(3))
+            ForEach(shown, id: \.self) { symbol in
                 let quote = board.quotes[symbol]
                 watchlistMenu(for: symbol) {
-                    HStack(alignment: .firstTextBaseline, spacing: 4) {
-                        Text(OptionSymbol.display(symbol)).font(.subheadline.weight(.semibold).monospaced())
-                            .lineLimit(1).minimumScaleFactor(0.7)
-                        Spacer(minLength: 4)
-                        VStack(alignment: .trailing, spacing: 1) {
-                            Text(quote.map { QuoteFormat.price($0.price) } ?? "—")
-                                .font(.caption.weight(.semibold))
-                            Text(quote.map { QuoteFormat.percent($0.changePercent) } ?? " ")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(QuoteFormat.color(quote?.changePercent ?? 0))
-                        }
-                        .monospacedDigit()
-                        .lineLimit(1)
-                        .contentTransition(.numericText())
-                    }
-                    .contentShape(.rect)
+                    CompactWatchlistQuote(symbol: symbol, quote: quote)
                 }
+                if symbol != shown.last || watchlist.symbols.count > 3 { Divider().padding(.leading, 14) }
             }
             if watchlist.symbols.count > 3 {
-                Button("See All \(watchlist.symbols.count)") {
-                    morphDashboard { watchlistExpanded = true }
+                Button { morphDashboard { watchlistExpanded = true } } label: {
+                    HStack(spacing: 4) {
+                        Text("\(watchlist.symbols.count - 3) more")
+                        Image(systemName: "chevron.down").font(.caption2.weight(.bold))
+                    }
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .padding(.horizontal, 14).padding(.vertical, 9)
+                    .contentShape(.rect)
                 }
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(Color.wireAccent)
-                .buttonStyle(.borderless)
+                .buttonStyle(.plain)
+                .accessibilityLabel("Show all \(watchlist.symbols.count) watchlist items")
             }
         }
-        .padding(14)
+        .padding(.vertical, 4)
     }
+
     private var subtitle: String {
         if !store.configured { return "Not connected" }
         if store.error != nil { return "Offline" }
@@ -529,6 +733,7 @@ struct StoryRow: View {
     var showSummary = true
     @AppStorage private var largeImage: Bool
     @Environment(\.feedStore) private var feedStore
+    @State private var savedStories = SavedStories.shared
     /// Read from the summarizer's unobserved storage, then refreshed only for this row when its own results land
     /// (after scrolling settles), so the rest of the feed never re-renders.
     @State private var imageURL: URL?
@@ -577,6 +782,12 @@ struct StoryRow: View {
         .animation(.easeOut(duration: 0.25), value: isSeen)
         .accessibilityElement(children: .combine)
         .contextMenu {
+            Button {
+                savedStories.toggle(story, articleText: Summarizer.shared.texts[story.url.absoluteString])
+            } label: {
+                Label(savedStories.contains(story) ? "Remove Saved Story" : "Save Story",
+                      systemImage: savedStories.contains(story) ? "bookmark.slash" : "bookmark")
+            }
             if imageURL != nil && showSummary {
                 Button {
                     largeImage.toggle()
@@ -645,36 +856,13 @@ struct StoryRow: View {
                 Text(StoryHTML.plainText(story.summary)).font(.subheadline).foregroundStyle(.secondary).lineLimit(3)
             }
             if !tickers.isEmpty {
-                tickerLine
-                    .font(.system(.caption2, design: .monospaced).weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-                    .fixedSize(horizontal: false, vertical: true)
+                StoryQuoteStats(symbols: tickers, quotes: QuoteStore.shared.quotes)
             }
         }
         .task(id: story.id) { QuoteStore.shared.want(QuoteStore.shared.candidates(for: story)) }
     }
 
     private var tickers: [String] { QuoteStore.shared.symbols(for: story) }
-
-    private var tickerLine: Text {
-        var line = AttributedString()
-        for (index, symbol) in tickers.enumerated() {
-            if index > 0 { line += AttributedString("  ·  ") }
-            line += AttributedString(symbol)
-            if let quote = QuoteStore.shared.quotes[symbol] {
-                var change = AttributedString(" \(QuoteFormat.arrow(quote.changePercent))\(QuoteFormat.percent(abs(quote.changePercent)).trimmingCharacters(in: CharacterSet(charactersIn: "+")))")
-                change.foregroundColor = QuoteFormat.color(quote.changePercent)
-                line += change
-                if let extended = quote.extended {
-                    var after = AttributedString(" \(extended.session == "pre" ? "PM" : "AH") \(QuoteFormat.percent(extended.changePercent))")
-                    after.foregroundColor = .secondary
-                    line += after
-                }
-            }
-        }
-        return Text(line)
-    }
 
     private var isSeen: Bool { ReadState.shared.contains(story) }
     private var unreadPriority: String { isSeen ? "normal" : story.priority }
@@ -707,6 +895,7 @@ struct StoryDetail: View {
     @State private var rerender = false
     @State private var moreDetail = false
     @State private var interaction: String?
+    @State private var savedStories = SavedStories.shared
     @State private var selectedQuote: Quote?
     private var key: String { story.url.absoluteString }
     private var quotes: [Quote] { QuoteStore.shared.quotes(for: story) }
@@ -842,6 +1031,9 @@ struct StoryDetail: View {
             if let page = await Summarizer.page(story.url, force: rerender) { Summarizer.shared.remember(page, for: story, reload: rerender) }
         }
         .task(id: excerpt.count) {
+            if savedStories.contains(story), let article = Summarizer.shared.texts[key] {
+                savedStories.updateOfflineText(article, for: story)
+            }
             await QuoteStore.shared.scan(story, article: Summarizer.shared.texts[key] ?? "")
         }
         .task(id: excerpt.count) {
@@ -866,6 +1058,10 @@ struct StoryDetail: View {
             if interaction == nil { interaction = story.interaction }
         }
         .task {
+            if let saved = savedStories.items.first(where: { $0.story.id == story.id })?.articleText,
+               Summarizer.shared.texts[key] == nil {
+                Summarizer.shared.restoreOffline(saved, for: story)
+            }
             guard story.isBrain else { return }
             _ = await feedStore?.brain(story, action: "view")
         }
@@ -873,6 +1069,18 @@ struct StoryDetail: View {
         .navigationTitle("STORY").navigationBarTitleDisplayMode(.inline)
         .fullScreenCover(isPresented: $reading) { SafariView(url: story.url).ignoresSafeArea() }
         .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    withAnimation(.easeOut(duration: 0.18)) {
+                        savedStories.toggle(story, articleText: Summarizer.shared.texts[key])
+                    }
+                } label: {
+                    Image(systemName: savedStories.contains(story) ? "bookmark.fill" : "bookmark")
+                        .contentTransition(.symbolEffect(.replace))
+                }
+                .accessibilityLabel(savedStories.contains(story) ? "Remove saved story" : "Save story")
+                .sensoryFeedback(.success, trigger: savedStories.contains(story))
+            }
             if story.isBrain {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
@@ -1069,6 +1277,114 @@ struct StoryDetail: View {
     }
 }
 
+private struct SavedStoriesView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var saved = SavedStories.shared
+    @State private var search = ""
+
+    private var results: [SavedStory] { saved.search(search) }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if !results.isEmpty {
+                    ForEach(results) { item in
+                        NavigationLink(value: item.story) {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(item.story.title).font(.headline).lineLimit(3)
+                                Text("\(item.story.source) · \(item.story.publishedAt, format: .dateTime.month(.abbreviated).day().year())")
+                                    .font(.caption).foregroundStyle(.secondary)
+                                if let summary = item.story.summary.nilIfEmpty {
+                                    Text(StoryHTML.plainText(summary)).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
+                                }
+                            }.padding(.vertical, 4)
+                        }
+                    }
+                    .onDelete { offsets in
+                        for item in offsets.map({ results[$0] }) { saved.remove(item.story) }
+                    }
+                }
+            }
+            .listStyle(.plain)
+            .overlay {
+                if results.isEmpty {
+                    if search.isEmpty {
+                        ContentUnavailableView("No Saved Stories", systemImage: "bookmark",
+                                               description: Text("Tap the bookmark on any story to keep it here for offline reading."))
+                    } else {
+                        ContentUnavailableView.search(text: search)
+                    }
+                }
+            }
+            .searchable(text: $search, prompt: "Search saved stories")
+            .navigationDestination(for: Story.self) { StoryDetail(story: $0) }
+            .navigationTitle("Saved")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+            .scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
+        }
+    }
+}
+
+private struct SavedStoriesPreview: View {
+    @State private var saved = SavedStories.shared
+    private let fixtures = SavedStoriesPreview.fixtures
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Fixtures") {
+                    ForEach(fixtures) { story in
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(story.isBrain ? "BRAIN" : "WIRE").font(.caption.monospaced()).foregroundStyle(.secondary)
+                                Text(story.title).font(.headline)
+                            }
+                            Spacer()
+                            Button {
+                                saved.toggle(story, articleText: "Offline fixture article for \(story.title). " + String(repeating: "Verified saved text. ", count: 80))
+                            } label: {
+                                Image(systemName: saved.contains(story) ? "bookmark.fill" : "bookmark")
+                            }
+                            .accessibilityLabel(saved.contains(story) ? "Remove saved story" : "Save story")
+                        }
+                    }
+                }
+                Section("Saved (\(saved.items.count))") {
+                    ForEach(saved.items) { item in
+                        NavigationLink(value: item.story) {
+                            VStack(alignment: .leading) {
+                                Text(item.story.title)
+                                Text(item.story.isBrain ? "Brain" : item.story.source).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .onDelete { offsets in
+                        for item in offsets.map({ saved.items[$0] }) { saved.remove(item.story) }
+                    }
+                }
+            }
+            .navigationDestination(for: Story.self) { StoryDetail(story: $0) }
+            .navigationTitle("Saved Stories Preview")
+        }
+    }
+
+    private static let fixtures: [Story] = [
+        Story(id: "preview:ordinary", externalId: "preview:ordinary", title: "Fixture: Federal Reserve holds rates",
+              summary: "A deterministic ordinary wire story for bookmark testing.", body: "Offline fixture content.", source: "Newswire Preview",
+              url: URL(string: "https://example.com/newswire-preview-rates")!, publishedAt: .now, receivedAt: .now,
+              category: "economy", priority: "normal", tickers: ["SPY"], tags: ["preview"], agent: "wire", imageUrl: nil),
+        Story(id: "brain:preview:saved", externalId: "brain:preview:saved", title: "Fixture: Brain market signal",
+              summary: "A deterministic Brain story for bookmark testing.", body: "Offline Brain fixture content.", source: "Newswire Brain Preview",
+              url: URL(string: "https://example.com/newswire-preview-brain")!, publishedAt: .now, receivedAt: .now,
+              category: "markets", priority: "normal", tickers: ["AAPL"], tags: ["preview"], agent: "brain", imageUrl: nil)
+    ]
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
 struct SafariView: UIViewControllerRepresentable {
     let url: URL
     func makeUIViewController(context: Context) -> SFSafariViewController {
@@ -1097,6 +1413,8 @@ extension Story {
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @AppStorage("headlinesOnly") private var headlinesOnly = false
+    @AppStorage("compactHome") private var compactHome = false
+    @AppStorage("homeOrder") private var homeOrder = "marketsFirst"
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var accentNamespace
     let store: FeedStore
@@ -1107,6 +1425,11 @@ struct SettingsView: View {
             Form {
                 Section("Feed") {
                     Toggle("Show summaries", isOn: Binding(get: { !headlinesOnly }, set: { headlinesOnly = !$0 }))
+                    Toggle("Compact dashboard", isOn: $compactHome)
+                    Picker("Home order", selection: $homeOrder) {
+                        Text("Markets first").tag("marketsFirst")
+                        Text("News first").tag("newsFirst")
+                    }
                 }
                 Section("Accent") {
                     ScrollView(.horizontal, showsIndicators: false) {
@@ -1136,11 +1459,18 @@ struct SettingsView: View {
                 Section("Brokerage Sync") {
                     NavigationLink { BrokerageSyncView() } label: { Label("Set up Plaid", systemImage: "building.columns") }
                 }
+                Section("Notifications") {
+                    NavigationLink { PushSettingsView() } label: { Label("Alerts and topics", systemImage: "bell.badge") }
+                }
                 Section("Stock Questions") {
                     NavigationLink { StockAISettings() } label: { Label("AI", systemImage: "sparkles") }
                 }
                 Section("Connection") {
-                    TextField("https://your-server", text: $url).keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    NavigationLink {
+                        ConnectionSettingsView(store: store)
+                    } label: {
+                        LabeledContent("Server URL", value: store.serverURL.isEmpty ? "Not set" : store.serverURL)
+                    }
                 }
                 Section {
                     Text("This device proves itself to the server with a key held in its Secure Enclave, so there is no password or token to enter. The wire checks for updates every 30 seconds while foregrounded.")
@@ -1149,21 +1479,173 @@ struct SettingsView: View {
             }
             .navigationTitle("Settings").navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        let cleanURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
-                        guard cleanURL.isEmpty || NewswireAPI.validatedURL(cleanURL) != nil else {
-                            error = "Use an HTTPS URL without credentials, query, or fragment."
-                            return
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            }
+        }
+    }
+}
+
+private struct PushSettingsView: View {
+    @Environment(\.scenePhase) private var scenePhase
+    @AppStorage("pushEnabled") private var pushEnabled = false
+    @AppStorage("pushRegistrationStatus") private var registrationStatus = "Not enabled"
+    @AppStorage("pushServerStatus") private var serverStatus = "Not synced"
+    @State private var authorization = "Checking…"
+    let preview: PushStatusPreview?
+
+    init(preview: PushStatusPreview? = nil) {
+        self.preview = preview
+    }
+
+    private var shownAuthorization: String { preview?.authorization ?? authorization }
+    private var shownRegistration: String { preview?.registration ?? registrationStatus }
+    private var shownServer: String { preview?.server ?? serverStatus }
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("iOS permission", value: shownAuthorization)
+                LabeledContent("Apple registration", value: shownRegistration)
+                LabeledContent("Newswire server", value: shownServer)
+                Button(preview == nil && pushEnabled ? "Retry registration and sync" : "Enable alerts") {
+                    Task {
+                        if shownAuthorization == "Denied" {
+                            guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+                            await UIApplication.shared.open(url)
+                        } else {
+                            await PushDelegate.enable()
+                            await PushDelegate.syncStockAlerts()
                         }
-                        store.serverURL = cleanURL
-                        UserDefaults.standard.set(cleanURL, forKey: "serverURL")
-                        UIApplication.shared.registerForRemoteNotifications()
-                        dismiss()
+                        await refreshAuthorization()
                     }
                 }
-            }.onAppear { url = store.serverURL }
+                .disabled(preview != nil)
+                if shownAuthorization == "Denied" {
+                    Text("Allow notifications for Newswire in iOS Settings, then return here and retry.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("Alert delivery")
+            } footer: {
+                Text("Alerts start only after you enable them. Stock alerts follow your held stocks; alert topics below control news alerts.")
+            }
+            Section("News topics") {
+                NavigationLink { AlertTopicsView() } label: { Label("Choose alert topics", systemImage: "slider.horizontal.3") }
+            }
         }
+        .navigationTitle("Notifications")
+        .task { if preview == nil { await refreshAuthorization() } }
+        .onChange(of: scenePhase) { _, phase in
+            guard preview == nil else { return }
+            guard phase == .active else { return }
+            Task {
+                await refreshAuthorization()
+                if authorization == "Allowed" || authorization == "Provisional" || authorization == "Temporary" {
+                    pushEnabled = true
+                    await PushDelegate.enable()
+                    await PushDelegate.syncStockAlerts()
+                }
+            }
+        }
+        .onChange(of: pushEnabled) { _, enabled in
+            guard preview == nil else { return }
+            if !enabled { registrationStatus = "Not enabled" }
+        }
+    }
+
+    private func refreshAuthorization() async {
+        let status = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
+        authorization = switch status {
+        case .notDetermined: "Not requested"
+        case .denied: "Denied"
+        case .authorized: "Allowed"
+        case .provisional: "Provisional"
+        case .ephemeral: "Temporary"
+        @unknown default: "Unknown"
+        }
+    }
+}
+
+private enum PushStatusPreview {
+    case denied, registrationFailed, syncFailed
+
+    static var fromArguments: Self? {
+        guard let index = CommandLine.arguments.firstIndex(of: "-notificationSetupPreview"),
+              let raw = CommandLine.arguments.dropFirst(index + 1).first else { return nil }
+        return switch raw {
+        case "denied": .denied
+        case "registration-failed": .registrationFailed
+        case "sync-failed": .syncFailed
+        default: nil
+        }
+    }
+
+    var authorization: String {
+        switch self {
+        case .denied: "Denied"
+        case .registrationFailed, .syncFailed: "Allowed"
+        }
+    }
+
+    var registration: String {
+        switch self {
+        case .denied: "Not enabled"
+        case .registrationFailed: "Apple registration failed: Unable to reach Apple Push Notification service."
+        case .syncFailed: "Registered with Apple"
+        }
+    }
+
+    var server: String {
+        switch self {
+        case .denied, .registrationFailed: "Not synced"
+        case .syncFailed: "Sync failed: The Newswire server could not be reached."
+        }
+    }
+}
+
+#Preview("Notification setup") {
+    NavigationStack { PushSettingsView(preview: .syncFailed) }
+}
+
+private struct ConnectionSettingsView: View {
+    @Environment(\.dismiss) private var dismiss
+    let store: FeedStore
+    @State private var url = ""
+    @State private var error: String?
+
+    var body: some View {
+        Form {
+            Section("Server URL") {
+                TextField("https://your-server", text: $url)
+                    .keyboardType(.URL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            }
+            Section {
+                Text("This device proves itself to the server with a key held in its Secure Enclave, so there is no password or token to enter. The wire checks for updates every 30 seconds while foregrounded.")
+            }.font(.footnote).foregroundStyle(.secondary)
+            if let error { Text(error).foregroundStyle(.red) }
+        }
+        .navigationTitle("Connection")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
+                    let cleanURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard cleanURL.isEmpty || NewswireAPI.validatedURL(cleanURL) != nil else {
+                        error = "Use an HTTPS URL without credentials, query, or fragment."
+                        return
+                    }
+                    store.serverURL = cleanURL
+                    UserDefaults.standard.set(cleanURL, forKey: "serverURL")
+                    if UserDefaults.standard.bool(forKey: "pushEnabled") {
+                        UIApplication.shared.registerForRemoteNotifications()
+                    }
+                    dismiss()
+                }
+            }
+        }
+        .onAppear { url = store.serverURL }
     }
 }

@@ -64,14 +64,13 @@ struct PortfolioProvider: AppIntentTimelineProvider {
 
     private func entry(for family: WidgetFamily) async -> PortfolioEntry {
         guard let stored = WidgetPortfolio.load() else { return PortfolioEntry(date: .now, portfolio: nil) }
-        let wantsMonth = family == .systemLarge || family == .systemExtraLarge
         let dayFresh = (stored.fetched ?? .distantPast).timeIntervalSinceNow > -60
-        let monthFresh = !wantsMonth || (stored.monthFetched ?? .distantPast).timeIntervalSinceNow > -3600
-        if dayFresh && monthFresh { return PortfolioEntry(date: .now, portfolio: stored) }
+        if dayFresh && stored.accountingVersion == 1 && Calendar.current.isDateInToday(stored.updated) {
+            return PortfolioEntry(date: .now, portfolio: stored)
+        }
         let symbols = stored.holdings.map(\.symbol)
-        async let day = dayFresh ? [:] : WidgetMarket.charts(symbols, range: "1d", interval: "5m", prePost: true)
-        async let month = monthFresh ? [:] : WidgetMarket.charts(symbols, range: "1mo", interval: "1d", prePost: false)
-        let refreshed = stored.refreshed(day: await day, month: await month)
+        let day = await WidgetMarket.charts(symbols, range: "1d", interval: "5m", prePost: true)
+        let refreshed = stored.refreshed(day: day, month: [:])
         refreshed.save()
         return PortfolioEntry(date: .now, portfolio: refreshed)
     }

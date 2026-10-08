@@ -37,6 +37,19 @@ nonisolated enum ChartRange: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// London, Tel Aviv and Johannesburg quote many shares in the minor unit (pence, agorot, cents); prices are shown in the major unit.
+nonisolated enum MinorCurrency {
+    static func major(_ code: String?) -> (code: String, divisor: Double) {
+        switch code {
+        case "GBp", "GBX": ("GBP", 100)
+        case "ILA": ("ILS", 100)
+        case "ZAc", "ZAC": ("ZAR", 100)
+        case let code?: (code, 1)
+        case nil: ("USD", 1)
+        }
+    }
+}
+
 nonisolated struct PricePoint: Identifiable, Hashable, Sendable {
     let id: Int
     let date: Date
@@ -55,10 +68,11 @@ nonisolated struct HistoryPoint: Hashable, Sendable {
         let stamps = result["timestamp"]?.array ?? []
         let closes = result["indicators"]?["quote"]?.array.first?["close"]?.array ?? []
         let adjusted = result["indicators"]?["adjclose"]?.array.first?["adjclose"]?.array ?? []
+        let divisor = MinorCurrency.major(result["meta"]?["currency"]?.text).divisor
         return stamps.indices.compactMap { index in
             guard let stamp = stamps[index].raw, index < closes.count, let close = closes[index].raw, close > 0 else { return nil }
             let adjustedClose = index < adjusted.count ? adjusted[index].raw ?? close : close
-            return HistoryPoint(date: Date(timeIntervalSince1970: stamp), close: close, adjusted: adjustedClose)
+            return HistoryPoint(date: Date(timeIntervalSince1970: stamp), close: close / divisor, adjusted: adjustedClose / divisor)
         }
     }
 }
@@ -83,6 +97,7 @@ nonisolated struct MarketChart: Sendable {
     let yearHigh: Double?
     let yearLow: Double?
     let decimals: Int
+    var divisor: Double = 1
     let timeZone: TimeZone
     var points: [PricePoint]
     var slots: Int
@@ -106,7 +121,8 @@ nonisolated struct MarketChart: Sendable {
         return !points.contains { !$0.extended && $0.date >= pre.start }
     }
 
-    func applying(_ tick: MarketTick, interval: TimeInterval = 120) -> MarketChart? {
+    func applying(_ raw: MarketTick, interval: TimeInterval = 120) -> MarketChart? {
+        let tick = MarketTick(symbol: raw.symbol, price: raw.price / divisor, date: raw.date)
         guard tick.price > 0, let last = points.last, tick.date >= last.date, tick.date.timeIntervalSince(last.date) < 1800 else { return nil }
         let extended = pre?.contains(tick.date) == true || post?.contains(tick.date) == true
         var next = self
@@ -139,6 +155,12 @@ nonisolated struct MarketTick: Sendable {
     let symbol: String
     let price: Double
     let date: Date
+
+    init(symbol: String, price: Double, date: Date) {
+        self.symbol = symbol
+        self.price = price
+        self.date = date
+    }
 
     init?(_ data: Data) {
         var symbol: String?, price: Double?, millis: Int64?
@@ -232,6 +254,34 @@ nonisolated struct TickerMatch: Identifiable, Hashable, Sendable, Decodable {
         case "MUTUALFUND": "Fund"
         default: "Stock"
         }
+    }
+}
+
+extension TickerMatch {
+    nonisolated struct Group: Sendable {
+        let first: TickerMatch
+        var others: [TickerMatch]
+    }
+
+    /// One row per company, so Toyota shows TM with 7203.T beside it instead of a list crowded by US listings.
+    static func grouped(_ matches: [TickerMatch]) -> [Group] {
+        var groups: [Group] = []
+        var index: [String: Int] = [:]
+        for match in matches {
+            let key = companyKey(match.title)
+            if !key.isEmpty, match.quoteType == "EQUITY" || match.quoteType == "ETF", let position = index[key] {
+                groups[position].others.append(match)
+            } else {
+                if !key.isEmpty { index[key] = groups.count }
+                groups.append(Group(first: match, others: []))
+            }
+        }
+        return groups
+    }
+
+    static func companyKey(_ name: String) -> String {
+        let filler: Set<String> = ["inc", "corp", "corporation", "co", "ltd", "plc", "sa", "ag", "nv", "se", "the", "company", "limited", "holdings", "group", "adr", "spa", "asa", "ab", "kk"]
+        return name.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init).filter { !filler.contains($0) }.prefix(2).joined(separator: " ")
     }
 }
 
@@ -440,10 +490,26 @@ nonisolated enum MarketClient {
 
     @concurrent static func search(_ query: String) async throws -> [TickerMatch] {
         let data = try await get("/v1/finance/search", [
-            URLQueryItem(name: "q", value: query), URLQueryItem(name: "quotesCount", value: "8"),
+            URLQueryItem(name: "q", value: query), URLQueryItem(name: "quotesCount", value: "20"),
             URLQueryItem(name: "newsCount", value: "0"), URLQueryItem(name: "listsCount", value: "0"),
         ])
         return try JSONDecoder().decode(SearchEnvelope.self, from: data).quotes
+    }
+
+    @concurrent static func portfolioHistory(_ symbol: String, from start: Date) async throws -> [HistoryPoint] {
+        let data = try await get("/v8/finance/chart/\(symbol)", [
+            URLQueryItem(name: "period1", value: String(Int(start.timeIntervalSince1970))),
+            URLQueryItem(name: "period2", value: String(Int(Date.now.timeIntervalSince1970))),
+            URLQueryItem(name: "interval", value: "1d"), URLQueryItem(name: "events", value: "div,split")
+        ])
+        guard let result = try JSONDecoder().decode(YValue.self, from: data)["chart"]?["result"]?.array.first else { throw MarketError.notFound(symbol) }
+        guard result["meta"]?["currency"]?.text == "USD" else {
+            throw PortfolioHistoryError.unavailable("Currency conversion history is unavailable for \(symbol).")
+        }
+        if case let .object(splits)? = result["events"]?["splits"], !splits.isEmpty {
+            throw PortfolioHistoryError.unavailable("A stock split in \(symbol) needs reconciliation before this range can be shown.")
+        }
+        return HistoryPoint.parse(result)
     }
 
     @concurrent static func history(_ symbol: String, from start: Date) async throws -> [HistoryPoint] {
@@ -469,15 +535,18 @@ nonisolated enum MarketClient {
             ])
         } catch MarketError.notFound { throw MarketError.notFound(symbol) }
         guard let result = try JSONDecoder().decode(ChartEnvelope.self, from: data).chart.result?.first,
-              let price = result.meta.regularMarketPrice else { throw MarketError.notFound(symbol) }
+              let rawPrice = result.meta.regularMarketPrice else { throw MarketError.notFound(symbol) }
         let meta = result.meta
+        let (currency, divisor) = MinorCurrency.major(meta.currency)
+        let scaled = { (value: Double?) in value.map { $0 / divisor } }
+        let price = rawPrice / divisor
         let session = { (period: ChartEnvelope.Period?) in
             period.map { MarketSession(start: Date(timeIntervalSince1970: $0.start), end: Date(timeIntervalSince1970: $0.end)) }
         }
         let regularHours = (meta.tradingPeriods?.regular ?? []).compactMap(session)
         let bars = result.indicators.quote.first
-        let closes = bars?.close ?? []
-        let opens = bars?.open ?? []
+        let closes = (bars?.close ?? []).map(scaled)
+        let opens = (bars?.open ?? []).map(scaled)
         var points: [PricePoint] = []
         var run = 0
         for (index, stamp) in (result.timestamp ?? []).enumerated() {
@@ -499,16 +568,17 @@ nonisolated enum MarketClient {
             symbol: meta.symbol,
             name: meta.longName ?? meta.shortName ?? meta.symbol,
             exchange: meta.fullExchangeName ?? "",
-            currency: meta.currency ?? "USD",
+            currency: currency,
             instrument: meta.instrumentType ?? "",
             price: price,
-            previousClose: range == .day ? (meta.chartPreviousClose ?? meta.previousClose) : meta.previousClose,
-            dayHigh: meta.regularMarketDayHigh,
-            dayLow: meta.regularMarketDayLow,
+            previousClose: scaled(range == .day ? (meta.chartPreviousClose ?? meta.previousClose) : meta.previousClose),
+            dayHigh: scaled(meta.regularMarketDayHigh),
+            dayLow: scaled(meta.regularMarketDayLow),
             volume: meta.regularMarketVolume,
-            yearHigh: meta.fiftyTwoWeekHigh,
-            yearLow: meta.fiftyTwoWeekLow,
+            yearHigh: scaled(meta.fiftyTwoWeekHigh),
+            yearLow: scaled(meta.fiftyTwoWeekLow),
             decimals: min(max(meta.priceHint ?? 2, 2), 6),
+            divisor: divisor,
             timeZone: meta.exchangeTimezoneName.flatMap(TimeZone.init(identifier:)) ?? .current,
             points: points,
             slots: max(slots, 2),

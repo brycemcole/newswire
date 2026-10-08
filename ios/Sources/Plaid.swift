@@ -148,6 +148,8 @@ nonisolated struct BrokerageBalance: Codable, Sendable {
     let institution: String
     let name: String
     let value: Double?
+    var cashValue: Double?
+    var holdingsComplete: Bool?
 }
 
 nonisolated struct PortfolioSnapshot: Codable, Sendable {
@@ -242,6 +244,9 @@ nonisolated struct PlaidClient: Sendable {
             var subtype: String?
             var name: String?
             var investmentTransactionId: String?
+            var cancelTransactionId: String?
+            var transactionDatetime: String?
+            var isoCurrencyCode: String?
         }
         let investmentTransactions: [Transaction]
         let totalInvestmentTransactions: Int
@@ -272,6 +277,7 @@ nonisolated struct PlaidClient: Sendable {
         let day = Date.ISO8601FormatStyle().year().month().day()
         var all: [Transactions.Transaction] = []
         var cashSecurityIDs = Set<String>()
+        var securities: [String: HoldingsResponse.Security] = [:]
         while true {
             let page = try await post("/investments/transactions/get",
                                       ["access_token": item.accessToken, "start_date": start.formatted(day), "end_date": end.formatted(day),
@@ -280,17 +286,18 @@ nonisolated struct PlaidClient: Sendable {
                 throw PlaidError.api(code: "INCOMPLETE_HISTORY", message: "Plaid returned an incomplete transaction history. Try syncing again.")
             }
             cashSecurityIDs.formUnion((page.securities ?? []).filter { $0.type == "cash" && $0.tickerSymbol?.uppercased() == "USD" }.map(\.securityId))
+            for security in page.securities ?? [] { securities[security.securityId] = security }
             all += page.investmentTransactions
             if all.count >= page.totalInvestmentTransactions { break }
             try Task.checkCancellation()
         }
-        return InvestmentHistory(itemID: item.id, start: start, end: end, transactions: all, cashSecurityIDs: Array(cashSecurityIDs))
+        return InvestmentHistory(itemID: item.id, start: start, end: end, transactions: all, cashSecurityIDs: Array(cashSecurityIDs), securities: Array(securities.values), version: 1)
     }
 }
 
 nonisolated struct HoldingsResponse: Decodable, Sendable {
     struct Account: Decodable, Sendable {
-        struct Balances: Decodable, Sendable { let current: Double? }
+        struct Balances: Decodable, Sendable { let current: Double?; var isoCurrencyCode: String? }
         let accountId: String
         let name: String
         let mask: String?
@@ -305,18 +312,19 @@ nonisolated struct HoldingsResponse: Decodable, Sendable {
         let institutionValue: Double?
         let costBasis: Double?
     }
-    struct Contract: Decodable, Sendable {
+    struct Contract: Codable, Sendable {
         let contractType: String
         let expirationDate: String
         let strikePrice: Double
         let underlyingSecurityTicker: String
     }
-    struct Security: Decodable, Sendable {
+    struct Security: Codable, Sendable {
         let securityId: String
         let name: String?
         let tickerSymbol: String?
         let type: String?
         let optionContract: Contract?
+        var isoCurrencyCode: String?
     }
     struct Parsed: Sendable {
         var positions: [Position]
@@ -344,7 +352,8 @@ nonisolated struct HoldingsResponse: Decodable, Sendable {
 
     static func estimatedCost(quantity: Double, trades: [PlaidClient.Transactions.Transaction]) -> Double? {
         guard quantity != 0 else { return nil }
-        guard trades.allSatisfy({ $0.quantity == 0 || $0.type == "buy" || $0.type == "sell" }) else { return nil }
+        let trades = InvestmentActivity.active(trades)
+        guard trades.allSatisfy({ $0.type != "cancel" && ($0.quantity == 0 || $0.type == "buy" || $0.type == "sell") }) else { return nil }
         let ordered = trades.enumerated()
             .filter { ($0.element.type == "buy" || $0.element.type == "sell") && $0.element.quantity != 0 }
             .sorted { ($0.element.date, -$0.offset) < ($1.element.date, -$1.offset) }
@@ -402,8 +411,16 @@ nonisolated struct HoldingsResponse: Decodable, Sendable {
                                       reportedCost: holding.costBasis))
         }
         let balances = self.accounts.filter { $0.type == nil || ["investment", "brokerage"].contains($0.type ?? "") }.map { account in
-            BrokerageBalance(accountID: account.accountId, itemID: item.id, institution: item.institution,
-                             name: account.mask.map { "\(account.name) ••\($0)" } ?? account.name, value: account.balances?.current)
+            let held = holdings.filter { $0.accountId == account.accountId }
+            let complete = (account.balances?.isoCurrencyCode.map { $0 == "USD" } ?? true) && held.allSatisfy { holding in
+                guard let security = securities[holding.securityId], holding.institutionValue != nil else { return false }
+                return (security.isoCurrencyCode.map { $0 == "USD" } ?? true) &&
+                    (security.type == "cash" || positions.contains { $0.id == "\(account.accountId)|\(holding.securityId)" })
+            }
+            return BrokerageBalance(accountID: account.accountId, itemID: item.id, institution: item.institution,
+                             name: account.mask.map { "\(account.name) ••\($0)" } ?? account.name, value: account.balances?.current,
+                             cashValue: held.filter { securities[$0.securityId]?.type == "cash" }.compactMap(\.institutionValue).reduce(0, +),
+                             holdingsComplete: complete)
         }
         return Parsed(positions: positions, cash: cash, accountBalances: balances)
     }
@@ -571,7 +588,7 @@ nonisolated struct HoldingsResponse: Decodable, Sendable {
             }
         }
         let receivedHistory = Set(histories.map(\.itemID))
-        histories += (snapshot.histories ?? []).filter { history in !receivedHistory.contains(history.itemID) && activeItems.contains(where: { $0.id == history.itemID }) }
+        histories += (snapshot.histories ?? []).filter { history in !receivedHistory.contains(history.itemID) && failed.contains(history.itemID) }
         balances += (snapshot.accountBalances ?? []).filter { failed.contains($0.itemID) }
         let kept = applyingOverrides(snapshot).positions.filter { failed.contains($0.itemID) }
         for id in failed { cash[id] = snapshot.cashByItem[id] }

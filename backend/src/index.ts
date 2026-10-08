@@ -1,4 +1,5 @@
 import { AttestError, checkChallenge, fromBase64, makeChallenge, sha256, toBase64, verifyAssertion, verifyAttestation } from './attest';
+import { DataError, dataRoute, mcpRoute, shipAreas, storeEconEvents, storeEconHistory, storeEconSeries, storePublicSources } from './data';
 import { quotes, resolve, type Mention } from './quotes';
 
 interface Env {
@@ -10,6 +11,7 @@ interface Env {
   BRAIN?: D1Database;
   AI?: { run(model: string, input: unknown): Promise<Record<string, unknown>> };
   BRAIN_AI_MODEL?: string;
+  FRED_API_KEY?: string;
 }
 
 const categories = ['general', 'markets', 'technology', 'economy', 'politics', 'world', 'science'];
@@ -162,9 +164,10 @@ async function ingest(value: unknown, env: Env, ctx?: ExecutionContext) {
   const columns = Object.keys(values);
   const results = await env.DB.batch<Record<string, unknown>>([
     env.DB.prepare(`INSERT INTO stories (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')}) ON CONFLICT DO NOTHING`).bind(...Object.values(values)),
+    env.DB.prepare('INSERT INTO stories_fts (rowid, title, summary, body) SELECT rowid, title, summary, body FROM stories WHERE id = ?').bind(id),
     env.DB.prepare('SELECT * FROM stories WHERE external_id = ? OR url = ? ORDER BY CASE WHEN external_id = ? THEN 0 ELSE 1 END LIMIT 1').bind(data.external_id, data.url, data.external_id),
   ]);
-  const row = results[1].results[0];
+  const row = results[2].results[0];
   if (!row) throw new Error('Missing inserted story');
   const duplicate = row.id !== id;
   if (!duplicate && !data.tickers.length) ctx?.waitUntil(tag(id, `${data.title}\n${data.summary}`, env).catch(() => undefined));
@@ -173,6 +176,26 @@ async function ingest(value: unknown, env: Env, ctx?: ExecutionContext) {
 async function tag(id: string, content: string, env: Env) {
   const mentions = await resolve(content);
   if (mentions.length) await env.DB.prepare("UPDATE stories SET tickers = ? WHERE id = ? AND tickers = '[]'").bind(JSON.stringify(mentions.map(item => item.symbol)), id).run();
+}
+async function shipsIngest(value: unknown, env: Env) {
+  const data = value as { area?: unknown; ships?: unknown } | null;
+  const area = choice(data?.area, 'area', Object.keys(shipAreas));
+  const ships = data?.ships;
+  if (!Array.isArray(ships) || ships.length > 1500) invalid('Expected up to 1500 ships');
+  const rows = ships.map(item => {
+    const ship = item as Record<string, unknown> | null;
+    const numberOf = (key: string, min: number, max: number) => {
+      const v = ship?.[key];
+      if (typeof v !== 'number' || !Number.isFinite(v) || v < min || v > max) invalid(`Invalid ${key}`);
+      return v as number;
+    };
+    return [text(String(ship?.mmsi ?? ''), 'mmsi', 12), text(ship?.name ?? '', 'name', 40, ''), text(ship?.kind ?? 'Other', 'kind', 30, 'Other'),
+      numberOf('lat', -90, 90), numberOf('lon', -180, 180), numberOf('speed', 0, 102.3), numberOf('course', 0, 360), timestamp(ship?.at)] as const;
+  });
+  const statements = [env.DB.prepare('DELETE FROM ship_positions WHERE area = ?').bind(area),
+    ...rows.map(r => env.DB.prepare('INSERT OR REPLACE INTO ship_positions (area, mmsi, name, kind, lat, lon, speed, course, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(area, ...r))];
+  for (let i = 0; i < statements.length; i += 100) await env.DB.batch(statements.slice(i, i + 100));
+  return json({ area, stored: rows.length }, 201);
 }
 async function quoteRoute(url: URL) {
   const q = query(url.searchParams, ['symbols', 'text']);
@@ -415,12 +438,12 @@ async function route(request: Request, env: Env, ctx?: ExecutionContext): Promis
   }
   const write = path === '/v1/ingest' || (path === '/v1/stories' && request.method === 'POST') || (/^\/v1\/stories\/([^/]+)$/.test(path) && request.method === 'DELETE')
     || (path === '/v1/devices' && request.method === 'GET') || (/^\/v1\/devices\/([^/]+)$/.test(path) && request.method === 'DELETE')
-    || ['/v1/brain/posts', '/v1/brain/known', '/v1/brain/ai', '/v1/brain/taste'].includes(path);
+    || path === '/v1/ships' || path === '/v1/econ/events' || path === '/v1/econ/history' || path === '/v1/econ/series' || path === '/v1/econ/sources' || ['/v1/brain/posts', '/v1/brain/known', '/v1/brain/ai', '/v1/brain/taste'].includes(path);
   await authenticate(request, env, write);
   if (path.startsWith('/v1/brain/')) return brainRoute(request, url, path, env);
   if (path === '/v1/devices') {
     query(url.searchParams, []);
-    if (request.method === 'GET') return json({ devices: (await env.DB.prepare('SELECT token, environment, stock_symbols FROM devices').all()).results });
+    if (request.method === 'GET') return json({ devices: (await env.DB.prepare('SELECT token, environment, stock_symbols, muted_topics FROM devices').all()).results });
     if (request.method === 'POST') {
       const data = await readBody(request) as Record<string, unknown>;
       const token = text(data?.token, 'token', 200).toLowerCase();
@@ -428,8 +451,11 @@ async function route(request: Request, env: Env, ctx?: ExecutionContext): Promis
       const environment = choice(data.environment, 'environment', ['sandbox', 'production']);
       const symbols = data.stock_symbols === undefined ? [] : data.stock_symbols;
       if (!Array.isArray(symbols) || symbols.length > 200 || symbols.some(s => typeof s !== 'string' || !/^[A-Z0-9.^=-]{1,30}$/.test(s))) invalid('Invalid stock_symbols');
+      const muted = data.muted_topics === undefined ? null : data.muted_topics;
+      if (muted !== null && (!Array.isArray(muted) || muted.length > 40 || muted.some(t => typeof t !== 'string' || !/^[a-z-]{1,30}$/.test(t)))) invalid('Invalid muted_topics');
       const now = new Date().toISOString();
-      await env.DB.prepare('INSERT INTO devices (token, environment, created_at, updated_at, stock_symbols) VALUES (?, ?, ?, ?, ?) ON CONFLICT(token) DO UPDATE SET environment = excluded.environment, updated_at = excluded.updated_at, stock_symbols = excluded.stock_symbols').bind(token, environment, now, now, JSON.stringify([...new Set(symbols)])).run();
+      await env.DB.prepare('INSERT INTO devices (token, environment, created_at, updated_at, stock_symbols, muted_topics) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(token) DO UPDATE SET environment = excluded.environment, updated_at = excluded.updated_at, stock_symbols = excluded.stock_symbols, muted_topics = CASE WHEN ? THEN excluded.muted_topics ELSE devices.muted_topics END')
+        .bind(token, environment, now, now, JSON.stringify([...new Set(symbols)]), JSON.stringify([...new Set(muted ?? [])]), muted !== null ? 1 : 0).run();
       return json({ registered: true }, 201);
     }
     throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
@@ -440,6 +466,40 @@ async function route(request: Request, env: Env, ctx?: ExecutionContext): Promis
     query(url.searchParams, []);
     const removed = await env.DB.prepare('DELETE FROM devices WHERE token = ?').bind(device[1].toLowerCase()).run();
     return json({ removed: removed.meta.changes > 0 });
+  }
+  if (path === '/v1/data' || path.startsWith('/v1/data/')) {
+    if (request.method !== 'GET') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
+    return dataRoute(path, url.searchParams, env, url.origin);
+  }
+  if (path === '/v1/econ/sources') {
+    if (request.method !== 'POST') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
+    query(url.searchParams, []);
+    return storePublicSources(await readBody(request), env);
+  }
+  if (path === '/v1/econ/series') {
+    if (request.method !== 'POST') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
+    query(url.searchParams, []);
+    return storeEconSeries(await readBody(request), env);
+  }
+  if (path === '/v1/econ/history') {
+    if (request.method !== 'POST') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
+    query(url.searchParams, []);
+    return storeEconHistory(await readBody(request), env);
+  }
+  if (path === '/v1/econ/events') {
+    if (request.method !== 'POST') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
+    query(url.searchParams, []);
+    return storeEconEvents(await readBody(request), env);
+  }
+  if (path === '/v1/ships') {
+    if (request.method !== 'POST') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
+    query(url.searchParams, []);
+    return shipsIngest(await readBody(request), env);
+  }
+  if (path === '/v1/mcp') {
+    if (request.method !== 'POST') throw new ApiError(405, 'method_not_allowed', 'Use POST with JSON-RPC');
+    query(url.searchParams, []);
+    return mcpRoute(await readBody(request), env, url.origin);
   }
   if (path === '/v1/quotes') {
     if (request.method !== 'GET') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
@@ -477,7 +537,8 @@ export default {
   async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
     let response: Response;
     try { response = await route(request, env, ctx); } catch (error) {
-      response = error instanceof ApiError ? json({ error: { code: error.code, message: error.message } }, error.status) : json({ error: { code: 'internal_error', message: 'Internal server error' } }, 500);
+      response = error instanceof ApiError ? json({ error: { code: error.code, message: error.message } }, error.status)
+        : error instanceof DataError ? json({ error: { code: error.status === 400 ? 'invalid_request' : error.status === 404 ? 'not_found' : 'upstream_unavailable', message: error.message } }, error.status) : json({ error: { code: 'internal_error', message: 'Internal server error' } }, 500);
     }
     const secured = new Response(response.body, response);
     secured.headers.set('Cache-Control', 'no-store');

@@ -1,0 +1,12 @@
+[Unit]
+Description=Newswire AIS ship positions
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/newswire/scripts/ships
+ExecStart=/usr/bin/env node stream.mjs
+Restart=on-failure
+RestartSec=60
+
+[Install]
+WantedBy=default.target

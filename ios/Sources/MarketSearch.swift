@@ -25,11 +25,54 @@ nonisolated enum MoverList: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+enum MarketLoadState: Equatable {
+    case loading
+    case loaded
+    case unavailable
+}
+
+#if DEBUG
+enum MarketSearchFixture: String {
+    case loading, empty, failure, cached, retry
+
+    static var launch: MarketSearchFixture? {
+        guard let index = CommandLine.arguments.firstIndex(of: "-marketSearchFixture"),
+              let value = CommandLine.arguments.dropFirst(index + 1).first else { return nil }
+        return MarketSearchFixture(rawValue: value)
+    }
+
+    var delay: Duration { self == .loading ? .seconds(60) : .milliseconds(80) }
+
+    func matches(attempt: Int) throws -> [TickerMatch] {
+        switch self {
+        case .loading: return []
+        case .empty: return []
+        case .failure, .cached: throw MarketError.status(503)
+        case .retry:
+            if attempt == 0 { throw MarketError.status(503) }
+            return Self.sampleMatches
+        }
+    }
+
+    static let sampleMatches = [
+        TickerMatch(symbol: "AAPL", shortname: "Apple Inc.", longname: "Apple Inc.", quoteType: "EQUITY", exchDisp: "NASDAQ"),
+        TickerMatch(symbol: "MSFT", shortname: "Microsoft", longname: "Microsoft Corporation", quoteType: "EQUITY", exchDisp: "NASDAQ"),
+    ]
+}
+#endif
+
+enum MarketSearchRecovery {
+    static func shouldKeepCachedResults(matchesQuery: String, query: String) -> Bool {
+        matchesQuery == query
+    }
+}
+
 nonisolated struct MarketQuote: Sendable, Hashable, Identifiable {
     let symbol: String
     let name: String
     let type: String?
     let exchange: String?
+    let currency: String
     let price: Double
     let change: Double
     let changePercent: Double
@@ -42,33 +85,37 @@ nonisolated struct MarketQuote: Sendable, Hashable, Identifiable {
     var id: String { symbol }
 
     init?(_ value: YValue) {
-        guard case .string(let symbol)? = value["symbol"], let price = value["regularMarketPrice"]?.raw else { return nil }
+        guard case .string(let symbol)? = value["symbol"], let rawPrice = value["regularMarketPrice"]?.raw else { return nil }
+        let (currency, divisor) = MinorCurrency.major(value["currency"]?.text)
+        let minor = { (key: String) in value[key]?.raw.map { $0 / divisor } }
+        let price = rawPrice / divisor
         self.symbol = symbol
+        self.currency = currency
         name = value["longName"]?.text ?? value["shortName"]?.text ?? value["displayName"]?.text ?? symbol
         type = value["quoteType"]?.text
         exchange = value["fullExchangeName"]?.text
         marketCap = value["marketCap"]?.raw
         let state = value["marketState"]?.text ?? ""
         let regularTime = value["regularMarketTime"]?.raw ?? 0
-        let pre = value["preMarketPrice"]?.raw
-        let post = value["postMarketPrice"]?.raw
+        let pre = minor("preMarketPrice")
+        let post = minor("postMarketPrice")
         if state.hasPrefix("PRE"), let pre, pre > 0,
            (value["preMarketTime"]?.raw ?? 0) >= regularTime {
             self.price = pre
-            change = value["preMarketChange"]?.raw ?? pre - price
+            change = minor("preMarketChange") ?? pre - price
             changePercent = value["preMarketChangePercent"]?.raw ?? (pre - price) / price * 100
             extendedLabel = "Pre"
             extendedPercent = changePercent
         } else if state.hasPrefix("POST") || state == "CLOSED", let post, post > 0,
                   (value["postMarketTime"]?.raw ?? 0) >= regularTime {
             self.price = post
-            change = value["postMarketChange"]?.raw ?? post - price
+            change = minor("postMarketChange") ?? post - price
             changePercent = value["postMarketChangePercent"]?.raw ?? (post - price) / price * 100
             extendedLabel = "After"
             extendedPercent = changePercent
         } else {
             self.price = price
-            change = value["regularMarketChange"]?.raw ?? 0
+            change = minor("regularMarketChange") ?? 0
             changePercent = value["regularMarketChangePercent"]?.raw ?? 0
             extendedLabel = nil
             extendedPercent = nil
@@ -111,6 +158,7 @@ nonisolated struct MarketQuote: Sendable, Hashable, Identifiable {
     private(set) var quotes: [String: MarketQuote] = [:]
     private(set) var sparks: [String: Spark] = [:]
     private(set) var movers: [MoverList: [MarketQuote]] = [:]
+    private(set) var moversState = Dictionary(uniqueKeysWithValues: MoverList.allCases.map { ($0, MarketLoadState.loading) })
     private var quotedAt: [String: Date] = [:]
     private var sparkedAt: [String: Date] = [:]
     private var moversAt: [MoverList: Date] = [:]
@@ -130,10 +178,21 @@ nonisolated struct MarketQuote: Sendable, Hashable, Identifiable {
         for (symbol, spark) in s ?? [:] { sparks[symbol] = spark; sparkedAt[symbol] = .now }
     }
 
-    func refresh(movers list: MoverList) async {
-        guard stale(moversAt[list], 60), let found = try? await MarketClient.movers(list) else { return }
-        movers[list] = found
-        moversAt[list] = .now
+    func refresh(movers list: MoverList, force: Bool = false) async {
+        guard force || stale(moversAt[list], 60) else { return }
+        moversState[list] = .loading
+        let found: [MarketQuote]
+        do {
+            found = try await MarketClient.movers(list)
+            guard !Task.isCancelled else { return }
+            movers[list] = found
+            moversAt[list] = .now
+            moversState[list] = .loaded
+        } catch {
+            guard !Task.isCancelled else { return }
+            moversState[list] = .unavailable
+            return
+        }
         for quote in found { quotes[quote.symbol] = quote; quotedAt[quote.symbol] = .now }
         let symbols = found.prefix(6).map(\.symbol).filter { stale(sparkedAt[$0], 90) }
         guard !symbols.isEmpty, let lines = try? await MarketClient.sparks(symbols) else { return }
@@ -158,6 +217,8 @@ struct MarketSearchSheet: View {
     @State private var matches: [TickerMatch] = []
     @State private var matchesQuery = ""
     @State private var loading = false
+    @State private var searchFailed = false
+    @State private var searchRetry = 0
     @State private var recents = MarketRecents.all
     @State private var moverList = MoverList(rawValue: UserDefaults.standard.string(forKey: "marketMovers") ?? "") ?? .gainers
     @State private var board = MarketBoard.shared
@@ -179,6 +240,17 @@ struct MarketSearchSheet: View {
         }
         .frame(maxHeight: .infinity, alignment: .top)
         .animation(.easeOut(duration: 0.18), value: trimmed.isEmpty)
+        #if DEBUG
+        .onAppear {
+            if let index = CommandLine.arguments.firstIndex(of: "-searchQuery"), let text = CommandLine.arguments.dropFirst(index + 1).first {
+                query = text
+                if MarketSearchFixture.launch == .cached {
+                    matches = MarketSearchFixture.sampleMatches
+                    matchesQuery = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+            }
+        }
+        #endif
         // The keyboard covers most of the dock, so search at full height, and drop focus when it is pulled back down.
         .onChange(of: searching) { _, focused in
             if focused { detent = .large }
@@ -186,21 +258,42 @@ struct MarketSearchSheet: View {
         .onChange(of: detent) { _, value in
             if value != .large { searching = false }
         }
-        .task(id: trimmed) {
+        .task(id: "\(trimmed):\(searchRetry)") {
             let text = trimmed
-            matches = []
-            matchesQuery = ""
-            loading = false
+            if !MarketSearchRecovery.shouldKeepCachedResults(matchesQuery: matchesQuery, query: text) {
+                matches = []
+                matchesQuery = ""
+            }
+            searchFailed = false
+            loading = !text.isEmpty
             guard !text.isEmpty else { return }
-            do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
-            guard !Task.isCancelled else { return }
-            loading = true
+#if DEBUG
+            let fixture = MarketSearchFixture.launch
+#endif
             defer { if !Task.isCancelled { loading = false } }
-            guard let found = try? await MarketClient.search(text), !Task.isCancelled else { return }
-            matches = found
-            matchesQuery = text
-            let symbols = found.map(\.symbol)
-            await board.refresh(quotes: symbols, sparks: symbols)
+#if DEBUG
+            do { try await Task.sleep(for: fixture?.delay ?? .milliseconds(250)) } catch { return }
+#else
+            do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+#endif
+            guard !Task.isCancelled else { return }
+            do {
+                let found: [TickerMatch]
+#if DEBUG
+                if let fixture { found = try fixture.matches(attempt: searchRetry) }
+                else { found = try await MarketClient.search(text) }
+#else
+                found = try await MarketClient.search(text)
+#endif
+                guard !Task.isCancelled else { return }
+                matches = found
+                matchesQuery = text
+                let symbols = found.map(\.symbol)
+                await board.refresh(quotes: symbols, sparks: symbols)
+            } catch {
+                guard !Task.isCancelled else { return }
+                searchFailed = true
+            }
         }
         .task(id: phase == .active) {
             guard phase == .active else { return }
@@ -223,12 +316,15 @@ struct MarketSearchSheet: View {
     private var searchBar: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField("Ticker, company, future, or crypto", text: $query)
+            TextField("Search markets", text: $query)
                 .textInputAutocapitalization(.characters)
                 .autocorrectionDisabled()
                 .submitLabel(.search)
                 .focused($searching)
-                .onSubmit { choose(MarketSearchSelection.symbol(query: query, matchesQuery: matchesQuery, firstMatch: matches.first?.symbol)) }
+                .onSubmit {
+                    if let command = TerminalCommand.parse(query) { choose(command.token) }
+                    else { choose(MarketSearchSelection.symbol(query: query, matchesQuery: matchesQuery, firstMatch: matches.first?.symbol)) }
+                }
             if loading {
                 ProgressView().controlSize(.small)
             }
@@ -246,19 +342,78 @@ struct MarketSearchSheet: View {
     private var suggestions: some View {
         ScrollView {
             LazyVStack(spacing: 0) {
-                ForEach(matches) { match in
-                    Button { choose(match.symbol) } label: {
-                        MarketRow(symbol: match.symbol, title: match.title,
-                                  tag: [match.kind, match.exchDisp].compactMap { $0 }.joined(separator: " · "),
-                                  quote: board.quotes[match.symbol], spark: board.sparks[match.symbol])
+                if let command = TerminalCommand.parse(trimmed) {
+                    Button { choose(command.token) } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "terminal").foregroundStyle(Color.wireAccent)
+                            Text(command.title).font(.body.weight(.semibold)).lineLimit(1)
+                            Spacer()
+                            Image(systemName: "return").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                        }
+                        .padding(.horizontal, 20)
+                        .frame(minHeight: 52)
+                        .contentShape(.rect)
                     }
                     .buttonStyle(.plain)
                     Divider().padding(.leading, 20)
                 }
-                if matches.isEmpty && !loading {
-                    Text("Press Search to open \(trimmed.uppercased())")
-                        .font(.subheadline).foregroundStyle(.secondary)
-                        .padding(.top, 32)
+                ForEach(TickerMatch.grouped(matches), id: \.first.id) { group in
+                    Button { choose(group.first.symbol) } label: {
+                        MarketRow(symbol: group.first.symbol, title: group.first.title,
+                                  tag: [group.first.kind, group.first.exchDisp].compactMap { $0 }.joined(separator: " · "),
+                                  quote: board.quotes[group.first.symbol], spark: board.sparks[group.first.symbol])
+                    }
+                    .buttonStyle(.plain)
+                    if !group.others.isEmpty {
+                        ScrollView(.horizontal) {
+                            HStack(spacing: 6) {
+                                ForEach(group.others) { listing in
+                                    Button { choose(listing.symbol) } label: {
+                                        HStack(spacing: 4) {
+                                            Text(listing.symbol).font(.caption.weight(.semibold).monospaced())
+                                            if let exchange = listing.exchDisp { Text(exchange).font(.caption2).foregroundStyle(.secondary) }
+                                            if let quote = board.quotes[listing.symbol] {
+                                                Text(QuoteFormat.percent(quote.changePercent)).font(.caption2.weight(.semibold)).foregroundStyle(QuoteFormat.color(quote.changePercent))
+                                            }
+                                        }
+                                        .padding(.horizontal, 10).padding(.vertical, 6)
+                                        .background(.fill.tertiary, in: .capsule)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel("\(listing.symbol), \(listing.exchDisp ?? "")")
+                                }
+                            }
+                            .padding(.horizontal, 20)
+                        }
+                        .scrollIndicators(.hidden)
+                        .padding(.bottom, 10)
+                    }
+                    Divider().padding(.leading, 20)
+                }
+                if searchFailed && !matches.isEmpty {
+                    HStack(spacing: 8) {
+                        Text("Showing cached matches")
+                        Button("Retry") { searchRetry += 1 }.foregroundStyle(Color.wireAccent)
+                    }
+                    .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.vertical, 10)
+                }
+                if matches.isEmpty && !loading && TerminalCommand.parse(trimmed) == nil {
+                    VStack(spacing: 10) {
+                        if searchFailed {
+                            Label("Search unavailable", systemImage: "exclamationmark.arrow.trianglehead.2.clockwise.rotate.90")
+                            Button("Try again") { searchRetry += 1 }
+                                .buttonStyle(.bordered).tint(Color.wireAccent)
+                        } else if matchesQuery == trimmed {
+                            Text("No matches found")
+                                .font(.subheadline).foregroundStyle(.secondary)
+                            Text("Press Search to open \(trimmed.uppercased())")
+                                .font(.subheadline).foregroundStyle(.tertiary)
+                        } else {
+                            Text("Press Search to open \(trimmed.uppercased())")
+                                .font(.subheadline).foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.top, 32)
                 }
             }
             .animation(.easeOut(duration: 0.18), value: matches)
@@ -269,7 +424,35 @@ struct MarketSearchSheet: View {
     private var overview: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
-                indices
+                section("Stocks") {
+                    indices
+                }
+                section("Data") {
+                    TerminalFunctionsRow(onSelect: choose, excluding: ["INST", "FLOW", "PTR"])
+                }
+                section("Institutions") {
+                    TerminalFunctionsRow(onSelect: choose, codes: ["INST", "FLOW", "PTR"])
+                }
+                section("Discover") {
+                    Button { onSelect(TerminalExploreView.token) } label: {
+                        HStack(spacing: 12) {
+                            ToolIcon(symbol: "square.grid.2x2.fill", tint: Color.wireAccent, size: 34)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("All data tools").font(.body.weight(.semibold)).foregroundStyle(.primary)
+                                Text("Search \(TerminalFunction.all.count) tools and pin favorites")
+                                    .font(.subheadline).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+                        }
+                        .padding(12)
+                        .contentShape(.rect(cornerRadius: 18))
+                        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 18))
+                    }
+                    .buttonStyle(PressSpringStyle())
+                    .padding(.horizontal, 16)
+                    .accessibilityIdentifier("explore-data-tools")
+                }
                 if !recents.isEmpty {
                     section("Recent") {
                         ForEach(recents, id: \.self) { symbol in
@@ -320,11 +503,31 @@ struct MarketSearchSheet: View {
             .pickerStyle(.segmented)
             .frame(width: 210)
         }) {
-            if list.isEmpty {
+            if list.isEmpty && board.moversState[moverList] == .loading {
                 ForEach(0..<4, id: \.self) { _ in
                     MarketRow(symbol: "XXXX", title: "Loading market movers", tag: nil, quote: nil, spark: nil).redacted(reason: .placeholder)
                 }
+            } else if list.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(board.moversState[moverList] == .loaded ? "No market movers available" : "Market movers unavailable")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                    Button("Try again") {
+                        Task { await board.refresh(movers: moverList, force: true) }
+                    }
+                    .buttonStyle(.bordered).tint(Color.wireAccent)
+                }
+                .padding(.horizontal, 20).padding(.vertical, 12)
             } else {
+                if board.moversState[moverList] == .loading || board.moversState[moverList] == .unavailable {
+                    HStack(spacing: 6) {
+                        Text(board.moversState[moverList] == .loading ? "Refreshing cached movers" : "Showing cached movers")
+                        if board.moversState[moverList] == .unavailable {
+                            Button("Retry") { Task { await board.refresh(movers: moverList, force: true) } }
+                                .foregroundStyle(Color.wireAccent)
+                        }
+                    }
+                    .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 20)
+                }
                 ForEach(list.prefix(6)) { quote in row(quote.symbol, quote: quote) }
             }
         }
@@ -370,10 +573,14 @@ struct MarketSearchSheet: View {
     }
 
     private func choose(_ symbol: String) {
-        let symbol = symbol.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let trimmed = symbol.trimmingCharacters(in: .whitespacesAndNewlines)
+        let symbol = trimmed.hasPrefix("data:") ? trimmed : trimmed.uppercased()
         guard !symbol.isEmpty else { return }
+        if DataRoute(token: symbol) == nil {
+            MarketRecents.add(symbol)
+            recents = MarketRecents.all
+        }
         searching = false
-        query = ""
         onSelect(symbol)
     }
 }
@@ -389,8 +596,10 @@ struct MarketRow: View {
     var body: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
+                Text(title.trimmingCharacters(in: .whitespaces).isEmpty ? symbol : title)
+                    .font(.body.weight(.semibold)).lineLimit(1)
                 HStack(spacing: 6) {
-                    Text(symbol).font(.body.weight(.semibold).monospaced())
+                    Text(symbol).font(.caption.monospaced()).foregroundStyle(.secondary)
                     if let label = quote?.extendedLabel {
                         Image(systemName: label == "Pre" ? "sunrise" : "moon")
                             .font(.caption2).foregroundStyle(.secondary)
@@ -400,7 +609,6 @@ struct MarketRow: View {
                         Text(tag).font(.caption2.weight(.medium)).foregroundStyle(.tertiary).lineLimit(1)
                     }
                 }
-                Text(title).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             SparkLine(spark: spark, fallbackUp: (quote?.changePercent ?? 0) >= 0)
@@ -470,16 +678,17 @@ struct SparkLine: View {
     }
 }
 
-private struct IndexCard: View {
+struct IndexCard: View {
     let symbol: String
     let quote: MarketQuote?
     let spark: Spark?
+    var label: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 4) {
-                    Text(symbol).font(.footnote.weight(.bold).monospaced())
+                    Text(label ?? symbol).font(.footnote.weight(.bold).monospaced()).lineLimit(1)
                     if let label = quote?.extendedLabel {
                         Image(systemName: label == "Pre" ? "sunrise" : "moon")
                             .font(.caption2).foregroundStyle(.secondary)

@@ -22,7 +22,7 @@ import UIKit
     var category = ""
     var query = ""
     var filters: [WireFilter] = []
-    var path: [Story] = []
+    var path = NavigationPath()
     var hasLoaded = false
     /// False until the on-disk cache has been read. The feed shows nothing, rather than a placeholder, until then.
     var restored = false
@@ -216,13 +216,13 @@ import UIKit
         }
         let known = stories + pending + Self.snapshots.values.flatMap(\.stories)
         if let story = find(known) {
-            path = [story]
+            path = NavigationPath([story])
             return
         }
         if configured, let baseURL = NewswireAPI.validatedURL(serverURL),
            let page = try? await NewswireAPI(baseURL: baseURL).page(mode: feed, category: "", query: ""),
            let story = find(page.stories) {
-            path = [story]
+            path = NavigationPath([story])
         } else if let fallback {
             await UIApplication.shared.open(fallback)
         }
@@ -236,7 +236,7 @@ import UIKit
         } else {
             filters = filters.filter { $0.name != filter.name } + [filter]
         }
-        path = []
+        path = NavigationPath()
     }
 
     /// Switches the displayed feed to the current mode, category, search and filters, showing its cached copy at once.

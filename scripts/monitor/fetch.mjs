@@ -1,7 +1,7 @@
 const agent = 'newswire-monitor/1.0 (personal news wire; contact via repository owner)';
 
-export async function getJson(url, { headers = {}, timeout = 15000 } = {}) {
-  const response = await fetch(url, { headers: { 'User-Agent': agent, Accept: 'application/json', ...headers }, signal: AbortSignal.timeout(timeout) });
+export async function getJson(url, { headers = {}, timeout = 15000, method = 'GET', body } = {}) {
+  const response = await fetch(url, { method, body, headers: { 'User-Agent': agent, Accept: 'application/json', ...(body ? { 'Content-Type': 'application/json' } : {}), ...headers }, signal: AbortSignal.timeout(timeout) });
   if (!response.ok) throw new Error(`${response.status} ${url}`);
   return response.json();
 }

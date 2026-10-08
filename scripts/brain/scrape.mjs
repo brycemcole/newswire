@@ -165,7 +165,7 @@ async function rss(url, options) {
 
 const deepMind = () => rss('https://deepmind.google/blog/rss.xml', { key: 'deepmind', source: 'Google DeepMind', kind: 'tech', limit: 15, maxAgeHours: 168 });
 const semafor = () => rss('https://www.semafor.com/rss.xml', { key: 'semafor', source: 'Semafor', limit: 20 });
-const yahooFinance = () => rss('https://finance.yahoo.com/news/rssindex', { key: 'yahoo', source: 'Yahoo Finance', kind: 'markets', limit: 20 });
+const yahooFinance = () => rss('https://finance.yahoo.com/rss/headline?s=SPY,QQQ,DIA,IWM,AAPL,MSFT,NVDA,GOOG,AMZN,META,TSLA,JPM,XOM', { key: 'yahoo', source: 'Yahoo Finance', kind: 'markets', limit: 20 });
 
 const sources = { hn: hackerNews, lobsters, devto: devCommunity, deepmind: deepMind, semafor, yahoo: yahooFinance, arxiv, huggingface: huggingFace };
 

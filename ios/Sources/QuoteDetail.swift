@@ -181,7 +181,7 @@ struct QuoteDetail: View {
                 QuoteNewsSection(symbol: symbol, name: name, instrument: summary?.text("price", "quoteType") ?? model.live?.instrument,
                                  move: dayMove, price: model.live.map { $0.money($0.price) })
                 sections
-                SimulatorSection(symbol: symbol, price: model.live?.price)
+                SimulatorSection(symbol: symbol, price: model.live?.price, currency: model.live?.currency ?? "USD")
                 Link(destination: yahooURL) {
                     Label("Data from Yahoo Finance", systemImage: "arrow.up.right")
                         .font(.caption).foregroundStyle(.secondary)
@@ -218,7 +218,7 @@ struct QuoteDetail: View {
             }
         }
         .sheet(isPresented: $showingQuestions) {
-            StockQuestionSheet(symbol: symbol, name: name, price: model.live.map { $0.money($0.price) })
+            AskSheet(context: AskContext(symbol: symbol, name: name, price: model.live.map { $0.money($0.price) }))
         }
         .onAppear { MarketRecents.add(symbol) }
         #if DEBUG
@@ -679,15 +679,16 @@ struct QuoteSection<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 8) {
             Text(title.uppercased())
                 .font(.system(.caption, design: .monospaced).weight(.semibold))
                 .foregroundStyle(.secondary)
             content
         }
-        .padding(18)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .glassEffect(.regular, in: .rect(cornerRadius: 24))
+        .glassEffect(.regular, in: .rect(cornerRadius: 22))
     }
 }
 

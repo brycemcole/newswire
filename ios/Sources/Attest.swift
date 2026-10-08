@@ -91,9 +91,18 @@ actor Attestation {
         guard service.isSupported else { throw AttestError.unsupported }
         let origin = baseURL.absoluteString
         if let state = load(origin), let keyID = state.keyID {
-            do { return try await renew(baseURL, keyID: keyID, state: state) } catch AttestError.rejected(let reason) where reason == "unknown_key" || reason == "attestation_failed" {}
+            do {
+                return try await renew(baseURL, keyID: keyID, state: state)
+            } catch AttestError.rejected(let reason) where reason == "unknown_key" || reason == "attestation_failed" {
+            } catch let error as DCError where error.code == .invalidKey || error.code == .invalidInput {
+                AttestKeychain.save(nil)
+            }
         }
-        return try await enroll(baseURL)
+        do {
+            return try await enroll(baseURL)
+        } catch let error as DCError where error.code == .invalidKey {
+            return try await enroll(baseURL)
+        }
     }
 
     private func enroll(_ baseURL: URL) async throws -> String {

@@ -1,6 +1,7 @@
 {
   "window_minutes": 30,
   "min_confidence": 0.7,
+  "max_x_per_run": 2,
   "feeds": [
     { "name": "BBC", "url": "https://feeds.bbci.co.uk/news/world/rss.xml" },
     { "name": "NPR", "url": "https://feeds.npr.org/1001/rss.xml" },
@@ -15,9 +16,9 @@
     { "name": "CNBC", "url": "https://www.cnbc.com/id/20910258/device/rss/rss.html" },
     { "name": "CNBC", "url": "https://www.cnbc.com/id/10001147/device/rss/rss.html" },
     { "name": "CNBC", "url": "https://www.cnbc.com/id/19854910/device/rss/rss.html" },
-    { "name": "Yahoo Finance", "url": "https://finance.yahoo.com/rss/topstories" },
-    { "name": "Yahoo Finance", "url": "https://finance.yahoo.com/news/rssindex" },
-    { "name": "MarketWatch", "url": "https://feeds.content.dowjones.io/public/rss/mw_marketpulse" },
+    { "name": "Yahoo Finance", "url": "https://finance.yahoo.com/rss/headline?s=SPY,QQQ,DIA,IWM,AAPL,MSFT,NVDA,GOOG,AMZN,META,TSLA,JPM,XOM", "window_minutes": 120 },
+    { "name": "Yahoo Finance", "url": "https://news.google.com/rss/search?q=site:finance.yahoo.com+when:2h&hl=en-US&gl=US&ceid=US:en", "window_minutes": 120 },
+    { "name": "MarketWatch", "url": "https://feeds.content.dowjones.io/public/rss/mw_topstories", "window_minutes": 120 },
     { "name": "New York Times", "url": "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml" },
     { "name": "New York Times", "url": "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml" },
     { "name": "BBC", "url": "https://feeds.bbci.co.uk/news/business/rss.xml" },
@@ -43,7 +44,29 @@
     { "name": "Mistral AI", "url": "https://mistral.ai/rss.xml", "via": ["ai-labs"] }
   ],
   "topics": [
+    {
+      "id": "market-analysis",
+      "label": "market reporting and analysis",
+      "category": "markets",
+      "priority": "normal",
+      "allow_analysis": true,
+      "description": "Substantive, current financial reporting or analysis explaining today's stock, bond, currency, commodity or credit markets, sector rotations, a trading-session recap, institutional positioning, company fundamentals or valuation, or the economic implications of newly reported data. Must contain concrete market developments, figures, evidence or attributed analyst findings. Not generic stock picks, promotional investing content, evergreen personal-finance advice, speculative price predictions or an opinion without reported evidence."
+    },
     {"id": "us-market-movers", "label": "US market movers", "category": "markets", "priority": "normal", "description": "News that moves or is likely to move US markets: a Fed decision or Fed official signaling policy, a major US economic data release, or a foreign event with a clear, direct channel into US stocks, Treasury yields, the dollar, or oil, such as a foreign central bank (Bank of Japan, ECB, Bank of England, PBOC) deciding or signaling a rate change, a sharp yen or yuan move, Japanese or Chinese selling or buying of US assets, an OPEC output decision, or a foreign crisis markets are reacting to. Not routine foreign data or commentary that only matters to that country's own economy."},
+    {
+      "id": "company-outlook",
+      "label": "company outlook and analyst actions",
+      "category": "markets",
+      "priority": "normal",
+      "description": "A notable public company raising, cutting, or reaffirming guidance, issuing a profit warning, announcing a buyback or dividend change, winning or losing a material contract, or experiencing a substantial share-price move with a reported concrete catalyst. Also a named analyst or bank upgrading or downgrading a stock, changing a price target, or releasing a new quantified forecast. Not generic stock picks, evergreen investing advice, or promotional articles."
+    },
+    {
+      "id": "credit-and-banking",
+      "label": "credit and banking",
+      "category": "markets",
+      "priority": "normal",
+      "description": "A concrete development in banking, lending, debt or credit markets: a material bond issuance or financing deal, default, bankruptcy or restructuring, credit-rating change, bank funding or liquidity issue, or newly reported changes in Treasury yields, mortgage rates, credit spreads or lending conditions. Not personal-finance advice or evergreen product comparisons."
+    },
     {
       "id": "tariffs",
       "label": "tariffs and trade",

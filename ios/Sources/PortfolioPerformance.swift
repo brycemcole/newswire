@@ -5,14 +5,19 @@ nonisolated struct PerformancePoint: Identifiable, Hashable, Sendable {
     let id: Int
     let date: Date
     let value: Double
+    var gain: Double?
+    var rate: Double?
 }
 
 nonisolated struct PerformanceSeries: Sendable {
     let points: [PerformancePoint]
     let baseline: Double
+    var transactionBased = false
     var last: Double { points.last?.value ?? baseline }
-    var change: Double { last - baseline }
-    var percent: Double { baseline == 0 ? 0 : change / baseline }
+    var change: Double { points.last?.gain ?? (last - baseline) }
+    var percent: Double? { transactionBased ? points.last?.rate : (baseline > 0 ? change / baseline : nil) }
+    func change(at point: PerformancePoint) -> Double { point.gain ?? (point.value - baseline) }
+    func percent(at point: PerformancePoint) -> Double? { transactionBased ? point.rate : (baseline > 0 ? change(at: point) / baseline : nil) }
 }
 
 @Observable final class PortfolioPerformance {
@@ -24,81 +29,69 @@ nonisolated struct PerformanceSeries: Sendable {
     }
     private(set) var series: [ChartRange: PerformanceSeries] = [:]
     private var fetchedAt: [ChartRange: Date] = [:]
-    private var signature = ""
+    private var signature: Data?
+    private(set) var errors: [ChartRange: String] = [:]
     private let publishesWidgets: Bool
 
     init(publishesWidgets: Bool = true) { self.publishesWidgets = publishesWidgets }
 
     #if DEBUG
+    func previewFailure(_ range: ChartRange, message: String) {
+        series[range] = nil
+        errors[range] = message
+    }
+
     func preview(_ range: ChartRange, series: PerformanceSeries) {
         self.series[range] = series
     }
     #endif
 
     func refresh(_ snapshot: PortfolioSnapshot) async {
-        let holdings = Dictionary(grouping: snapshot.positions.filter { $0.option == nil }, by: \.symbol)
-            .mapValues { $0.reduce(0) { $0 + $1.quantity } }
-        let fixed = snapshot.totalValue - snapshot.positions.filter { $0.option == nil }.compactMap(\.value).reduce(0, +)
-        let key = holdings.sorted { $0.key < $1.key }.map { "\($0.key):\($0.value)" }.joined(separator: ",") + "|\(fixed)"
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        let key = try? encoder.encode(snapshot)
         var changed = key != signature
         if changed {
             signature = key
             series = [:]
+            errors = [:]
             fetchedAt = [:]
         }
         for wanted in Set([ChartRange.day, range]) {
-            let limit: TimeInterval = wanted.intraday ? 60 : 900
-            if let stamp = fetchedAt[wanted], Date.now.timeIntervalSince(stamp) < limit { continue }
-            guard let built = await Self.build(holdings: holdings, snapshot: snapshot, fixed: fixed, range: wanted), key == signature else { continue }
-            series[wanted] = built
+            if let stamp = fetchedAt[wanted], Date.now.timeIntervalSince(stamp) < 300 { continue }
+            do {
+                let built = try await Self.build(snapshot: snapshot, range: wanted)
+                guard key == signature else { return }
+                series[wanted] = built
+                errors[wanted] = nil
+            } catch {
+                guard key == signature else { return }
+                series[wanted] = nil
+                errors[wanted] = error.localizedDescription
+            }
             fetchedAt[wanted] = .now
             if wanted == .day { changed = true }
         }
         if changed && publishesWidgets { WidgetFeed.publish(snapshot, day: series[.day]) }
     }
 
-    @concurrent private static func build(holdings: [String: Double], snapshot: PortfolioSnapshot, fixed: Double, range: ChartRange) async -> PerformanceSeries? {
-        let charts = await withTaskGroup(of: (String, MarketChart?).self) { group in
-            for symbol in holdings.keys { group.addTask { (symbol, try? await MarketClient.chart(symbol, range: range)) } }
-            var found: [String: MarketChart] = [:]
-            for await (symbol, chart) in group { if let chart, !chart.points.isEmpty { found[symbol] = chart } }
+    @concurrent private static func build(snapshot: PortfolioSnapshot, range: ChartRange) async throws -> PerformanceSeries {
+        let ledger = try PortfolioLedger(snapshot: snapshot, start: PortfolioLedger.start(for: range, at: .now))
+        let prices = try await withThrowingTaskGroup(of: (String, [HistoryPoint]).self) { group in
+            for symbol in ledger.symbols {
+                group.addTask { (symbol, try await MarketClient.portfolioHistory(symbol, from: ledger.start.addingTimeInterval(-7 * 86400))) }
+            }
+            var found: [String: [HistoryPoint]] = [:]
+            for try await (symbol, points) in group { found[symbol] = points }
             return found
         }
-        var constant = fixed
-        for symbol in holdings.keys where charts[symbol] == nil {
-            constant += snapshot.positions(for: symbol).filter { $0.option == nil }.compactMap(\.value).reduce(0, +)
-        }
-        guard let axis = charts.values.max(by: { $0.points.count < $1.points.count })?.points else {
-            return constant == 0 ? nil : PerformanceSeries(points: [], baseline: constant)
-        }
-        let tracks = charts.map { (quantity: holdings[$0.key] ?? 0, points: $0.value.points) }
-        var cursors = Array(repeating: 0, count: tracks.count)
-        var points: [PerformancePoint] = []
-        points.reserveCapacity(axis.count)
-        for (index, tick) in axis.enumerated() {
-            var total = constant
-            for (slot, track) in tracks.enumerated() {
-                while cursors[slot] + 1 < track.points.count && track.points[cursors[slot] + 1].date <= tick.date { cursors[slot] += 1 }
-                total += track.quantity * track.points[cursors[slot]].close
-            }
-            points.append(PerformancePoint(id: index, date: tick.date, value: total))
-        }
-        let baseline: Double
-        if range == .day {
-            baseline = constant + charts.reduce(0) { sum, entry in
-                sum + (holdings[entry.key] ?? 0) * (entry.value.previousClose ?? entry.value.points.first?.close ?? 0)
-            }
-        } else {
-            baseline = points.first?.value ?? constant
-        }
-        return PerformanceSeries(points: points, baseline: baseline)
+        return try ledger.build(prices: prices)
     }
 }
 
 struct PortfolioCard: View {
     var compact = false
     let expanded: Bool
-    var contentHidden = false
     let setExpanded: (Bool) -> Void
     let open: () -> Void
     @State private var store = PortfolioStore.shared
@@ -107,27 +100,26 @@ struct PortfolioCard: View {
     @Environment(\.scenePhase) private var phase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var connected: Bool { !store.snapshot.positions.isEmpty || store.snapshot.cash != 0 }
+    private var connected: Bool { !store.snapshot.positions.isEmpty || !(store.snapshot.accountBalances ?? []).isEmpty }
     private var shown: ChartRange { expanded ? performance.range : .day }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if !compact {
                 HomeSectionHeader("Portfolio", action: connected ? "Details" : nil, perform: open)
-                    .opacity(contentHidden ? 0 : 1)
                     .transition(.cardSwap)
             }
             ZStack(alignment: .topLeading) {
                 if compact { compactBody.transition(.cardSwap) } else { fullBody.transition(.cardSwap) }
             }
-            .opacity(contentHidden ? 0 : 1)
             .frame(maxWidth: .infinity, maxHeight: compact ? .infinity : nil, alignment: .topLeading)
+            .clipShape(.rect(cornerRadius: 24, style: .continuous))
             .homeCard()
         }
         .task(id: phase == .active) {
             guard phase == .active else { return }
             if store.credentials.isComplete, !store.activeItems.isEmpty,
-               (store.snapshot.updated ?? .distantPast).timeIntervalSinceNow < -1800 {
+               ((store.snapshot.updated ?? .distantPast).timeIntervalSinceNow < -1800 || store.snapshot.histories?.contains(where: { $0.version != 1 }) != false) {
                 await store.sync()
             }
             while !Task.isCancelled {
@@ -135,6 +127,8 @@ struct PortfolioCard: View {
                 do { try await Task.sleep(for: .seconds(60)) } catch { return }
             }
         }
+        .onChange(of: performance.range) { selected = nil }
+        .onChange(of: store.snapshot.updated) { selected = nil }
         .task(id: performance.range) { await performance.refresh(store.snapshot) }
         .task(id: store.snapshot.updated) { await performance.refresh(store.snapshot) }
     }
@@ -155,7 +149,7 @@ struct PortfolioCard: View {
                         .contentTransition(.numericText())
                     if let today {
                         HStack(spacing: 4) {
-                            Text(Money.percent(today.percent)).foregroundStyle(Money.tint(today.change))
+                            Text(today.percent.map(Money.percent) ?? "—").foregroundStyle(Money.tint(today.change))
                             Text("Today").foregroundStyle(.secondary)
                         }
                         .font(.caption.weight(.semibold).monospacedDigit())
@@ -223,21 +217,21 @@ struct PortfolioCard: View {
                 }
             }
             if let selected, let current {
-                changeLine(selected.value - current.baseline, base: current.baseline, label: shown == .day ? "Today" : shown.caption)
+                changeLine(current.change(at: selected), percent: current.percent(at: selected), label: shown == .day ? "Today" : shown.caption)
             } else {
-                if let today { changeLine(today.change, base: today.baseline, label: "Today") }
+                if let today { changeLine(today.change, percent: today.percent, label: "Today") }
                 if shown != .day, let current {
-                    changeLine(current.change, base: current.baseline, label: shown.caption)
+                    changeLine(current.change, percent: current.percent, label: shown.caption)
                 }
-                if today == nil { Text("Loading performance…").font(.subheadline).foregroundStyle(.secondary) }
+                if today == nil { Text(performance.errors[shown] ?? "Loading performance…").font(.subheadline).foregroundStyle(.secondary) }
             }
         }
         .accessibilityElement(children: .combine)
     }
 
-    private func changeLine(_ change: Double, base: Double, label: String) -> some View {
+    private func changeLine(_ change: Double, percent: Double?, label: String) -> some View {
         HStack(spacing: 6) {
-            Text(Money.signed(change) + " (" + Money.percent(base == 0 ? 0 : change / base) + ")")
+            Text(Money.signed(change) + (percent.map { " (" + Money.percent($0) + ")" } ?? ""))
                 .foregroundStyle(Money.tint(change))
             Text(label).foregroundStyle(.secondary)
         }
@@ -296,8 +290,14 @@ struct PortfolioCard: View {
             .sensoryFeedback(.selection, trigger: selected?.id) { _, new in new != nil }
             .accessibilityLabel("Portfolio value chart, \(shown.caption)")
         } else {
-            RoundedRectangle(cornerRadius: 8).fill(.secondary.opacity(0.08)).frame(height: compact ? 54 : 86)
-                .redacted(reason: .placeholder)
+            if let error = performance.errors[shown] {
+                Text(compact ? "Performance unavailable" : error)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: compact ? 54 : 86)
+            } else {
+                RoundedRectangle(cornerRadius: 8).fill(.secondary.opacity(0.08)).frame(height: compact ? 54 : 86)
+                    .redacted(reason: .placeholder)
+            }
         }
     }
 
@@ -350,13 +350,8 @@ extension View {
 }
 
 extension AnyTransition {
+    /// The outgoing contents leave at once so two layouts never overlap; the new contents fade in.
     static var cardSwap: AnyTransition {
-        .opacity
-    }
-}
-
-extension Animation {
-    static func dashboard(_ reduceMotion: Bool) -> Animation {
-        reduceMotion ? .easeOut(duration: 0.15) : .smooth(duration: 0.38)
+        .asymmetric(insertion: .opacity.animation(.easeOut(duration: 0.22)), removal: .identity)
     }
 }

@@ -2,7 +2,22 @@ const agent = 'Mozilla/5.0 (compatible; Newswire/1.0)';
 const aliases: Record<string, string> = {
   SPX: '^GSPC', IXIC: '^IXIC', DJI: '^DJI', RUT: '^RUT', ES: 'ES=F', NQ: 'NQ=F', VIX: '^VIX', UST10Y: '^TNX',
   BTC: 'BTC-USD', ETH: 'ETH-USD', SOL: 'SOL-USD', XRP: 'XRP-USD', DOGE: 'DOGE-USD',
+  FTSE: '^FTSE', UKX: '^FTSE', DAX: '^GDAXI', CAC: '^FCHI', SX5E: '^STOXX50E', STOXX50: '^STOXX50E', NIKKEI: '^N225', NKY: '^N225', HSI: '^HSI', HANGSENG: '^HSI',
+  KOSPI: '^KS11', ASX: '^AXJO', TSX: '^GSPTSE', SENSEX: '^BSESN', NIFTY: '^NSEI', SHCOMP: '000001.SS', DXY: 'DX-Y.NYB',
+  EURUSD: 'EURUSD=X', GBPUSD: 'GBPUSD=X', USDJPY: 'JPY=X', USDCNY: 'CNY=X', USDCHF: 'CHF=X', USDCAD: 'CAD=X', AUDUSD: 'AUDUSD=X',
+  WTI: 'CL=F', OIL: 'CL=F', BRENT: 'BZ=F', NATGAS: 'NG=F', GOLD: 'GC=F', SILVER: 'SI=F', COPPER: 'HG=F', STEEL: 'HRC=F',
 };
+const exchanges: Record<string, string> = {
+  NYSE: '', NASDAQ: '', 'NYSE AMERICAN': '', NYSEARCA: '', OTC: '', TSX: '.TO', TSXV: '.V', LSE: '.L', LON: '.L', TYO: '.T', TSE: '.T', JPX: '.T',
+  HKEX: '.HK', HKG: '.HK', SEHK: '.HK', FRA: '.DE', ETR: '.DE', XETRA: '.DE', FWB: '.F', EPA: '.PA', EURONEXT: '.PA', AMS: '.AS', EBR: '.BR', BIT: '.MI', BME: '.MC',
+  SIX: '.SW', SWX: '.SW', ASX: '.AX', KRX: '.KS', KOSPI: '.KS', KOSDAQ: '.KQ', NSE: '.NS', BSE: '.BO', TWSE: '.TW', SGX: '.SI', STO: '.ST', CPH: '.CO', OSL: '.OL', HEL: '.HE', BVMF: '.SA', BMV: '.MX', JSE: '.JO', TASE: '.TA', SSE: '.SS', SZSE: '.SZ',
+};
+export function listing(exchange: string, code: string): string | null {
+  const suffix = exchanges[exchange.toUpperCase().replace(/\s+/g, ' ')];
+  if (suffix === undefined) return null;
+  const local = suffix === '.HK' && /^\d{1,5}$/.test(code) ? code.padStart(4, '0') : code;
+  return `${local.replace(/\./g, suffix ? '.' : '-')}${suffix}`.toUpperCase();
+}
 const nicknames: Record<string, string> = { google: 'GOOGL', facebook: 'META' };
 const suffixes = new Set(['inc', 'incorporated', 'corp', 'corporation', 'co', 'company', 'ltd', 'limited', 'plc', 'sa', 'ag', 'nv', 'se', 'holdings', 'holding', 'group', 'the', 'class', 'a', 'b', 'c', 'adr', 'common', 'stock', 'shares', 'lp', 'llc']);
 const connectors = new Set(['of', '&', 'and']);
@@ -20,7 +35,7 @@ export interface Quote {
   points: number[]; extendedPoints: number[]; url: string;
 }
 
-async function cached<T>(key: string, ttl: number, load: () => Promise<T>): Promise<T> {
+export async function cached<T>(key: string, ttl: number, load: () => Promise<T>): Promise<T> {
   const cache = (globalThis as unknown as { caches?: { default?: Cache } }).caches?.default;
   const url = `https://newswire-cache.internal/${key}`;
   const hit = await cache?.match(url).catch(() => undefined);
@@ -90,8 +105,8 @@ async function lookup(phrase: string): Promise<string | null> {
 
 export async function resolve(text: string, limit = 4): Promise<Mention[]> {
   const explicit: Mention[] = [];
-  for (const match of text.matchAll(/\((?:NYSE|NASDAQ|Nasdaq|NYSE American|NYSEArca|TSX|LSE|OTC)\s*:\s*([A-Z][A-Z.]{0,6})\)|\$([A-Z]{1,5})\b|\(([A-Z]{2,5})\)/g)) {
-    const symbol = match[1] ?? match[2] ?? match[3];
+  for (const match of text.matchAll(/\(([A-Za-z]{2,8}(?: American)?)\s*:\s*([A-Z0-9][A-Z0-9.]{0,6})\)|\$([A-Z]{1,5})\b|\(([A-Z]{2,5})\)/g)) {
+    const symbol = match[1] ? listing(match[1], match[2]) : match[3] ?? match[4];
     if (symbol && !['CEO', 'IPO', 'GDP', 'CPI', 'ETF', 'SEC', 'FDA', 'AI', 'EU', 'UK', 'US'].includes(symbol) && !explicit.some(item => item.symbol === symbol)) explicit.push({ symbol, match: symbol });
   }
   const phrases = candidates(text).slice(0, 12);

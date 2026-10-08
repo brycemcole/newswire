@@ -19,7 +19,7 @@ const classified = topics.filter(topic => topic.description);
 const offTopic = 'off-topic';
 const criteria = {
   ...Object.fromEntries(classified.map(topic => [topic.id, topic.description])),
-  [offTopic]: 'None of the topics above, or only a passing mention: opinion, lifestyle, sports, entertainment, crime, weather, and general news are off-topic.',
+  [offTopic]: 'None of the topics above, or only a passing mention: unrelated opinion, lifestyle, sports, entertainment, crime, weather, and general news are off-topic. Evidence-based financial analysis can match market-analysis.',
 };
 const verdictsFile = join(homedir(), '.config', 'newswire', 'headlines-verdicts.json');
 export const topicQuestion = {
@@ -54,6 +54,7 @@ export const duplicateQuestion = {
     instructions: 'Would publishing the new story repeat news already on the wire?',
   },
 };
+const classificationVersion = createHash('sha256').update(JSON.stringify({ topics, topicQuestion, detailQuestions })).digest('hex').slice(0, 12);
 const formats = new Set(config.skip_sections ?? ['video', 'videos', 'live', 'live-updates', 'live-news', 'opinion', 'opinions', 'briefing', 'podcast', 'podcasts', 'newsletters', 'gallery', 'pictures', 'interactive']);
 
 // Formats Jev always rejects, decided from the URL alone: clips, live blogs, opinion, briefings, galleries.
@@ -114,14 +115,19 @@ function slug(text) {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'feed';
 }
 
-function parseFeed(xml, feedName) {
+export function parseFeed(xml, feedName) {
   const blocks = [...(xml.match(/<item[\s\S]*?<\/item>/g) ?? []), ...(xml.match(/<entry[\s\S]*?<\/entry>/g) ?? [])];
   const items = [];
   for (const block of blocks) {
     const publisher = field(block, 'source') || feedName;
     let title = decode(field(block, 'title')).replace(/\s+/g, ' ').trim();
     if (publisher && title.endsWith(` - ${publisher}`)) title = title.slice(0, -publisher.length - 3).trim();
-    const url = link(block);
+    let url = decode(link(block));
+    try {
+      const parsed = new URL(url);
+      parsed.searchParams.delete('.tsrc');
+      url = parsed.href;
+    } catch { continue; }
     const guid = field(block, 'guid') || field(block, 'id') || url;
     const date = field(block, 'pubDate') || field(block, 'published') || field(block, 'updated') || field(block, 'dc:date');
     const stamp = Math.min(Date.parse(/^\d{4}-\d{2}-\d{2}[ T][\d:.]+$/.test(date) ? `${date.replace(' ', 'T')}Z` : date), Date.now());
@@ -190,6 +196,18 @@ export async function resolveGoogleNews(url) {
   }
 }
 
+export function balanceHeadlines(events, maxX = config.max_x_per_run ?? 2) {
+  let xCount = 0;
+  return [...events].sort((a, b) => rank[a.priority] - rank[b.priority] || Number(a.tags.includes('x')) - Number(b.tags.includes('x')) || Date.parse(b.published_at) - Date.parse(a.published_at))
+    .filter(event => !event.tags.includes('x') || xCount++ < maxX);
+}
+
+export function acceptedTopic(answers, { x = false, minimum = config.min_confidence ?? 0.7 } = {}) {
+  const topic = classified.find(candidate => candidate.id === answers.topic?.choice);
+  if (!topic || answers.topic.confidence < minimum || !answers.format || answers.format.confidence < minimum) return null;
+  return answers.format.choice === 'news' || (!x && topic.allow_analysis && answers.format.choice === 'feature') ? topic.id : null;
+}
+
 export async function run() {
   const events = [];
   const failures = [];
@@ -203,7 +221,8 @@ export async function run() {
 
   const settled = await Promise.allSettled(sources.map(async source => {
     const xml = await getText(source.url);
-    return parseFeed(xml, source.name).map(item => ({ ...item, via: source.via }));
+    if (!/<(?:rss|feed)\b/i.test(xml)) throw new Error('Expected an RSS or Atom feed');
+    return parseFeed(xml, source.name).map(item => ({ ...item, via: source.via, windowMs: (source.window_minutes ?? config.window_minutes ?? 30) * 60000 }));
   }));
   if (config.x !== false) {
     sources.push({ name: 'X Following' });
@@ -216,7 +235,7 @@ export async function run() {
       return;
     }
     for (const item of entry.value) {
-      if (Date.now() - item.stamp > windowMs || prefiltered(item)) continue;
+      if (Date.now() - item.stamp > (item.windowMs ?? windowMs) || prefiltered(item)) continue;
       const key = `headlines:${slug(item.publisher)}:${createHash('sha256').update(item.guid).digest('hex').slice(0, 24)}`;
       const matched = topics.filter(topic => item.via.includes(topic.id));
       if (!seen.has(key)) seen.set(key, { key, item, matched: [] });
@@ -225,7 +244,7 @@ export async function run() {
   });
 
   const state = await load();
-  const verdicts = JSON.parse(await readFile(verdictsFile, 'utf8').catch(() => '{}'));
+  const verdicts = Object.fromEntries(Object.entries(JSON.parse(await readFile(verdictsFile, 'utf8').catch(() => '{}'))).filter(([, verdict]) => verdict.version === classificationVersion));
   const minimum = config.min_confidence ?? 0.7;
   const nearIdentical = config.near_identical ?? 0.6;
   let published = [];
@@ -259,9 +278,10 @@ export async function run() {
         const onTopic = topic.confidence >= minimum && topic.choice !== offTopic;
         const answers = { topic, ...(onTopic || entry.matched.length ? await ask(text, detailQuestions) : {}) };
         const verdict = {
-          topic: onTopic && answers.format?.choice === 'news' && answers.format.confidence >= minimum ? topic.choice : null,
+          topic: acceptedTopic(answers, { x: entry.item.x, minimum }),
           format: answers.format?.choice ?? null,
-          priority: answers.priority?.confidence >= minimum && rank[answers.priority.choice] !== undefined ? answers.priority.choice : null,
+          priority: answers.format?.choice === 'feature' ? 'normal' : answers.priority?.confidence >= minimum && rank[answers.priority.choice] !== undefined ? answers.priority.choice : null,
+          version: classificationVersion,
           at: new Date().toISOString(),
         };
         verdicts[entry.key] = verdict;
@@ -275,7 +295,7 @@ export async function run() {
 
   const candidates = [...seen.values()]
     .filter(entry => entry.matched.length && !state[entry.key] && !entry.duplicate)
-    .sort((a, b) => rank[a.priority ?? 'normal'] - rank[b.priority ?? 'normal'] || b.item.stamp - a.item.stamp);
+    .sort((a, b) => Number(Boolean(a.item.x)) - Number(Boolean(b.item.x)) || rank[a.priority ?? 'normal'] - rank[b.priority ?? 'normal'] || b.item.stamp - a.item.stamp);
   let dedupeError;
   for (const entry of candidates) {
     const matches = similar(entry.item, published);
@@ -300,7 +320,8 @@ export async function run() {
   }
   if (dedupeError) failures.push(`headlines dedupe: ${dedupeError.message}`);
 
-  const kept = Object.fromEntries(Object.entries(verdicts).filter(([, verdict]) => Date.now() - Date.parse(verdict.at) < 2 * windowMs));
+  const cacheWindowMs = Math.max(windowMs, ...config.feeds.map(feed => (feed.window_minutes ?? config.window_minutes ?? 30) * 60000));
+  const kept = Object.fromEntries(Object.entries(verdicts).filter(([, verdict]) => Date.now() - Date.parse(verdict.at) < 2 * cacheWindowMs));
   await mkdir(dirname(verdictsFile), { recursive: true, mode: 0o700 });
   await writeFile(verdictsFile, `${JSON.stringify(kept)}\n`, { mode: 0o600 });
 
@@ -334,6 +355,5 @@ export async function run() {
     });
   }
 
-  events.sort((a, b) => rank[a.priority] - rank[b.priority] || Date.parse(b.published_at) - Date.parse(a.published_at));
-  return { events, failures };
+  return { events: balanceHeadlines(events), failures };
 }

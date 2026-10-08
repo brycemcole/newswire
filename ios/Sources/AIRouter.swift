@@ -6,7 +6,7 @@ enum AIFeature: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .stockChat: "Stock questions"
+        case .stockChat: "Ask"
         case .articleSummaries: "Article summaries"
         case .moveExplanations: "Why it moved"
         }
@@ -27,6 +27,12 @@ enum AIBackend: Equatable {
 
 enum AIRouter {
     static let appleKey = "ai.appleBackend"
+    static let providerKey = "ai.provider"
+
+    /// The provider picked in settings: "deepSeek", "privateCloud" or "onDevice". Before the picker existed a saved key meant DeepSeek.
+    static var provider: String {
+        UserDefaults.standard.string(forKey: providerKey) ?? (hasDeepSeekKey ? "deepSeek" : UserDefaults.standard.string(forKey: appleKey) ?? "onDevice")
+    }
 
     static var hasDeepSeekKey: Bool { !StockAIKeychain.read().isEmpty }
 
@@ -44,7 +50,7 @@ enum AIRouter {
     static var onDeviceAvailable: Bool { SystemLanguageModel.default.availability == .available }
 
     static func backend(for feature: AIFeature) -> AIBackend? {
-        if hasDeepSeekKey, deepSeekEnabled(feature) { return .deepSeek }
+        if provider == "deepSeek", hasDeepSeekKey, deepSeekEnabled(feature) { return .deepSeek }
         if prefersPrivateCloud, privateCloudAvailable { return .privateCloud }
         return onDeviceAvailable ? .onDevice : nil
     }

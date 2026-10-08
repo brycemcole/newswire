@@ -35,10 +35,8 @@ struct PortfolioFundingTests {
     @Test func returnUsesMoneyAddedAndTakenOut() {
         let funding = AccountFunding(contributed: 8000, withdrawn: 0)
         #expect(funding.gain(value: 4800) == -3200)
-        #expect(funding.percent(value: 4800) == -0.4)
         let withdrawn = AccountFunding(contributed: 8000, withdrawn: 2000)
         #expect(withdrawn.gain(value: 4800) == -1200)
-        #expect(AccountFunding(contributed: 0, withdrawn: 0).percent(value: 100) == nil)
         #expect(AccountFunding(contributed: 8000, withdrawn: nil).gain(value: 4800) == nil)
     }
 
@@ -136,7 +134,6 @@ struct SoFiFundingTests {
         #expect(abs(flows.contributed - flows.withdrawn - 8525.34) < 0.001)
         let funding = AccountFunding(contributed: flows.contributed, withdrawn: flows.withdrawn)
         #expect(abs((funding.gain(value: 5050.76) ?? 0) + 3474.58) < 0.001)
-        #expect(abs((funding.percent(value: 5050.76) ?? 0) + 0.40756) < 0.0001)
         let unknown = InvestmentCashFlows(history: InvestmentHistory(itemID: "i", start: .distantPast, end: .now, transactions: records, cashSecurityIDs: []), accountID: "a")
         #expect(unknown.unknown == 2 && unknown.contributed == 0)
     }

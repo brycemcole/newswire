@@ -93,7 +93,9 @@ struct PortfolioView: View {
                             PortfolioHoldingRow(holding: holding)
                         }
                         if holdings.isEmpty {
-                            ContentUnavailableView.search(text: search)
+                            if search.isEmpty {
+                                ContentUnavailableView("No open positions", systemImage: "chart.pie", description: Text("Cash and sale proceeds remain included in your account value and performance."))
+                            } else { ContentUnavailableView.search(text: search) }
                         }
                     } header: {
                         HStack {
@@ -186,7 +188,7 @@ struct PortfolioView: View {
                 if CommandLine.arguments.contains("-portfolioPreview") || CommandLine.arguments.contains("-portfolioAudit") { return }
                 #endif
                 store.reloadFromKeychain()
-                if store.snapshot.accountBalances == nil || store.snapshot.histories == nil || store.snapshot.histories?.contains(where: { $0.cashSecurityIDs == nil }) == true || store.snapshot.costMethodVersion != 2 || (store.snapshot.updated ?? .distantPast).timeIntervalSinceNow < -300 { await store.sync() }
+                if store.snapshot.accountBalances == nil || store.snapshot.histories == nil || store.snapshot.histories?.contains(where: { $0.cashSecurityIDs == nil || $0.version != 1 }) == true || store.snapshot.costMethodVersion != 2 || (store.snapshot.updated ?? .distantPast).timeIntervalSinceNow < -300 { await store.sync() }
             }
             .onOpenURL { url in
                 if url.path.hasPrefix("/plaid") { store.resume(from: url) }
