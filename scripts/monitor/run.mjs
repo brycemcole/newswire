@@ -1,14 +1,17 @@
 import { createHash } from 'node:crypto';
 import { notify, wake } from './apns.mjs';
+import { syncCalendar } from './calendar.mjs';
 import { publish } from './publish.mjs';
 import { load, save, statePath } from './state.mjs';
 import * as crypto from './rules/crypto.mjs';
 import * as congress from './rules/congress.mjs';
+import * as contracts from './rules/contracts.mjs';
 import * as disasters from './rules/disasters.mjs';
 import * as earnings from './rules/earnings.mjs';
 import * as equities from './rules/equities.mjs';
 import * as fed from './rules/fed.mjs';
 import * as fiscal from './rules/fiscal.mjs';
+import * as global from './rules/global.mjs';
 import * as headlines from './rules/headlines.mjs';
 import * as household from './rules/household.mjs';
 import * as infrastructure from './rules/infrastructure.mjs';
@@ -18,11 +21,12 @@ import * as markets from './rules/markets.mjs';
 import * as policy from './rules/policy.mjs';
 import * as rates from './rules/rates.mjs';
 import * as sectors from './rules/sectors.mjs';
+import * as shipping from './rules/shipping.mjs';
 import * as trending from './rules/trending.mjs';
 import * as treasury from './rules/treasury.mjs';
 import * as volatility from './rules/volatility.mjs';
 
-const rules = [markets, sectors, volatility, rates, equities, earnings, insiders, crypto, macro, fiscal, fed, treasury, household, congress, disasters, policy, infrastructure, trending, headlines];
+const rules = [markets, global, sectors, volatility, rates, equities, earnings, insiders, crypto, macro, fiscal, fed, treasury, household, congress, contracts, shipping, disasters, policy, infrastructure, trending, headlines];
 const cooldown = { markets: 6, volatility: 12, rates: 12, equities: 12, crypto: 12, sectors: 6 };
 const dryRun = process.argv.includes('--dry-run');
 const seed = process.argv.includes('--seed');
@@ -33,6 +37,7 @@ function externalId(key) {
   return `monitor:${createHash('sha256').update(key).digest('hex').slice(0, 32)}`;
 }
 
+const calendarSync = dryRun || seed || only ? Promise.resolve([]) : syncCalendar().catch(error => ["calendar: " + error.message]);
 const selected = only ? rules.filter(rule => only.includes(rule.id)) : rules;
 const settled = await Promise.allSettled(selected.map(rule => rule.run()));
 const state = await load();
@@ -97,6 +102,8 @@ if (!alerts.length && published.some(entry => entry.result === 'new')) failures.
 
 if (seed) for (const event of candidates) state[event.key] ??= { at: new Date().toISOString(), rule: event.rule };
 if (!dryRun) await save(state);
+
+failures.push(...await calendarSync);
 
 const report = {
   checked: selected.map(rule => rule.id),

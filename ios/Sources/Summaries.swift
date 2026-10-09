@@ -327,6 +327,13 @@ nonisolated struct ArticlePage: Sendable {
         Task { await digest(story) }
     }
 
+    func restoreOffline(_ text: String, for story: Story) {
+        let key = story.url.absoluteString
+        guard texts[key] == nil, !text.isEmpty else { return }
+        texts[key] = text
+        changed(key)
+    }
+
     /// One model call gives both the feed's one-line summary and the detail's "At a glance" points.
     func digest(_ story: Story) async {
         let key = story.url.absoluteString

@@ -36,6 +36,42 @@ Required: external_id (1–200), title (1–300), source (1–100), url (absolut
 - GET /v1/ingest with the same fields as URL-encoded query parameters. tickers/tags are comma-separated. Same auth and result as POST. Explicit ingestion route only; GET /v1/stories never writes. Ingest responses always no-store. GET URL capped at 8000 bytes; use POST for longer text.
 - OPTIONS supported. Errors: {"error":{"code":string,"message":string}} with 400/401/403/404/405/413/500/503.
 
+## Data routes
+
+`GET /v1/data/*` is one read-only data layer for the apps, the chat and outside agents. It needs a reader or writer bearer token. Every response has the same shape: `title`, `source`, `url`, `as_of`, an optional `note`, `sections` of rows (`label`, `value`, optional `change`, `change_label`, `date`, `symbol`, `series`, `story`, `url`, `points`), an optional `chart`, and `text`, a plain-text rendering meant for a model. Nothing is computed that the upstream source did not provide.
+
+`GET /v1/data/tools.json` lists every tool with its name, path, description and JSON Schema parameters. Call a tool by path (`/v1/data/fed/odds`, `/v1/data/series/UNRATE`, `/v1/data/board/fx`) or by name (`/v1/data/tool/fed_odds`). Adding a tool to `backend/src/data.ts` publishes it to the iOS chat, the catalog and MCP at once.
+
+| Tool | Path | Source |
+|---|---|---|
+| `macro` | `macro?group=fed\|jobs\|inflation\|growth\|rates\|credit\|global\|prices` | FRED |
+| `series`, `series_search` | `series/:id`, `series/search?q=` | FRED (full search needs `FRED_API_KEY`) |
+| `calendar` | `calendar?days=7&impact=medium&countries=USD,JPY&upcoming=true` | ForexFactory week (forecast, previous), BLS schedule, FOMC calendar |
+| `releases` | `releases?days=45&impact=high` | FRED actuals plus archived Nasdaq actual/consensus/previous |
+| `economic_history` | `economic/history?q=CPI&days=60&countries=USD` | Archived Nasdaq reported releases; duplicate labels can omit periodicity |
+| `source_search` | `sources/search?q=payrolls` | Recently collected public Google News coverage; discovery excerpts |
+| `fed_odds` | `fed/odds` | Fed funds futures (Yahoo), EFFR (FRED) |
+| `yield_curve` | `yields?region=us\|euro\|japan` | US Treasury, ECB, Japan Ministry of Finance |
+| `board` | `board/world\|fx\|commodities\|rates` | Yahoo Finance |
+| `quote`, `symbol_search`, `screener` | `quote?symbols=`, `symbols?q=`, `screener?region=jp&max_pe=15` | Yahoo Finance |
+| `stock_history` | `stock/history?symbol=BB&period=ytd` | Yahoo Finance chart; price return excludes dividends |
+| `stock_fundamentals` | `stock/fundamentals?symbol=BB` | Yahoo Finance quote summary and reported-quarter history; no management guidance |
+| `stock_news` | `stock/news?symbol=BB&company=BlackBerry&days=180` | Yahoo Finance public headlines matched to ticker |
+| `wire_search` | `wire/search?q=&days=30` | D1 full-text index (`stories_fts`) |
+| `sec_filings`, `insider_trades`, `holders` | `sec/filings?symbol=`, `sec/insiders?symbol=`, `sec/holders?symbol=` | SEC EDGAR, Yahoo (13F) |
+| `contracts` | `contracts?company=` | USAspending, falling back to FPDS |
+| `chokepoints` | `chokepoints?name=` | IMF PortWatch |
+| `ships` | `ships?area=hormuz` | AISStream positions posted by the Mac mini (`scripts/ships`) |
+| `world_economy` | `world?indicator=gdp&countries=JPN,DEU` | IMF DataMapper |
+
+Yahoo endpoints are unofficial and may break or rate limit; the government sources are official. Quotes are cached at the edge for 20 seconds, stock news for 10 minutes, fundamentals for 30 minutes, and price history for 5 minutes; calendars are cached for up to a day.
+
+Writer-only feeds into this layer: `POST /v1/econ/events` (the monitor posts ForexFactory's week hourly, because the feed rate-limits Cloudflare) and `POST /v1/ships` (`{area, ships: [{mmsi, name, kind, lat, lon, speed, course, at}]}` from the ship stream). `POST /v1/devices` also takes `muted_topics`, the notification topics the device has turned off (see `topics` in `scripts/monitor/apns.mjs`).
+
+`POST /v1/mcp` serves the same tools as a Model Context Protocol server (JSON-RPC over streamable HTTP: `initialize`, `tools/list`, `tools/call`). Point an MCP client at `https://bryce-newswire.bryce-e19.workers.dev/v1/mcp` with an `Authorization: Bearer` header.
+
+Optional secret: `wrangler secret put FRED_API_KEY` (free from fred.stlouisfed.org) enables FRED's full series search, series metadata and the wider release calendar.
+
 ## Brain routes
 
 The Worker also binds the Brain app's D1 database (`BRAIN`) and Workers AI (`AI`). Brain posts are served in the Story shape above with `agent: "brain"`, `external_id: "brain:<id>"`, a derived title when the post has none, and an extra `interaction` field (`like`, `dislike`, `save`, or null). Posts without an HTTP source link are omitted.
@@ -73,3 +109,5 @@ The app generates a Secure Enclave key with Apple App Attest; no token is typed 
 - POST /v1/attest {"key_id","attestation","challenge"} (base64) → 201 {"token","expires_at"}. Verifies Apple's attestation (certificate chain to the App Attest root, nonce, key id, app id `ATTEST_APP_ID` default `A792L5W262.com.brycecole.newswire`, counter 0), stores the public key, mints a 7-day session token.
 - POST /v1/attest/session {"key_id","assertion","challenge"} → 201 {"token","expires_at"}. Renews with a signed assertion; the counter must increase. Unknown key 404 (`unknown_key`), bad proof 401 (`attestation_failed`).
 Session tokens are random, stored only as SHA-256, and read-only (403 on writer routes). `ATTEST_ROOT_CA` overrides the pinned Apple root and exists for tests.
+
+The monitor syncs the current calendar, historical releases, six years of curated FRED observations, and public economic coverage hourly. Writer-only `POST /v1/econ/history` takes `{date, rows}`; `POST /v1/econ/series` takes `{id, observations}`; `POST /v1/econ/sources` takes `{rows}`. FRED snapshots collected within the last hour serve curated series promptly. Older snapshots are used only when live access fails, marked with collector time and rejected after seven days. Public coverage is rejected after two days. Snapshots preserve published actual/forecast/previous independently; ambiguous provider labels must not be guessed as monthly or yearly. The default releases window is 45 days so monthly jobs and CPI remain visible after the week changes.

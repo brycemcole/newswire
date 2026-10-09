@@ -153,47 +153,36 @@ struct PortfolioOverview: View {
     private var range: ChartRange { performance.range }
     private var series: PerformanceSeries? { performance.series[range] }
     private var confirmedFunding: AccountFunding? { funding.combined(for: accounts) }
-    private var displayedFunding: AccountFunding? {
-        if let confirmedFunding { return confirmedFunding }
-        guard accounts.count == 1, let account = accounts.first, let history = account.history else { return nil }
-        let flows = InvestmentCashFlows(history: history, accountID: account.id.name, institution: account.institution)
-        guard flows.unknown == 0, flows.contributed > 0 else { return nil }
-        return AccountFunding(contributed: flows.contributed, withdrawn: flows.withdrawn)
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 5) {
-                Text(selected == nil ? "\(title) · \(snapshot.reportedValue == nil ? "holdings value" : "brokerage value")" : "Estimated value at selected time")
+                Text(selected == nil ? "\(title) · \(snapshot.reportedValue == nil ? "holdings value" : "brokerage value")" : "Estimated value at selected date")
                     .font(.subheadline).foregroundStyle(.secondary)
                 Text(Money.text(selected?.value ?? snapshot.totalValue))
                     .font(.system(.largeTitle, design: .rounded).weight(.bold)).monospacedDigit()
                     .minimumScaleFactor(0.6).lineLimit(1)
                 if let selected {
-                    Text(selected.date.formatted(.dateTime.month(.abbreviated).day().hour().minute()))
+                    Text(selected.date.formatted(.dateTime.month(.abbreviated).day().year()))
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
-            if let totals = displayedFunding, let value = snapshot.reportedValue, let gain = totals.gain(value: value) {
+            if let totals = confirmedFunding, let value = snapshot.reportedValue, let gain = totals.gain(value: value) {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(confirmedFunding == nil ? "Return vs recorded funding · provisional" : "Account return · all time").font(.caption).foregroundStyle(.secondary)
-                    Text((totals.approximate == true ? "≈" : "") + Money.signed(gain) + (totals.percent(value: value).map { " (\(Money.percent($0)))" } ?? ""))
+                    Text("Account gain · all time").font(.caption).foregroundStyle(.secondary)
+                    Text((totals.approximate == true ? "≈" : "") + Money.signed(gain))
                         .font(.title3.weight(.semibold)).monospacedDigit().foregroundStyle(Money.tint(gain))
                     HStack(alignment: .top, spacing: 16) {
                         metric("Money in", Money.text(totals.contributed))
                         metric("Money out", Money.text(totals.withdrawn ?? 0))
                         metric("Brokerage value", Money.text(value))
                     }
-                    if confirmedFunding == nil, let history = accounts.first?.history {
-                        let first = history.transactions.filter { $0.accountId == accounts.first?.id.name }.map(\.date).min() ?? "unknown"
-                        Text("Recorded activity starts \(first). Review funding history to verify it includes the account’s initial funding.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
+
                 }
             } else {
                 HStack(alignment: .top, spacing: 16) {
                     metric(snapshot.reportedValue == nil ? "Holdings + cash" : "Brokerage value", Money.text(snapshot.totalValue))
-                    metric("Account return", "Not set")
+                    metric("Lifetime gain", "Confirm funding")
                 }
                 if accounts.count == 1, let account = accounts.first, let history = account.history {
                     let flows = InvestmentCashFlows(history: history, accountID: account.id.name, institution: account.institution)
@@ -210,8 +199,9 @@ struct PortfolioOverview: View {
             }
             chart
             if let series {
-                let change = (selected?.value ?? series.last) - series.baseline
-                Text("\(Money.signed(change)) (\(Money.percent(series.baseline == 0 ? 0 : change / abs(series.baseline)))) · Est. \(range.caption)")
+                let change = selected.map { series.change(at: $0) } ?? series.change
+                let percent = selected.flatMap { series.percent(at: $0) } ?? (selected == nil ? series.percent : nil)
+                Text(Money.signed(change) + (percent.map { " (\(Money.percent($0)))" } ?? "") + " · Est. \(range.caption)")
                     .font(.caption.weight(.medium)).monospacedDigit().foregroundStyle(Money.tint(change))
             }
             Picker("Performance range", selection: $performance.range) {
@@ -227,14 +217,14 @@ struct PortfolioOverview: View {
                     .font(.subheadline)
             }
             Button { explainingHistory = true } label: {
-                Label("Current holdings estimate", systemImage: "info.circle")
+                Label("Transaction-based performance", systemImage: "info.circle")
                     .font(.caption).foregroundStyle(.secondary)
             }
             .buttonStyle(.borderless)
             .alert("About this chart", isPresented: $explainingHistory) {
                 Button("OK", role: .cancel) {}
             } message: {
-                Text("Estimated history of today’s holdings, with cash and options held constant. Excludes deposits, withdrawals and past trades. Unavailable prices stay at their brokerage values. Hold the chart to inspect a value.")
+                Text("Daily values reconstruct holdings and cash from recorded trades, including positions sold in full. Dollar gain excludes external deposits and withdrawals and includes income and fees. Percentage uses Modified Dietz, weighting funding by time invested. Order dates are used when available, otherwise posting dates; flows are treated as end-of-day. Values end at the latest brokerage sync. Missing history, option prices or unresolved corporate actions make performance unavailable.")
             }
         }
         .task(id: range) { await refresh() }
@@ -252,6 +242,13 @@ struct PortfolioOverview: View {
 
     private func refresh() async {
         #if DEBUG
+        if CommandLine.arguments.contains("-portfolioLedgerPreview") {
+            do {
+                let built = try PortfolioLedger(snapshot: snapshot, start: LedgerPreview.day(-4)).build(prices: LedgerPreview.prices)
+                performance.preview(range, series: built)
+            } catch { performance.previewFailure(range, message: error.localizedDescription) }
+            return
+        }
         if CommandLine.arguments.contains("-portfolioPreview") {
             for range in PortfolioPerformance.ranges {
                 let points = (0..<60).map { index in
@@ -324,7 +321,7 @@ struct PortfolioOverview: View {
         } else {
             VStack(spacing: 8) {
                 if refreshing { ProgressView(); Text("Loading performance…") }
-                else { Image(systemName: "chart.xyaxis.line"); Text("Price history unavailable") }
+                else { Image(systemName: "chart.xyaxis.line"); Text(performance.errors[range] ?? "Performance unavailable") }
             }
             .font(.subheadline).foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, minHeight: 96)

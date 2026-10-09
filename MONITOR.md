@@ -42,7 +42,8 @@ To keep Jev input small, classification sends the title plus at most 300 charact
 | `earnings` | Item 2.02 earnings 8-Ks from fourteen watched companies within two days | SEC EDGAR |
 | `insiders` | Form 4 open-market buys or sells above $2M by officers, directors, and ten percent owners at ten large companies | SEC EDGAR |
 | `crypto` | Bitcoin 5% or Ether 7% daily moves, round-number crossings, 52-week highs | Yahoo Finance |
-| `macro` | CPI, unemployment, payrolls, and jobless claims, with changes computed rather than restated | FRED |
+| `macro` | CPI and core CPI, the jobs report (payrolls, unemployment, wages), jobless claims, core PCE, PPI, GDP, retail sales and JOLTS. CPI, payrolls, PCE and GDP always notify; the others notify on large moves | FRED |
+| `global` | KOSPI, Nikkei, Hang Seng, Shanghai, Taiwan, ASX, Nifty, DAX, FTSE, CAC and Euro Stoxx moves of 1.5% (notify at 2.5%), and dollar-yen, dollar-won, euro, sterling and yuan moves of 1% (0.5% for yuan) | Yahoo Finance |
 | `fiscal` | Trillion-dollar debt milestones, monthly debt growth above $300B, fiscal-year interest cost, debt to GDP, IMF world debt rankings | US Treasury, FRED, IMF |
 | `fed` | Target range changes, and four-week balance sheet moves above $100B | FRED |
 | `treasury` | Coupon auction announcements and settled results within 36 hours | Treasury Fiscal Data |
@@ -52,6 +53,8 @@ To keep Jev input small, classification sends the title plus at most 300 charact
 | `policy` | Executive orders and significant final rules | Federal Register |
 | `infrastructure` | Major provider outages, new CISA exploited vulnerabilities, FAA ground stops | Status pages, CISA, FAA |
 | `trending` | Hacker News items above 600 points | Hacker News |
+| `contracts` | Pentagon contract actions of $250M or more in the past ten days, tagged with the contractor's ticker when known | USAspending.gov |
+| `shipping` | Seven-day ship transits through Hormuz, Suez, Bab el-Mandeb, Panama, Malacca, Bosporus, Taiwan Strait or the Cape down 30% or up 40% against the prior 30 days | IMF PortWatch |
 | `headlines` | Publisher stories that Jev classifies onto a watchlist topic, once per story | Publisher RSS feeds (news, business, tech, AI labs), Google News, X Following timeline |
 
 Weather coverage was removed deliberately: hurricane tracking and extreme NWS alerts fired far more often than their news value justified, so `disasters` now covers earthquakes only. `earnings` claims item 2.02 filings and `equities` skips them, so no filing publishes twice.
@@ -68,7 +71,9 @@ Senate filings are not covered. The Senate electronic system requires an interac
 
 ## Headlines watchlist
 
-The `headlines` rule watches publisher RSS feeds and, for topics defined with a `query`, Google News search results, then publishes stories that fall squarely under a topic in `scripts/monitor/rules/headlines.watchlist.json`. It publishes the publisher's own headline and link unchanged, labeled with the topic it matched, and fires exactly once per story keyed on the feed GUID. Only stories published within `window_minutes` (default 30) are considered, so a first run never dumps a backlog and a feed that surfaces a story late cannot land it on the wire as old news; run `--seed` after editing the watchlist to record current matches without publishing them.
+The `headlines` rule watches publisher RSS feeds and, for topics defined with a `query`, Google News search results, then publishes stories that fall squarely under a topic in `scripts/monitor/rules/headlines.watchlist.json`. It preserves the publisher's headline, resolves Google News links, removes Yahoo's `.tsrc` syndication parameter, labels each story with its matched topic, and fires once per feed GUID. Only stories published within `window_minutes` (default 30, overridable per feed) are considered; Yahoo and MarketWatch use 120 minutes to tolerate discovery delays. Run `--seed` after editing the watchlist to record current matches without publishing them.
+
+Yahoo coverage uses its working ticker RSS endpoint plus Google News discovery across finance.yahoo.com; the old `/rss/topstories` and `/news/rssindex` endpoints return 404. MarketWatch uses `mw_topstories`; `mw_marketpulse` stopped updating. Finance coverage includes company guidance, analyst actions, credit and banking, and evidence-based market analysis. Only the market-analysis topic accepts features, only from publishers, at normal priority. Publisher articles are considered before X during deduplication and lead X at equal priority; `max_x_per_run` (default 2) keeps X supplemental. Classification cache entries are invalidated when topic or question definitions change.
 
 Posts from the X Following timeline of the logged-in account enter the same pipeline as publisher headlines. `scripts/monitor/x.mjs` runs `bird home --following` at most every `X_POLL_MINUTES` (default 5) using the `AUTH_TOKEN`/`CT0` cookies in `~/.config/bird/x.env` on the mini, caches the result in `~/.config/newswire/x-timeline.json`, and drops replies, reposts, and posts under 60 characters. They get the same window, topic, format, priority, and duplicate checks, so only hard news on a watchlist topic publishes, tagged `x` and linked to the post. Set `"x": false` in the watchlist to turn it off. The cookies come from a browser session; signing out of X there expires them and the rule reports `X Following` in failures.
 
@@ -86,6 +91,16 @@ After publishing, `run.mjs` sends an APNs alert for every new `breaking` story t
 
 `breaking` covers 3% index moves, VIX above 30, 20% drawdowns, magnitude 7+ quakes, debt milestones, and Fed target changes. `urgent` covers 2% index moves, 52-week extremes, 20bp yield moves, earnings 8-Ks, and executive orders. Everything else is `normal`.
 
+## Forecasts and notification topics
+
+`macro` copies ForexFactory's week of scheduled releases (forecast and previous) into the Worker at most hourly (`scripts/monitor/calendar.mjs`), then reads the Worker's `releases` tool so each US release story states the consensus and is raised to breaking when the miss is large (CPI 0.2 points, payrolls 75,000, unemployment 0.2 points, retail sales 0.5 points). A story's notification topic comes from its tags (`topics` in `apns.mjs`); devices that muted a topic in the app's Notifications settings are skipped.
+
+## Ship positions
+
+`scripts/ships/stream.mjs` runs on the mini as `newswire-ships.service`, holds an AISStream websocket for eight chokepoint boxes and posts positions to the Worker every three minutes. It needs a free key from https://aisstream.io saved to `~/.config/newswire/aisstream.key`; without one it exits after logging that. Deploy with `rsync -a scripts/ships/ mini:newswire/scripts/ships/` and `systemctl --user restart newswire-ships`.
+
 ## Adding a rule
 
 A rule module exports `id` and an async `run()` returning `{ events, failures }`. Each event needs `key`, `title`, `summary`, `source`, `url`, `category`, and `priority`, plus optional `published_at`, `tickers`, and `tags`. Register it in `run.mjs`, and add it to the `cooldown` map only if it should be allowed to repeat. A rule that throws is isolated: its failure is reported and every other rule still publishes.
+
+The normal monitor run also calls `syncCalendar` hourly. It preserves Nasdaq economic history in D1, refreshes a rolling seven days (or catches up after downtime), posts FRED snapshots for edge-access failures, and collects public economic RSS coverage. Initial history backfill is 60 days; `syncCalendar({force:true, backfill:60})` can repair missed days without publishing stories or sending notifications. Failures are included in the monitor report, and retries are throttled to the next hour. Dry runs, seed runs, and `--only` runs skip this sync.

@@ -7,7 +7,7 @@ struct WidgetPortfolioTests {
         WidgetPoint(date: Date(timeIntervalSince1970: minute * 60), value: value)
     }
 
-    @Test func refreshCombinesHoldingsAgainstPreviousClose() {
+    @Test func legacyRefreshDoesNotInventPortfolioReturns() {
         let portfolio = WidgetPortfolio(
             holdings: [WidgetHolding(symbol: "AAA", name: nil, quantity: 10, cost: 800, price: 90),
                        WidgetHolding(symbol: "BBB", name: nil, quantity: 2, cost: nil, price: 50),
@@ -19,15 +19,26 @@ struct WidgetPortfolioTests {
         ]
         let refreshed = portfolio.refreshed(day: charts, month: [:])
 
-        // CCC has no chart, so it stays at its stored value inside the constant part.
-        #expect(refreshed.day.map(\.value) == [1192.0, 1212, 1240])
-        #expect(refreshed.value == 1240.0)
-        #expect(refreshed.dayBaseline == 1180.0)
-        #expect(refreshed.dayChange == 60.0)
+        #expect(refreshed.day.isEmpty)
+        #expect(refreshed.value == portfolio.value)
+        #expect(refreshed.dayBaseline == nil)
+        #expect(refreshed.dayChange == nil)
         #expect(abs(refreshed.holdings[0].dayPercent! - (100.0 / 95 - 1)) < 1e-9)
         #expect(refreshed.totalGain == 200.0)
         #expect(refreshed.fetched != nil)
         #expect(refreshed.month.isEmpty)
+    }
+
+    @Test func refreshPreservesTransactionBasedReturn() {
+        let now = Date.now
+        let portfolio = WidgetPortfolio(holdings: [WidgetHolding(symbol: "AAA", name: nil, quantity: 5, cost: 500, price: 120)],
+            cash: 600, other: 0, otherGain: nil, value: 1200, dayBaseline: 1000,
+            day: [WidgetPoint(date: now, value: 1200)], updated: now,
+            accountingVersion: 1, measuredDayChange: 200, measuredDayPercent: 0.2)
+        let refreshed = portfolio.refreshed(day: ["AAA": WidgetChart(previousClose: 110, points: [point(0, 125)])], month: [:], at: now)
+        #expect(refreshed.value == 1200 && refreshed.dayChange == 200 && refreshed.dayPercent == 0.2)
+        let tomorrow = portfolio.refreshed(day: [:], month: [:], at: now.addingTimeInterval(86400))
+        #expect(tomorrow.dayChange == nil && tomorrow.dayPercent == nil && tomorrow.day.isEmpty)
     }
 
     @Test func thinKeepsEndpoints() {

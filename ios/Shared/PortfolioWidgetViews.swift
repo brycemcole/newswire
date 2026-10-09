@@ -28,7 +28,7 @@ private extension WidgetPortfolio {
     var tint: Color { Money.tint(direction) }
     var arrow: String { direction >= 0 ? "arrowtriangle.up.fill" : "arrowtriangle.down.fill" }
     var dayPercentText: String { dayPercent.map(Money.percent2) ?? "—" }
-    var stamp: Date { fetched ?? updated }
+    var stamp: Date { updated }
 }
 
 private struct DayChangeBadge: View {
@@ -292,7 +292,7 @@ private struct MediumPortfolio: View {
                 Spacer(minLength: 4)
                 if let gain = portfolio.totalGain {
                     HStack(spacing: 4) {
-                        Text("Total").foregroundStyle(.secondary)
+                        Text("Unrealized").foregroundStyle(.secondary)
                         Text(Money.signed(gain)).foregroundStyle(Money.tint(gain))
                     }
                     .font(.caption2.weight(.medium).monospacedDigit())
@@ -335,7 +335,7 @@ private struct LargePortfolio: View {
                     Stat(title: "1 month", value: Money.percent(percent), tint: Money.tint(percent))
                 }
                 if let gain = portfolio.totalGain {
-                    Stat(title: "Total gain", value: Money.signedCompact(gain), tint: Money.tint(gain))
+                    Stat(title: "Unrealized", value: Money.signedCompact(gain), tint: Money.tint(gain))
                 }
                 Stat(title: "Cash", value: Money.compact(portfolio.cash))
             }
@@ -375,7 +375,7 @@ private struct ExtraLargePortfolio: View {
                         Stat(title: "1 month", value: "\(Money.signed(change)) (\(Money.percent(percent)))", tint: Money.tint(change))
                     }
                     if let gain = portfolio.totalGain {
-                        Stat(title: "Total gain", value: Money.signed(gain), tint: Money.tint(gain))
+                        Stat(title: "Unrealized", value: Money.signed(gain), tint: Money.tint(gain))
                     }
                 }
                 ValueChart(points: portfolio.day, baseline: portfolio.dayBaseline, tint: portfolio.tint, baselineRule: true, marksLast: true, axes: true)

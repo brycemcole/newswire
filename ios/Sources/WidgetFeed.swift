@@ -2,7 +2,7 @@ import WidgetKit
 
 enum WidgetFeed {
     static func publish(_ snapshot: PortfolioSnapshot, day: PerformanceSeries?) {
-        guard !snapshot.positions.isEmpty || snapshot.cash != 0 else {
+        guard !snapshot.positions.isEmpty || snapshot.totalValue != 0 else {
             if WidgetPortfolio.load() != nil {
                 WidgetPortfolio.clear()
                 WidgetCenter.shared.reloadTimelines(ofKind: WidgetPortfolio.kind)
@@ -24,21 +24,13 @@ enum WidgetFeed {
         }
         let options = snapshot.positions.filter { $0.option != nil }
         let gains = options.compactMap(\.gain)
-        var portfolio = WidgetPortfolio(
+        let portfolio = WidgetPortfolio(
             holdings: holdings, cash: snapshot.cash, other: options.compactMap(\.value).reduce(0, +),
             otherGain: gains.isEmpty ? nil : gains.reduce(0, +),
             value: day?.last ?? snapshot.totalValue, dayBaseline: day?.baseline,
             day: WidgetPortfolio.thin((day?.points ?? []).map { WidgetPoint(date: $0.date, value: $0.value) }, to: 120),
-            updated: snapshot.updated ?? .now, fetched: day == nil ? nil : .now)
-        if let previous, Set(previous.holdings.map(\.symbol)) == Set(holdings.map(\.symbol)) {
-            portfolio.month = previous.month
-            portfolio.monthFetched = previous.monthFetched
-            if day == nil {
-                portfolio.day = previous.day
-                portfolio.dayBaseline = previous.dayBaseline
-                portfolio.fetched = previous.fetched
-            }
-        }
+            updated: snapshot.updated ?? .now, fetched: day == nil ? nil : .now,
+            accountingVersion: 1, measuredDayChange: day?.change, measuredDayPercent: day?.percent)
         portfolio.save()
         WidgetCenter.shared.reloadTimelines(ofKind: WidgetPortfolio.kind)
     }

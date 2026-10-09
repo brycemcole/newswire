@@ -3,6 +3,10 @@ import SwiftUI
 
 struct PortfolioPreview: View {
     init() {
+        if CommandLine.arguments.contains("-portfolioLedgerPreview") {
+            PortfolioStore.shared.snapshot = LedgerPreview.snapshot
+            return
+        }
         let symbols = ["AAPL", "NVDA", "MSFT", "AMZN", "GOOGL", "META", "TSLA", "VTI", "VOO", "AMD", "NFLX", "COST", "JPM", "DIS", "UBER", "SOFI", "QQQ", "AVGO", "PLTR", "MU"]
         let names = ["Apple", "NVIDIA", "Microsoft", "Amazon", "Alphabet", "Meta Platforms", "Tesla", "Vanguard Total Stock Market ETF", "Vanguard S&P 500 ETF", "Advanced Micro Devices"]
         var positions = symbols.enumerated().map { index, symbol in
@@ -29,7 +33,12 @@ struct PortfolioPreview: View {
 
     }
     var body: some View {
-        if CommandLine.arguments.contains("-portfolioContributions"), let account = PortfolioAccount.group(PortfolioStore.shared.snapshot).first {
+        if CommandLine.arguments.contains("-portfolioWidgetPreview") {
+            PortfolioWidgetView(portfolio: WidgetPortfolio(holdings: [], cash: 1200, other: 0, otherGain: nil, value: 1200,
+                dayBaseline: 1000, day: [WidgetPoint(date: LedgerPreview.day(-1), value: 1000), WidgetPoint(date: LedgerPreview.end, value: 1200)],
+                updated: .now, accountingVersion: 1, measuredDayChange: 200, measuredDayPercent: 0.2), family: .systemMedium)
+                .frame(width: 350, height: 160).padding()
+        } else if CommandLine.arguments.contains("-portfolioContributions"), let account = PortfolioAccount.group(PortfolioStore.shared.snapshot).first {
             PortfolioFundingEditor(account: account)
         } else if CommandLine.arguments.contains("-portfolioHistory"), let account = PortfolioAccount.group(PortfolioStore.shared.snapshot).first(where: { $0.id.name == "individual" }), let history = account.history {
             NavigationStack { PortfolioHistoryView(account: account, history: history) }
@@ -44,6 +53,25 @@ struct PortfolioPreview: View {
                 .navigationDestination(for: MarketSymbol.self) { QuoteDetail(symbol: $0.id) }
             }
         } else { PortfolioView() }
+    }
+}
+enum LedgerPreview {
+    static let end = PortfolioLedger.calendar.startOfDay(for: .now)
+    static func day(_ offset: Int) -> Date { PortfolioLedger.calendar.date(byAdding: .day, value: offset, to: end)! }
+    static var snapshot: PortfolioSnapshot {
+        let date = day(-2).formatted(Date.ISO8601FormatStyle().year().month().day())
+        let history = InvestmentHistory(itemID: "test", start: day(-730), end: end,
+            transactions: [.init(accountId: "account", securityId: "sold", type: "sell", quantity: -10, amount: -1200, date: date, subtype: "sell")],
+            cashSecurityIDs: [], securities: [.init(securityId: "sold", name: "Example", tickerSymbol: "TEST", type: "equity", optionContract: nil)], version: 1)
+        return PortfolioSnapshot(positions: [], cashByItem: ["test": 1200], updated: end,
+            accountBalances: [.init(accountID: "account", itemID: "test", institution: "Test brokerage", name: "Sold position example", value: 1200, cashValue: 1200, holdingsComplete: true)],
+            histories: CommandLine.arguments.contains("-portfolioMissingHistory") ? nil : [history])
+    }
+    static var prices: [String: [HistoryPoint]] {
+        ["TEST": (-4...0).map { offset in
+            let price = min(120, 100 + Double(offset + 4) * 10)
+            return HistoryPoint(date: day(offset), close: price, adjusted: price)
+        }]
     }
 }
 #endif

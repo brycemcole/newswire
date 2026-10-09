@@ -84,6 +84,7 @@ nonisolated struct Backtest: Sendable {
 struct SimulatorSection: View {
     let symbol: String
     let price: Double?
+    var currency = "USD"
     @State private var amountText = UserDefaults.standard.string(forKey: "simulatorAmount") ?? "1000"
     @State private var date = Calendar.current.date(byAdding: .year, value: -1, to: .now) ?? .now
     @State private var history: [HistoryPoint] = []
@@ -150,7 +151,7 @@ struct SimulatorSection: View {
             HStack(spacing: 8) {
                 Text("Invest").foregroundStyle(.secondary)
                 HStack(spacing: 2) {
-                    Text("$")
+                    Text(Money.symbol(currency))
                     TextField("1000", text: $amountText)
                         .keyboardType(.decimalPad)
                         .focused($editing)
@@ -190,15 +191,15 @@ struct SimulatorSection: View {
     @ViewBuilder
     private func result(_ test: Backtest) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("\(Money.whole(test.amount)) → \(Money.text(test.value))")
+            Text("\(Money.whole(test.amount, code: currency)) → \(Money.text(test.value, code: currency))")
                 .font(.title2.weight(.bold).monospacedDigit())
                 .contentTransition(.numericText())
-            Text("\(Money.signed(test.gain)) (\(Money.percent(test.change)))")
+            Text("\(Money.signed(test.gain, code: currency)) (\(Money.percent(test.change)))")
                 .font(.subheadline.weight(.semibold).monospacedDigit())
                 .foregroundStyle(Money.tint(test.gain))
         }
         .accessibilityElement(children: .combine)
-        BacktestChart(test: test).frame(height: 120)
+        BacktestChart(test: test, currency: currency).frame(height: 120)
         StatGrid(stats: [
             ("Bought at", QuoteFormat.price(test.start.close)),
             ("Buy date", test.start.date.formatted(date: .abbreviated, time: .omitted)),
@@ -286,6 +287,7 @@ struct PaperTradeRow: View {
 
 private struct BacktestChart: View {
     let test: Backtest
+    var currency = "USD"
 
     var body: some View {
         let shares = test.shares
@@ -310,10 +312,10 @@ private struct BacktestChart: View {
         .chartYAxis {
             AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { value in
                 AxisGridLine()
-                AxisValueLabel { if let amount = value.as(Double.self) { Text(Money.compact(amount)) } }
+                AxisValueLabel { if let amount = value.as(Double.self) { Text(Money.compact(amount, code: currency)) } }
             }
         }
-        .accessibilityLabel("Value of \(Money.whole(test.amount)) invested since \(test.start.date.formatted(date: .abbreviated, time: .omitted)), now \(Money.text(test.value))")
+        .accessibilityLabel("Value of \(Money.whole(test.amount, code: currency)) invested since \(test.start.date.formatted(date: .abbreviated, time: .omitted)), now \(Money.text(test.value, code: currency))")
     }
 }
 

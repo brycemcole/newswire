@@ -238,11 +238,11 @@ nonisolated struct NewswireAPI: Sendable {
         return try? Self.decoder().decode(StoryEnvelope.self, from: data).story
     }
 
-    func register(device: String, environment: String, symbols: [String] = []) async throws {
+    func register(device: String, environment: String, symbols: [String] = [], muted: [String] = []) async throws {
         var request = URLRequest(url: baseURL.appending(path: "v1/devices"), timeoutInterval: 20)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["token": device, "environment": environment, "stock_symbols": symbols])
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["token": device, "environment": environment, "stock_symbols": symbols, "muted_topics": muted])
         let (_, response) = try await send(request)
         guard (200..<300).contains(response.statusCode) else { throw WireError.status(response.statusCode) }
     }

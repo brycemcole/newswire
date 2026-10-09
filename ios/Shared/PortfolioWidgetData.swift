@@ -2,11 +2,18 @@ import Foundation
 import SwiftUI
 
 nonisolated enum Money {
-    static func text(_ value: Double) -> String { value.formatted(.currency(code: "USD")) }
-    static func whole(_ value: Double) -> String { value.formatted(.currency(code: "USD").precision(.fractionLength(0))) }
-    static func compact(_ value: Double) -> String { value.formatted(.currency(code: "USD").notation(.compactName).precision(.significantDigits(3))) }
+    static func text(_ value: Double) -> String { text(value, code: "USD") }
+    static func whole(_ value: Double) -> String { whole(value, code: "USD") }
+    static func compact(_ value: Double) -> String { compact(value, code: "USD") }
+    static func text(_ value: Double, code: String) -> String { value.formatted(.currency(code: code)) }
+    static func whole(_ value: Double, code: String) -> String { value.formatted(.currency(code: code).precision(.fractionLength(0))) }
+    static func compact(_ value: Double, code: String) -> String { value.formatted(.currency(code: code).notation(.compactName).precision(.significantDigits(3))) }
     static func signedCompact(_ value: Double) -> String { (value >= 0 ? "+" : "−") + compact(abs(value)) }
-    static func signed(_ value: Double) -> String { (value >= 0 ? "+" : "−") + abs(value).formatted(.currency(code: "USD")) }
+    static func signed(_ value: Double) -> String { signed(value, code: "USD") }
+    static func signed(_ value: Double, code: String) -> String { (value >= 0 ? "+" : "−") + abs(value).formatted(.currency(code: code)) }
+    static func symbol(_ code: String) -> String {
+        Locale(identifier: "en_US@currency=\(code)").currencySymbol ?? code
+    }
     static func percent(_ value: Double) -> String { (value >= 0 ? "+" : "−") + abs(value).formatted(.percent.precision(.fractionLength(1))) }
     static func percent2(_ value: Double) -> String { (value >= 0 ? "+" : "−") + abs(value).formatted(.percent.precision(.fractionLength(2))) }
     static func tint(_ value: Double) -> Color { value >= 0 ? .green : .red }
@@ -52,11 +59,14 @@ nonisolated struct WidgetPortfolio: Codable, Sendable {
     var updated: Date
     var fetched: Date?
     var monthFetched: Date?
+    var accountingVersion: Int?
+    var measuredDayChange: Double?
+    var measuredDayPercent: Double?
 
-    var dayChange: Double? { dayBaseline.map { value - $0 } }
-    var dayPercent: Double? { dayBaseline.flatMap { $0 == 0 ? nil : value / $0 - 1 } }
-    var monthChange: Double? { month.first.map { value - $0.value } }
-    var monthPercent: Double? { month.first.flatMap { $0.value == 0 ? nil : value / $0.value - 1 } }
+    var dayChange: Double? { accountingVersion == 1 ? measuredDayChange : nil }
+    var dayPercent: Double? { accountingVersion == 1 ? measuredDayPercent : nil }
+    var monthChange: Double? { nil }
+    var monthPercent: Double? { nil }
     var dayHigh: Double? { day.map(\.value).max() }
     var dayLow: Double? { day.map(\.value).min() }
     var byValue: [WidgetHolding] { holdings.sorted { $0.value > $1.value } }
@@ -104,37 +114,20 @@ nonisolated struct WidgetPortfolio: Codable, Sendable {
             next.holdings[index].previousClose = chart.previousClose ?? chart.points.first?.value
             next.holdings[index].spark = Self.thin(chart.points, to: 40).map(\.value)
         }
-        if let day = Self.series(next.holdings, charts: charts, fixed: cash + other) {
-            next.day = Self.thin(day.points, to: 120)
-            next.dayBaseline = day.fixed + next.holdings.reduce(0) { sum, holding in
-                guard let chart = charts[holding.symbol] else { return sum }
-                return sum + holding.quantity * (chart.previousClose ?? chart.points.first?.value ?? 0)
-            }
-            next.value = day.points.last?.value ?? next.value
-            next.fetched = now
+        if accountingVersion != 1 {
+            next.day = []
+            next.dayBaseline = nil
         }
-        if let series = Self.series(next.holdings, charts: monthly, fixed: cash + other) {
-            next.month = Self.thin(series.points, to: 60)
-            next.monthFetched = now
+        if !Calendar.current.isDate(updated, inSameDayAs: now) {
+            next.measuredDayChange = nil
+            next.measuredDayPercent = nil
+            next.day = []
+            next.dayBaseline = nil
         }
+        next.month = []
+        next.monthFetched = nil
+        next.fetched = now
         return next
-    }
-
-    static func series(_ holdings: [WidgetHolding], charts: [String: WidgetChart], fixed: Double) -> (points: [WidgetPoint], fixed: Double)? {
-        let tracked = holdings.filter { charts[$0.symbol]?.points.isEmpty == false }
-        guard let axis = tracked.compactMap({ charts[$0.symbol]?.points }).max(by: { $0.count < $1.count }) else { return nil }
-        let constant = holdings.filter { charts[$0.symbol]?.points.isEmpty != false }.reduce(fixed) { $0 + $1.value }
-        let tracks = tracked.map { (quantity: $0.quantity, points: charts[$0.symbol]!.points) }
-        var cursors = Array(repeating: 0, count: tracks.count)
-        let points = axis.map { tick in
-            var total = constant
-            for (slot, track) in tracks.enumerated() {
-                while cursors[slot] + 1 < track.points.count && track.points[cursors[slot] + 1].date <= tick.date { cursors[slot] += 1 }
-                total += track.quantity * track.points[cursors[slot]].value
-            }
-            return WidgetPoint(date: tick.date, value: total)
-        }
-        return (points, constant)
     }
 
     static func thin(_ points: [WidgetPoint], to limit: Int) -> [WidgetPoint] {

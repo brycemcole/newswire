@@ -47,6 +47,29 @@ export function send(client, jwt, device, payload, type = 'alert') {
   });
 }
 
+// Notification topics the app can mute, matched against story tags in order (global equities before US equities).
+export const topics = [
+  ['jobs', ['employment', 'jobs-report', 'jolts']],
+  ['inflation', ['inflation', 'cpi', 'pce', 'ppi']],
+  ['growth', ['gdp', 'growth', 'retail-sales']],
+  ['fed', ['fed', 'monetary-policy', 'rates', 'yield-curve', 'credit', 'treasury', 'auction', 'housing']],
+  ['global-markets', ['global', 'currencies']],
+  ['us-markets', ['equities', 'volatility', 'commodities', 'energy']],
+  ['crypto', ['crypto']],
+  ['companies', ['earnings', 'insider', 'sec-filing', 'congress', 'stock-trades']],
+  ['government', ['fiscal', 'debt', 'executive-order', 'regulation', 'defense', 'contracts']],
+  ['world', ['shipping', 'chokepoints', 'earthquake', 'outage', 'cyber', 'aviation', 'trending']],
+  ['headlines', ['headlines', 'x']],
+];
+
+export function topicFor(tags = []) {
+  return topics.find(([, match]) => match.some(tag => tags.includes(tag)))?.[0] ?? 'headlines';
+}
+
+function muted(device, story) {
+  try { return JSON.parse(device.muted_topics ?? '[]').includes(topicFor(story.tags)); } catch { return false; }
+}
+
 export async function notify(stories) {
   if (!stories.length) return [];
   const bearer = await token();
@@ -62,6 +85,7 @@ export async function notify(stories) {
       if (unusable) break;
       const payload = { aps: { alert: { body: story.title }, sound: 'default', 'interruption-level': 'time-sensitive', 'content-available': 1, 'thread-id': story.feed ?? 'wire' }, id: story.id, url: story.url, feed: story.feed ?? 'wire' };
       for (const device of group) {
+        if (muted(device, story)) continue;
         const result = await send(client, jwt, device, payload);
         if (result.status === 200) continue;
         if (result.reason === 'BadEnvironmentKeyInToken') { unusable = true; break; }
