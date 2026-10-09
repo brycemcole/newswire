@@ -111,6 +111,7 @@ nonisolated enum MacroText {
     static func meetingDate(_ label: String) -> Date? {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "America/New_York")
         formatter.dateFormat = "MMM d, yyyy"
         return formatter.date(from: label)
     }
