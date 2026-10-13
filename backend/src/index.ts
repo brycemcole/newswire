@@ -1,6 +1,13 @@
 import { AttestError, checkChallenge, fromBase64, makeChallenge, sha256, toBase64, verifyAssertion, verifyAttestation } from './attest';
-import { DataError, dataRoute, mcpRoute, shipAreas, storeEconEvents, storeEconHistory, storeEconSeries, storePublicSources } from './data';
+import { DataError, dataRoute, mcpRoute, shipAreas, pulseCalendar, storeEconEvents, storeEconHistory, storeEconSeries, storePublicSources } from './data';
 import { quotes, resolve, type Mention } from './quotes';
+import { impactChannels, loadPulse, loadPulseSnapshot, pulseModel, pulseTime } from './market-pulse';
+import { captureForecast, captureWindow, evaluateForecastCandidate, ForecastError, getResearch, listForecastTrainingRows, registerForecastCandidate, settleForecast } from './forecast';
+import type { Horizon } from './forecast-model';
+import { researchPrices, targetPrices } from './research-prices';
+import { discoverQuestions, getDiscovery, recordDiscovery } from './research-discovery';
+import { inputsAt, loadBars } from './market-inputs';
+import { extract, ExtractError } from './extract';
 
 interface Env {
   DB: D1Database;
@@ -20,6 +27,20 @@ const fields = ['external_id', 'title', 'summary', 'body', 'source', 'url', 'pub
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const encoder = new TextEncoder();
 const bodyLimit = 131072;
+
+async function livePulseSnapshot(env: Env, symbol: string) {
+  const started = Date.now();
+  const [bars, calendar] = await Promise.all([loadBars(started, 0), pulseCalendar(env, started, 0).catch(() => undefined)]);
+  const now = Date.now();
+  const observedCalendar = calendar?.map(event => ({ ...event, actual_available_at: new Date(now).toISOString() }));
+  return loadPulseSnapshot(env.DB, new Date(now).toISOString(), symbol, inputsAt(bars, now, true), observedCalendar);
+}
+
+async function liveResearchPulse(env: Env, symbol: string) {
+  const now = Date.now();
+  const [bars, calendar] = await Promise.all([loadBars(now, 0), pulseCalendar(env, now, 0).catch(() => undefined)]);
+  return loadPulse(env.DB, new Date(now).toISOString(), symbol, time => inputsAt(bars, time, true), 0, calendar);
+}
 
 class ApiError extends Error {
   constructor(public status: number, public code: string, message: string) { super(message); }
@@ -438,7 +459,7 @@ async function route(request: Request, env: Env, ctx?: ExecutionContext): Promis
   }
   const write = path === '/v1/ingest' || (path === '/v1/stories' && request.method === 'POST') || (/^\/v1\/stories\/([^/]+)$/.test(path) && request.method === 'DELETE')
     || (path === '/v1/devices' && request.method === 'GET') || (/^\/v1\/devices\/([^/]+)$/.test(path) && request.method === 'DELETE')
-    || path === '/v1/ships' || path === '/v1/econ/events' || path === '/v1/econ/history' || path === '/v1/econ/series' || path === '/v1/econ/sources' || ['/v1/brain/posts', '/v1/brain/known', '/v1/brain/ai', '/v1/brain/taste'].includes(path);
+    || (path.startsWith('/v1/research/') && !(path === '/v1/research/discovery' && request.method === 'GET')) || path === '/v1/ships' || path === '/v1/econ/events' || path === '/v1/econ/history' || path === '/v1/econ/series' || path === '/v1/econ/sources' || path === '/v1/market-pulse/impacts' || ['/v1/brain/posts', '/v1/brain/known', '/v1/brain/ai', '/v1/brain/taste'].includes(path);
   await authenticate(request, env, write);
   if (path.startsWith('/v1/brain/')) return brainRoute(request, url, path, env);
   if (path === '/v1/devices') {
@@ -501,6 +522,137 @@ async function route(request: Request, env: Env, ctx?: ExecutionContext): Promis
     query(url.searchParams, []);
     return mcpRoute(await readBody(request), env, url.origin);
   }
+  if (path === '/v1/extract') {
+    if (request.method !== 'GET') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
+    query(url.searchParams, ['url']);
+    return json(await extract(url.searchParams.get('url')));
+  }
+  if (path === '/v1/market-pulse/impacts') {
+    if (request.method !== 'POST') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
+    query(url.searchParams, []);
+    const list = (await readBody(request) as { impacts?: unknown } | null)?.impacts;
+    if (!Array.isArray(list) || !list.length || list.length > 200) invalid('Expected 1-200 impacts');
+    const now = new Date().toISOString();
+    const rows = list.map(item => {
+      const i = item as Record<string, unknown>;
+      if (typeof i.id !== 'string' || !/^[a-f0-9]{16,64}$/.test(i.id)) invalid('Invalid impact id');
+      const link = new URL(text(i.url, 'url', 2000));
+      if (!['http:', 'https:'].includes(link.protocol)) invalid('Invalid url');
+      if (![-1, 0, 1].includes(i.direction as number)) invalid('Invalid direction');
+      if (!(impactChannels as readonly string[]).includes(i.channel as string)) invalid('Invalid channel');
+      if (!['major', 'moderate', 'minor'].includes(i.size as string)) invalid('Invalid size');
+      if (typeof i.confidence !== 'number' || !(i.confidence >= 0 && i.confidence <= 1)) invalid('Invalid confidence');
+      if (link.username || link.password) invalid('Invalid url');
+      const publishedAt = timestamp(i.published_at), receivedAt = timestamp(i.received_at);
+      const sourceClassifiedAt = i.classified_at === undefined ? null : timestamp(i.classified_at);
+      if (Date.parse(receivedAt) > Date.now() || (sourceClassifiedAt && (Date.parse(sourceClassifiedAt) > Date.now() || Date.parse(sourceClassifiedAt) < Date.parse(receivedAt)))) invalid('Invalid classification availability');
+      const classifierVersion = i.classifier_version === undefined ? null : text(i.classifier_version, 'classifier_version', 160);
+      return [i.id, text(i.title, 'title', 300), text(i.source, 'source', 100), link.href, publishedAt, receivedAt, i.direction, i.channel, i.size, i.confidence, now, sourceClassifiedAt, classifierVersion];
+    });
+    await env.DB.batch([
+      ...rows.map(r => env.DB.prepare('INSERT INTO pulse_impacts (id, title, source, url, published_at, received_at, direction, channel, size, confidence, classified_at, source_classified_at, classifier_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING').bind(...r)),
+    ]);
+    return json({ stored: rows.length }, 201);
+  }
+  if (path === '/v1/research') {
+    if (request.method !== 'GET') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
+    const q = query(url.searchParams, ['symbol']);
+    const symbol = choice((q.symbol ?? 'SPY').toUpperCase(), 'symbol', ['SPY', 'QQQ']);
+    const [research, discovery, current] = await Promise.all([getResearch(env.DB, symbol), getDiscovery(env.DB), liveResearchPulse(env, symbol).catch(() => null)]);
+    return json({ ...research, discovery, current });
+  }
+  if (path === '/v1/research/discovery') {
+    query(url.searchParams, []);
+    if (request.method === 'GET') return json(await getDiscovery(env.DB));
+    if (request.method !== 'POST') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
+    const report = await readBody(request);
+    if (!report || typeof report !== 'object' || Array.isArray(report)) invalid('Expected crawler report');
+    return json(await recordDiscovery(env.DB, report));
+  }
+  if (path === '/v1/research/questions') {
+    query(url.searchParams, []);
+    if (request.method !== 'POST') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
+    const input = await readBody(request) as Record<string, unknown>;
+    const symbol = choice(input?.symbol ?? 'SPY', 'symbol', ['SPY', 'QQQ']);
+    const snapshot = await loadPulseSnapshot(env.DB, new Date().toISOString(), symbol);
+    return json(await discoverQuestions(env.DB, snapshot));
+  }
+  if (path === '/v1/market-pulse/snapshot') {
+    if (request.method !== 'GET') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
+    const q = query(url.searchParams, ['symbol']);
+    const symbol = choice((q.symbol ?? 'SPY').toUpperCase(), 'symbol', [...pulseModel.symbols]);
+    return json(await livePulseSnapshot(env, symbol));
+  }
+  if (path === '/v1/research/capture') {
+    if (request.method !== 'POST') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
+    query(url.searchParams, []);
+    const input = await readBody(request) as Record<string, unknown>;
+    if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(k => !['symbol', 'target_session'].includes(k))) invalid('Expected symbol and optional target_session');
+    const symbol = choice(input.symbol, 'symbol', ['SPY', 'QQQ']);
+    const targetSession = input.target_session === undefined ? undefined : text(input.target_session, 'target_session', 10);
+    if (targetSession && !/^\d{4}-\d{2}-\d{2}$/.test(targetSession)) invalid('Invalid target_session');
+    if (!captureWindow().some(window => window.symbol === symbol)) return json({ inserted: 0, forecasts: [], reason: 'Outside scheduled capture window' });
+    const [snapshot, prices] = await Promise.all([livePulseSnapshot(env, symbol), researchPrices(symbol).catch(() => null)]);
+    const completed = new Date().toISOString();
+    const captureSnapshot = { ...snapshot, created_at: completed, as_of: completed,
+      inputs: { ...snapshot.inputs, targets: prices ? { [symbol]: targetPrices(prices, Date.parse(completed)) } : {}, target_price_archive: prices } };
+    if (encoder.encode(JSON.stringify(snapshot)).length > 1500000) throw new ApiError(503, 'unavailable', 'Evidence snapshot exceeds the capture budget');
+    return json(await captureForecast(env.DB, { symbol, snapshot: captureSnapshot, targetSession }));
+  }
+  if (path === '/v1/research/settle') {
+    if (request.method !== 'POST') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
+    query(url.searchParams, []);
+    const input = await readBody(request) as Record<string, unknown>;
+    if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(k => k !== 'symbol')) invalid('Expected optional symbol');
+    const symbol = input.symbol === undefined ? undefined : choice(input.symbol, 'symbol', ['SPY', 'QQQ']);
+    const due = await env.DB.prepare('SELECT count(*) AS n FROM forecasts f LEFT JOIN forecast_outcomes o ON o.forecast_id=f.id WHERE o.forecast_id IS NULL AND f.target_end_at<=? AND (? IS NULL OR f.symbol=?)').bind(new Date().toISOString(), symbol ?? null, symbol ?? null).first<{ n: number }>();
+    if (!due?.n) return json({ settled: 0, outcomes: [], failures: [] });
+    const targets = symbol ? [symbol] : ['SPY', 'QQQ'];
+    const archives = await Promise.allSettled(targets.map(async s => [s, await researchPrices(s)] as const));
+    const prices = Object.fromEntries(archives.flatMap(result => result.status === 'fulfilled' ? [result.value] : []));
+    const failures = archives.flatMap((result, i) => result.status === 'rejected' ? [`${targets[i]} price data unavailable`] : []);
+    return json({ ...await settleForecast(env.DB, { symbol, prices }), failures });
+  }
+  if (path === '/v1/research/training') {
+    if (request.method !== 'GET') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
+    const q = query(url.searchParams, ['symbol', 'horizon']);
+    const symbol = choice(q.symbol, 'symbol', ['SPY', 'QQQ']);
+    const horizon = choice(q.horizon, 'horizon', ['opening_gap', 'cutoff_to_open', 'open_to_close']) as Horizon;
+    return json(await listForecastTrainingRows(env.DB, symbol, horizon));
+  }
+  if (path === '/v1/research/candidates') {
+    const q = query(url.searchParams, request.method === 'GET' ? ['symbol', 'horizon'] : []);
+    if (request.method === 'GET') {
+      const symbol = choice(q.symbol, 'symbol', ['SPY', 'QQQ']);
+      const horizon = choice(q.horizon, 'horizon', ['opening_gap', 'cutoff_to_open', 'open_to_close']);
+      return json({ candidates: (await env.DB.prepare("SELECT id,symbol,horizon,status,created_at FROM forecast_models WHERE symbol=? AND horizon=? AND status IN ('shadow','promoted') ORDER BY created_at DESC LIMIT 100").bind(symbol, horizon).all()).results });
+    }
+    if (request.method !== 'POST') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
+    const input = await readBody(request) as Parameters<typeof registerForecastCandidate>[1];
+    if (!input || typeof input !== 'object' || Array.isArray(input)) invalid('Expected candidate');
+    return json(await registerForecastCandidate(env.DB, input));
+  }
+  if (path === '/v1/research/candidates/evaluate') {
+    query(url.searchParams, []);
+    if (request.method !== 'POST') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
+    const input = await readBody(request) as Record<string, unknown>;
+    const id = text(input?.candidate_id, 'candidate_id', 64);
+    if (!/^[a-f0-9]{64}$/.test(id)) invalid('Invalid candidate_id');
+    return json(await evaluateForecastCandidate(env.DB, id));
+  }
+  if (path === '/v1/market-pulse') {
+    if (request.method !== 'GET') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
+    const q = query(url.searchParams, ['as_of', 'symbol', 'history', 'market']);
+    const asOf = q.as_of ?? new Date().toISOString(), symbol = (q.symbol ?? 'SPY').toUpperCase();
+    try { if (pulseTime(asOf) > Date.now()) invalid('as_of cannot be in the future'); } catch { invalid('Invalid as_of; use a past ISO timestamp with timezone'); }
+    if (!(pulseModel.symbols as readonly string[]).includes(symbol)) invalid(`Supported symbols: ${pulseModel.symbols.join(', ')}`);
+    const history = q.history === undefined ? 0 : Number(q.history);
+    if (!Number.isInteger(history) || history < 0 || history > 48) invalid('history must be 0–48 hours');
+    if (q.market !== undefined && !['on', 'off'].includes(q.market)) invalid('market must be on or off');
+    const cutoff = pulseTime(asOf), live = Date.now() - cutoff < 3 * 60000;
+    const [bars, calendar] = q.market === 'off' ? [null, undefined] : await Promise.all([loadBars(cutoff, history), live ? pulseCalendar(env, cutoff, history).catch(() => undefined) : undefined]);
+    return json(await loadPulse(env.DB, asOf, symbol, bars ? t => inputsAt(bars, t, live && t === cutoff) : undefined, history, calendar));
+  }
   if (path === '/v1/quotes') {
     if (request.method !== 'GET') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
     return quoteRoute(url);
@@ -538,6 +690,8 @@ export default {
     let response: Response;
     try { response = await route(request, env, ctx); } catch (error) {
       response = error instanceof ApiError ? json({ error: { code: error.code, message: error.message } }, error.status)
+        : error instanceof ForecastError ? json({ error: { code: 'invalid_forecast', message: error.message } }, error.status)
+        : error instanceof ExtractError ? json({ error: { code: error.status === 400 ? 'invalid_request' : error.status === 415 ? 'unsupported_media_type' : 'upstream_unavailable', message: error.message } }, error.status)
         : error instanceof DataError ? json({ error: { code: error.status === 400 ? 'invalid_request' : error.status === 404 ? 'not_found' : 'upstream_unavailable', message: error.message } }, error.status) : json({ error: { code: 'internal_error', message: 'Internal server error' } }, 500);
     }
     const secured = new Response(response.body, response);

@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import { notify, wake } from './apns.mjs';
 import { syncCalendar } from './calendar.mjs';
 import { publish } from './publish.mjs';
+import { classifierUsage } from './jev.mjs';
+import { classifyImpacts } from './impacts.mjs';
 import { load, save, statePath } from './state.mjs';
 import * as crypto from './rules/crypto.mjs';
 import * as congress from './rules/congress.mjs';
@@ -32,6 +34,10 @@ const dryRun = process.argv.includes('--dry-run');
 const seed = process.argv.includes('--seed');
 const only = process.argv.find(argument => argument.startsWith('--only='))?.slice(7).split(',');
 const limit = Number(process.argv.find(argument => argument.startsWith('--limit='))?.slice(8) ?? 8);
+const lookbackArg = process.argv.find(argument => argument.startsWith('--backfill-hours='));
+const lookbackHours = lookbackArg === undefined ? undefined : Number(lookbackArg.slice(17));
+const noNotify = process.argv.includes('--no-notify') || lookbackArg !== undefined;
+if (lookbackArg !== undefined && (!Number.isFinite(lookbackHours) || lookbackHours < 1 || lookbackHours > 168 || only?.length !== 1 || only[0] !== 'headlines')) throw new Error('--backfill-hours=1..168 requires --only=headlines');
 
 function externalId(key) {
   return `monitor:${createHash('sha256').update(key).digest('hex').slice(0, 32)}`;
@@ -39,7 +45,7 @@ function externalId(key) {
 
 const calendarSync = dryRun || seed || only ? Promise.resolve([]) : syncCalendar().catch(error => ["calendar: " + error.message]);
 const selected = only ? rules.filter(rule => only.includes(rule.id)) : rules;
-const settled = await Promise.allSettled(selected.map(rule => rule.run()));
+const settled = await Promise.allSettled(selected.map(rule => rule.id === 'headlines' ? rule.run({ lookbackHours }) : rule.run()));
 const state = await load();
 const failures = [];
 const candidates = [];
@@ -96,18 +102,28 @@ for (const event of seed ? [] : batch) {
   }
 }
 
-const alerts = published.filter(entry => entry.result === 'new' && ['breaking', 'urgent'].includes(entry.story.priority)).map(entry => entry.story);
+const alerts = noNotify ? [] : published.filter(entry => entry.result === 'new' && ['breaking', 'urgent'].includes(entry.story.priority)).map(entry => entry.story);
 failures.push(...await notify(alerts).catch(error => [`notify: ${error.message}`]));
-if (!alerts.length && published.some(entry => entry.result === 'new')) failures.push(...await wake().catch(error => [`wake: ${error.message}`]));
+if (!noNotify && !alerts.length && published.some(entry => entry.result === 'new')) failures.push(...await wake().catch(error => [`wake: ${error.message}`]));
 
 if (seed) for (const event of candidates) state[event.key] ??= { at: new Date().toISOString(), rule: event.rule };
 if (!dryRun) await save(state);
 
 failures.push(...await calendarSync);
 
+// Market-impact reads run after publishing so they never delay a story.
+const impacts = dryRun || seed || lookbackArg !== undefined || (only && !only.includes('headlines')) ? null
+  : await classifyImpacts().catch(error => ({ failures: [`impacts: ${error.message}`] }));
+failures.push(...(impacts?.failures ?? []));
+
 const report = {
   checked: selected.map(rule => rule.id),
   mode: seed ? 'seed' : dryRun ? 'dry-run' : 'publish',
+  classifier: 'zen:jev-1.13 (free first, paid fallback)',
+  classifier_calls: classifierUsage(),
+  impacts: impacts && { calls: impacts.calls, moving: impacts.moving, backlog: impacts.backlog },
+  backfill_hours: lookbackHours ?? null,
+  notifications: noNotify ? 'suppressed' : 'normal',
   candidates: candidates.length,
   fresh: fresh.length,
   published: published.filter(entry => entry.result === 'new').length,

@@ -52,19 +52,23 @@ struct ChatThread: Identifiable, Codable, Hashable {
 
 struct AskSheet: View {
     let context: AskContext
+    let initialQuestion: String?
     @State private var thread: ChatThread
     @State private var chat = StockChat()
     @State private var history = ChatHistory.shared
     @State private var question = ""
     @State private var showingSettings = false
     @State private var showingHistory = false
+    @State private var filing: StockSource?
     @State private var isAtLatest = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var focused: Bool
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
 
-    init(context: AskContext = .markets) {
+    init(context: AskContext = .markets, initialQuestion: String? = nil) {
         self.context = context
+        self.initialQuestion = initialQuestion
         _thread = State(initialValue: ChatThread(symbol: context.symbol, name: context.name))
     }
 
@@ -138,6 +142,7 @@ struct AskSheet: View {
                 .safeAreaInset(edge: .bottom, spacing: 0) { composer }
             }
             .navigationTitle(market ? "Ask" : "Ask about \(thread.symbol)")
+            .navigationDestination(item: $filing) { FilingReaderView(url: $0.url, title: $0.title) }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -159,6 +164,12 @@ struct AskSheet: View {
                 ChatHistoryList(current: thread.id) { open($0) }
             }
             .scrollEdgeEffectStyle(.soft, for: .all)
+            .task {
+                guard let initialQuestion, !initialQuestion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+                question = initialQuestion
+                await Task.yield()
+                send()
+            }
         }
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
@@ -245,15 +256,19 @@ struct AskSheet: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(message.sources) { source in
-                            Link(destination: source.url) {
+                            let reads = FilingLink.isFiling(source.url)
+                            Button {
+                                if reads { filing = source } else { openURL(source.url) }
+                            } label: {
                                 HStack(spacing: 6) {
-                                    Image(systemName: "arrow.up.right").font(.caption2.weight(.bold))
+                                    Image(systemName: reads ? "doc.text" : "arrow.up.right").font(.caption2.weight(.bold))
                                     Text(source.title).lineLimit(1)
                                 }
                                 .font(.caption.weight(.medium))
                                 .padding(.horizontal, 12).frame(minHeight: 32).frame(maxWidth: 240)
                                 .background(.fill.quaternary, in: .capsule)
                             }
+                            .buttonStyle(.plain)
                             .foregroundStyle(.primary)
                         }
                     }

@@ -1,0 +1,12 @@
+[Unit]
+Description=Newswire shadow model training and forward evaluation
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/newswire
+ExecStart=/usr/bin/node --experimental-strip-types %h/newswire/scripts/market-pulse/learning.mjs --sync
+TimeoutStartSec=240
+UMask=0077
+Nice=15
+

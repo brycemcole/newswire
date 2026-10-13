@@ -23,7 +23,8 @@ nonisolated enum ArticleLoader {
         render: Bool,
         rendersFirst: Bool,
         fetch: @Sendable (Bool) async -> ArticleExtractor.Result?,
-        rendered: @Sendable () async -> ArticlePage?
+        rendered: @Sendable () async -> ArticlePage?,
+        extracted: @Sendable () async -> ArticlePage? = { nil }
     ) async -> ArticlePage? {
         var best: ArticlePage?
         func consider(_ candidate: ArticlePage?) {
@@ -51,6 +52,19 @@ nonisolated enum ArticleLoader {
             best?.validated = true
             return best
         }
+        // The server's extractor is cheaper than a hidden web view, so it goes first except on sites
+        // whose article only exists after rendering; those get it as the last attempt.
+        if !rendersFirst {
+            let server = await extracted()
+            guard !Task.isCancelled else { return nil }
+            if var server, ArticleQuality.assess(server.text) == .usable {
+                server.image = server.image ?? best?.image
+                server.video = best?.video
+                server.validated = true
+                return server
+            }
+            consider(server)
+        }
         guard render else { return best }
         let browserPage = await rendered()
         if let browserPage, ArticleQuality.assess(browserPage.text) != .invalid,
@@ -66,6 +80,10 @@ nonisolated enum ArticleLoader {
                ArticleQuality.assess(browserPage?.text ?? "") == .invalid || retry.complete || retry.targeted {
                 consider(ArticlePage(retry))
             }
+        }
+        if rendersFirst, ArticleQuality.assess(best?.text ?? "") != .usable {
+            consider(await extracted())
+            guard !Task.isCancelled else { return nil }
         }
         // Short news briefs remain readable after the bounded recovery attempts.
         if !(best?.text.isEmpty ?? true) { best?.validated = true }

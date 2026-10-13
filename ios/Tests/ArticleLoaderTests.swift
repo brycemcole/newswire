@@ -37,6 +37,39 @@ struct ArticleLoaderTests {
         #expect(page?.text == full)
     }
 
+    @Test func serverExtractionRecoversBeforeRenderingAWebView() async {
+        let short = result(opening)
+        let full = full
+        let page = await ArticleLoader.load(render: true, rendersFirst: false, fetch: { _ in short }, rendered: {
+            Issue.record("Server text was usable, so no web view should render")
+            return nil
+        }, extracted: {
+            ArticlePage(text: full, image: URL(string: "https://example.com/lead.jpg"), video: nil)
+        })
+        #expect(page?.text == full)
+        #expect(page?.image?.absoluteString == "https://example.com/lead.jpg")
+        #expect(page?.validated == true)
+    }
+
+    @Test func serverExtractionIsSkippedWhenTheDirectFetchIsComplete() async {
+        let complete = result(full)
+        let page = await ArticleLoader.load(render: true, rendersFirst: false, fetch: { _ in complete }, rendered: { nil }, extracted: {
+            Issue.record("Usable direct fetch should not call the server")
+            return nil
+        })
+        #expect(page?.validated == true)
+    }
+
+    @Test func renderFirstSitesUseServerExtractionLast() async {
+        let full = full
+        let page = await ArticleLoader.load(render: true, rendersFirst: true, fetch: { _ in nil }, rendered: {
+            ArticlePage(text: "Please enable JavaScript to continue", image: nil, video: nil)
+        }, extracted: {
+            ArticlePage(text: full, image: nil, video: nil)
+        })
+        #expect(page?.text == full)
+    }
+
     @Test func prefetchDoesNotValidateShortContentOrCreateWebViews() async {
         let short = result(opening)
         let page = await ArticleLoader.load(render: false, rendersFirst: false, fetch: { _ in short }, rendered: {

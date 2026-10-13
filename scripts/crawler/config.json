@@ -1,0 +1,31 @@
+{
+  "userAgent": "NewswireResearchCrawler/1.0 (public-interest research; contact via repository owner)",
+  "feeds": [
+    { "name": "Federal Reserve", "url": "https://www.federalreserve.gov/feeds/press_all.xml", "kind": "rss", "topics": ["rates", "monetary policy"] },
+    { "name": "European Central Bank", "url": "https://www.ecb.europa.eu/rss/press.html", "kind": "rss", "topics": ["rates", "monetary policy", "Europe"] },
+    { "name": "gCaptain", "url": "https://gcaptain.com/feed/", "kind": "rss", "topics": ["shipping", "energy", "trade"] },
+    { "name": "FreightWaves", "url": "https://www.freightwaves.com/feed", "kind": "rss", "topics": ["freight", "supply chain", "trade"] }
+  ],
+  "discovery": { "googleNews": false, "gdelt": true },
+  "browserDomains": ["federalreserve.gov", "ecb.europa.eu", "gcaptain.com", "freightwaves.com"],
+  "limits": {
+    "maxPages": 10,
+    "maxDepth": 2,
+    "maxBytes": 1500000,
+    "timeoutMs": 12000,
+    "maxRedirects": 4,
+    "maxRetries": 2,
+    "maxLinksPerPage": 12,
+    "maxScrolls": 3,
+    "scrollIdleMs": 500,
+    "concurrencyPerDomain": 1,
+    "maxConcurrency": 3,
+    "delayMsPerDomain": 800,
+    "maxExploreFraction": 0.3
+  },
+  "topics": ["markets", "economy", "energy", "rates"],
+  "seeds": [
+    { "name": "Federal Reserve press index", "kind": "page", "url": "https://www.federalreserve.gov/newsevents/pressreleases.htm", "topics": ["rates", "monetary policy"] },
+    { "name": "ECB press index", "kind": "page", "url": "https://www.ecb.europa.eu/press/html/index.en.html", "topics": ["rates", "monetary policy", "Europe"] }
+  ]
+}

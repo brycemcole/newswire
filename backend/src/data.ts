@@ -1,9 +1,10 @@
 import { cached, quote, type Quote } from './quotes';
+import { loadPulse, pulseModel, pulseTime } from './market-pulse';
+import { filingTools, readerRoute } from './filings';
 
 export interface DataEnv { DB: D1Database; FRED_API_KEY?: string }
-export class DataError extends Error {
-  constructor(public status: number, message: string) { super(message); }
-}
+export { DataError } from './errors';
+import { DataError } from './errors';
 
 export interface Row {
   label: string; value: string; detail?: string; change?: number; change_label?: string; date?: string;
@@ -19,8 +20,8 @@ export interface Payload {
 }
 type Draft = Omit<Payload, 'text' | 'as_of'> & { as_of?: string };
 type Args = Record<string, string>;
-interface Param { type: 'string' | 'number'; description: string; enum?: string[]; required?: boolean }
-interface Tool { name: string; path: string; description: string; params: Record<string, Param>; run(args: Args, env: DataEnv): Promise<Draft> }
+export interface Param { type: 'string' | 'number'; description: string; enum?: string[]; required?: boolean }
+export interface Tool { name: string; path: string; description: string; params: Record<string, Param>; run(args: Args, env: DataEnv): Promise<Draft> }
 
 const agent = 'Mozilla/5.0 (compatible; Newswire/1.0)';
 const sec = 'bryce-newswire admin@bryce-newswire.workers.dev';
@@ -79,7 +80,7 @@ export function render(payload: Omit<Payload, 'text'>): string {
     const rows = section.title === 'All reported positions' ? section.rows.slice(0, 25) : section.rows;
     for (const row of rows) {
       const change = row.change_label ?? (row.change !== undefined ? signed(row.change, 2, '%') : '');
-      lines.push(`- ${row.label}${row.symbol && row.symbol !== row.label ? ` (${row.symbol})` : ''}: ${row.value}${change ? ` (${change})` : ''}${row.detail ? ` · ${row.detail}` : ''}${row.date ? ` · ${row.date}` : ''}${row.url ? ` ${row.url}` : ''}`);
+      lines.push(row.label ? `- ${row.label}${row.symbol && row.symbol !== row.label ? ` (${row.symbol})` : ''}: ${row.value}${change ? ` (${change})` : ''}${row.detail ? ` · ${row.detail}` : ''}${row.date ? ` · ${row.date}` : ''}${row.url ? ` ${row.url}` : ''}` : row.value);
     }
     if (rows.length < section.rows.length) lines.push(`… ${payload.page?.total ?? section.rows.length} reported positions available in pages.`);
   }
@@ -380,6 +381,17 @@ export function actualFrom(event: { at: string; forecast: string }, measure: Mea
   const surprise = forecast === undefined ? undefined : round(value - forecast, Math.max(measure.places, 1));
   return { value, text: `${fmt(value, measure.places)}${measure.unit}`, surprise, big: surprise !== undefined && Math.abs(surprise) >= measure.surprise, period: point.date };
 }
+/** US high-impact events around a cutoff: releases already out (with their surprise) and scheduled ones still ahead. */
+export async function pulseCalendar(env: DataEnv, asOf: number, historyHours: number) {
+  const { results } = await env.DB.prepare("SELECT * FROM econ_events WHERE country = 'USD' AND impact = 'High' AND at >= ? AND at <= ? ORDER BY at")
+    .bind(iso(asOf - (historyHours + 24) * 3600000), iso(asOf + 24 * 3600000)).all<EconEvent>();
+  return Promise.all(results.map(async e => {
+    const measure = measureFor(e.country, e.title);
+    const a = Date.parse(e.at) <= Math.min(asOf, Date.now()) ? await actual(e, env).catch(() => undefined) : undefined;
+    return { title: e.title, at: e.at, forecast: e.forecast || null, actual: a?.text ?? null, surprise: a?.surprise ?? null, threshold: measure?.surprise ?? null };
+  }));
+}
+
 function eventRow(e: EconEvent, a?: Actual): Row {
   const time = new Date(e.at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/New_York' });
   const parts = [e.impact === 'High' ? 'High impact' : e.impact === 'Medium' ? 'Medium impact' : e.impact, e.forecast && `Forecast ${e.forecast}`, e.previous && `Previous ${e.previous}`].filter(Boolean);
@@ -497,6 +509,23 @@ const portWatch = async () => {
 export const economicSeriesIDs = [...new Set([...specs.keys(), ...measures.map(([, m]) => m.series)])];
 
 const tools: Tool[] = [
+  {
+    name: 'market_pulse', path: 'market/pulse', description: 'Experimental news-only macro outlook with linked evidence and point-in-time replay. Withholds scores for stale or insufficient coverage. Not a probability or forecast of returns.',
+    params: { symbol: { type: 'string', description: 'Exposure profile, default SPY', enum: [...pulseModel.symbols] }, as_of: { type: 'string', description: 'Optional past ISO timestamp with timezone; defaults to now' } },
+    async run(args, env) {
+      const symbol = (args.symbol ?? 'SPY').toUpperCase(), asOf = args.as_of ?? iso();
+      try { if (pulseTime(asOf) > Date.now()) throw new Error('future'); } catch { throw new DataError(400, 'as_of must be a past ISO timestamp with timezone'); }
+      if (!(pulseModel.symbols as readonly string[]).includes(symbol)) throw new DataError(400, `Supported symbols: ${pulseModel.symbols.join(', ')}`);
+      const pulse = await loadPulse(env.DB, asOf, symbol);
+      return { title: `${symbol} market pulse`, source: 'Newswire experimental macro rules', url: 'https://bryce-newswire.bryce-e19.workers.dev', as_of: pulse.as_of,
+        note: `${pulseModel.calibration} Status: ${pulse.status}. Last headline: ${pulse.coverage.latest_headline_at ?? 'none'}. Historical replay uses rules developed later.`,
+        sections: [{ title: 'Outlook', rows: [{ label: 'News outlook', value: pulse.score === null ? 'Unavailable' : `${pulse.score}/100`, detail: `${pulse.outlook} · ${pulse.confidence} confidence` },
+          { label: 'Coverage', value: `${pulse.coverage.headline_stories} headlines`, detail: `${pulse.coverage.matched_stories} recognized by conservative rules; others unclassified` }] },
+          { title: 'Factor contributions', rows: pulse.factors.map(f => ({ label: f.factor, value: `${signed(f.points)} points`, detail: f.conflicting ? 'Opposing evidence' : undefined })) },
+          { title: 'Evidence', rows: pulse.factors.flatMap(f => f.evidence.map(e => ({ label: e.title, value: e.source, detail: e.reason, date: e.received_at, story: e.story_id, url: e.url }))) }],
+      };
+    },
+  },
   {
     name: 'economic_history', path: 'economic/history', description: 'Archived economic releases with provider-reported actual, consensus and previous, including the latest monthly jobs and inflation reports. Use when releases lacks a report; default 60 days. Some Nasdaq duplicate labels omit frequency: do not guess monthly versus yearly. Filter by keywords and country.',
     params: { q: { type: 'string', description: 'Optional event keywords, such as payrolls, CPI, PCE or unemployment' }, days: { type: 'number', description: 'Days back, default 60, maximum 90' }, countries: { type: 'string', description: 'Optional comma-separated currency codes' } },
@@ -1455,7 +1484,7 @@ async function cik(value: string | undefined) {
   return { cik: hit[0], name: hit[1] };
 }
 interface FilingSet { form: string[]; filingDate: string[]; reportDate?: string[]; accessionNumber: string[]; primaryDocument: string[]; primaryDocDescription?: string[]; items?: string[] }
-interface Submissions { name?: string; filings: { recent: FilingSet; files?: { name: string; filingFrom?: string; filingTo?: string }[] } }
+export interface Submissions { name?: string; filings: { recent: FilingSet; files?: { name: string; filingFrom?: string; filingTo?: string }[] } }
 const submissions = (id: string) => cached(`sec/submissions/v1/${id}`, 1800, () => getJSON<Submissions>(`https://data.sec.gov/submissions/CIK${id}.json`, { headers: { 'User-Agent': sec }, timeout: 15000 }));
 interface HistoricalFiling { date: string; period: string; accession: string; document: string }
 async function historical13FFilings(profile: Submissions): Promise<HistoricalFiling[]> {
@@ -1630,6 +1659,8 @@ async function filing13FTable(cik: string, accession: string): Promise<{ rows: M
   return { rows, url: `${base}/${table.name}` };
 }
 
+tools.push(...filingTools({ cik, submissions }));
+
 // Routing
 
 export function catalogJSON(base: string) {
@@ -1670,6 +1701,7 @@ export async function dataRoute(path: string, params: URLSearchParams, env: Data
     if (key in args) throw new DataError(400, 'Repeated query parameter');
     args[key] = value;
   }
+  if (rest === 'sec/reader') return readerRoute(args.url);
   const named = /^tool\/([a-z_]+)$/.exec(rest);
   if (named) return Response.json(await runTool(named[1], args, env));
   let tool = tools.find(t => t.path === rest);

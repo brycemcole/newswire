@@ -11,6 +11,34 @@ const base = { external_id: 'example', title: 'A factual headline', source: 'Sou
 const options = (bindings = { WRITER_TOKEN: 'writer' }) => convertV4MiniflareOptions({ workers: [{ name: 'test', modules: true, script, compatibilityDate: '2026-09-06', d1Databases: ['DB'], bindings, serviceBindings: { ASSETS: () => new Response('static shell') } }] });
 const request = (path, token = 'reader', init = {}) => mf.dispatchFetch(`https://newswire.test${path}`, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...init.headers } });
 const post = (data, token = 'writer') => request('/v1/stories', token, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+test('market pulse is authenticated, replays receipt times, and updates after new stories', async () => {
+  const path = '/v1/market-pulse?as_of=2026-10-12T11:00:00Z';
+  assert.equal((await request(path, null)).status, 401);
+  for (const q of ['as_of=bad', 'as_of=2040-01-01T00:00:00Z', 'symbol=UNKNOWN', 'symbol=SPY&symbol=QQQ', 'unknown=yes']) assert.equal((await request(`/v1/market-pulse?${q}`)).status, 400);
+  const db = await mf.getD1Database('DB');
+  const ids = [];
+  try {
+    for (const [title, received, suffix] of [['Missile attack hits Saudi oil facilities', '2026-10-12T10:01:00.000Z', 'one'], ['China imposes new tariffs', '2026-10-12T11:02:00.000Z', 'two']]) {
+      const data = await (await post({ ...base, external_id: `pulse-${suffix}`, url: `https://example.com/pulse-${suffix}`, title, tags: ['headlines'], published_at: '2026-10-12T10:00:00Z' })).json();
+      ids.push(data.story.id);
+      await db.prepare('UPDATE stories SET received_at = ? WHERE id = ?').bind(received, data.story.id).run();
+    }
+    const beforeResponse = await request(path);
+    assert.equal(beforeResponse.status, 200);
+    assert.match(beforeResponse.headers.get('Cache-Control'), /no-store/);
+    const before = await beforeResponse.json();
+    assert.equal(before.status, 'available');
+    assert.equal(before.coverage.matched_stories, 1);
+    const after = await (await request('/v1/market-pulse?as_of=2026-10-12T11:03:00Z')).json();
+    assert.equal(after.coverage.matched_stories, 2);
+    assert.ok(after.score < before.score);
+    const tool = await (await request('/v1/data/market/pulse?as_of=2026-10-12T11:00:00Z&symbol=XLE')).json();
+    assert.match(tool.text, /XLE market pulse/);
+    assert.equal(tool.as_of, '2026-10-12T11:00:00.000Z');
+  } finally {
+    for (const id of ids) await db.prepare('DELETE FROM stories WHERE id = ?').bind(id).run();
+  }
+});
 before(async () => {
   script = (await build({ entryPoints: ['src/index.ts'], bundle: true, format: 'esm', write: false })).outputFiles[0].text;
   mf = new Miniflare(options());
@@ -27,6 +55,53 @@ before(async () => {
 });
 after(async () => { await mf?.dispose(); });
 
+test('research ledger is reader protected and mutations are writer-only without accepting backdated snapshots', async () => {
+  assert.equal((await request('/v1/research?symbol=SPY', null)).status, 401);
+  const empty = await request('/v1/research?symbol=SPY');
+  assert.equal(empty.status, 200);
+  const payload = await empty.json();
+  assert.equal(payload.symbol, 'SPY');
+  assert.equal(payload.latest, null);
+  assert.equal(payload.performance.settled, 0);
+  assert.equal(payload.performance.candidate_status, 'adaptive learning');
+  assert.ok(payload.current);
+  assert.equal(payload.current.learning.model, 'forecast-adaptive-v1');
+  assert.equal(payload.current.learning.settled, 0);
+  for (const q of ['symbol=INVALID', 'symbol=SPY&symbol=QQQ', 'as_of=2020-01-01']) {
+    assert.equal((await request(`/v1/research?${q}`)).status, 400);
+  }
+  for (const action of ['capture', 'settle']) {
+    assert.equal((await request(`/v1/research/${action}`, 'reader', { method: 'POST' })).status, 403);
+    assert.equal((await request(`/v1/research/${action}`, 'writer')).status, 405);
+  }
+  const mutation = body => ({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  assert.equal((await request('/v1/research/capture', 'writer', mutation({ symbol: 'SPY', snapshot: { as_of: '2020-01-01' } }))).status, 400);
+  assert.equal((await request('/v1/research/settle', 'writer', mutation({ symbol: 'SPY', prices: { OTHER: {} } }))).status, 400);
+  assert.equal((await request('/v1/market-pulse/snapshot?as_of=2020-01-01', 'writer')).status, 400);
+});
+
+test('impact retention and backend availability preserve evidence without backdating late delivery', async () => {
+  const now = Date.now(), id = 'abcdef0123456789', olderId = 'abcdef9876543210';
+  const db = await mf.getD1Database('DB');
+  const old = new Date(now - 20 * 86400000).toISOString();
+  await db.prepare('INSERT INTO pulse_impacts (id,title,source,url,published_at,received_at,direction,channel,size,confidence,classified_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+    .bind(olderId, 'Old evidence', 'Source', 'https://example.com/old', old, old, -1, 'energy', 'minor', 0.6, old).run();
+  try {
+    const before = new Date(now - 3600000).toISOString();
+    const response = await request('/v1/market-pulse/impacts', 'writer', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ impacts: [{ id, title: 'Delayed classification delivery', source: 'Source', url: 'https://example.com/delayed', published_at: before, received_at: before,
+        classified_at: before, classifier_version: 'test-model-v1', direction: -1, channel: 'energy', size: 'minor', confidence: 0.6 }] }) });
+    assert.equal(response.status, 201);
+    const saved = await db.prepare('SELECT * FROM pulse_impacts WHERE id=?').bind(id).first();
+    assert.ok(Date.parse(saved.classified_at) >= now);
+    assert.equal(saved.source_classified_at, before);
+    assert.equal(saved.classifier_version, 'test-model-v1');
+    assert.ok(await db.prepare('SELECT id FROM pulse_impacts WHERE id=?').bind(olderId).first());
+  } finally {
+    await db.prepare('DELETE FROM pulse_impacts WHERE id IN (?,?)').bind(id, olderId).run();
+  }
+});
+
 test('authentication, reader/writer separation, fail closed and public shell', async () => {
   assert.equal((await request('/health', null)).status, 200);
   assert.equal(await (await request('/', null)).text(), 'static shell');
@@ -38,6 +113,12 @@ test('authentication, reader/writer separation, fail closed and public shell', a
     const closed = new Miniflare(options(bindings));
     try { assert.equal((await closed.dispatchFetch('https://test/v1/stories', { headers: { Authorization: 'Bearer writer' } })).status, 503); } finally { await closed.dispose(); }
   }
+});
+
+test('article extraction requires a reader session and a public URL', async () => {
+  assert.equal((await request('/v1/extract?url=https://example.com/a', null)).status, 401);
+  for (const query of ['', 'url=https://127.0.0.1/a', 'url=file:///etc/passwd', 'url=https://example.com/a&extra=1'])
+    assert.equal((await request(`/v1/extract?${query}`)).status, 400, query);
 });
 
 test('strict validation and bounded requests do not insert', async () => {

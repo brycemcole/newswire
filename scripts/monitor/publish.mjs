@@ -35,11 +35,20 @@ export async function publish(story) {
   throw lastError ?? new Error('Ingest failed');
 }
 
-export async function recent(hours) {
-  const url = new URL('/v1/stories', origin);
-  url.searchParams.set('limit', '100');
-  url.searchParams.set('since', new Date(Date.now() - hours * 3600000).toISOString());
-  const response = await fetch(url, { headers: { Authorization: `Bearer ${await token()}` }, signal: AbortSignal.timeout(15000) });
-  if (!response.ok) throw new Error(`recent stories ${response.status}`);
-  return ((await response.json()).stories ?? []).map(story => ({ title: story.title, source: story.source }));
+export async function recent(hours, maxPages = 20) {
+  const stories = [];
+  let cursor;
+  for (let page = 0; page < maxPages; page += 1) {
+    const url = new URL('/v1/stories', origin);
+    url.searchParams.set('limit', '100');
+    url.searchParams.set('since', new Date(Date.now() - hours * 3600000).toISOString());
+    if (cursor) url.searchParams.set('cursor', cursor);
+    const response = await fetch(url, { headers: { Authorization: `Bearer ${await token()}` }, signal: AbortSignal.timeout(15000) });
+    if (!response.ok) throw new Error(`recent stories ${response.status}`);
+    const payload = await response.json();
+    stories.push(...(payload.stories ?? []).map(story => ({ id: story.id, title: story.title, summary: story.summary ?? '', source: story.source, url: story.url, published_at: story.published_at })));
+    cursor = payload.next_cursor;
+    if (!cursor) return stories;
+  }
+  throw new Error(`recent stories exceeded ${maxPages * 100}; dedupe history incomplete`);
 }

@@ -52,6 +52,7 @@ final class DockBackgroundTouchRecognizer: UIGestureRecognizer {
 struct MarketDock: View {
     /// Collapsed, the dock is only the search bar with equal space above and below it, about the height of a tab bar.
     static let peekHeight: CGFloat = 72
+    static let storySuggestionHeight: CGFloat = 42
     /// Space above the search bar when collapsed, matching the search sheet's space below it.
     static let barInset: CGFloat = 12
     /// Space under the floating dock, measured from the bottom edge of the screen.
@@ -63,9 +64,13 @@ struct MarketDock: View {
 
     @Binding var detent: DockDetent
     let onSelect: (String) -> Void
+    var onAsk: (String) -> Void = { _ in }
+    var onSuggestionSelect: ((String) -> Void)?
+    var suggestedSymbols: [String] = []
     var onFrameChange: (CGRect) -> Void = { _ in }
     @State private var drag: CGFloat = 0
     @State private var keyboard: CGFloat = 0
+    @State private var quoteStore = QuoteStore.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let radius: CGFloat = 34
@@ -81,19 +86,23 @@ struct MarketDock: View {
             // Bottom corners follow the display's own curve (concentric with it, whatever the inset), so they match the device.
             let shape = ConcentricRectangle(topLeadingCorner: .fixed(radius), topTrailingCorner: .fixed(radius),
                                             bottomLeadingCorner: .concentric(minimum: 20), bottomTrailingCorner: .concentric(minimum: 20))
-            MarketSearchSheet(detent: $detent, onSelect: onSelect)
-                .padding(.top, Self.barInset + 8 * docked)
-                .overlay(alignment: .top) { handle(stops) }
-                .padding(.bottom, max(inset, keyboard))
-            .frame(height: height + Self.floatGap * docked, alignment: .top)
-            .clipShape(shape)
-            .glassEffect(.regular, in: shape)
-            .shadow(color: .black.opacity(0.10), radius: 14, y: 4)
+            VStack(spacing: suggestedSymbols.isEmpty ? 0 : 8) {
+                if !suggestedSymbols.isEmpty { storySuggestions.padding(.horizontal, 22) }
+                MarketSearchSheet(detent: $detent, onSelect: onSelect, onAsk: onAsk)
+                    .padding(.top, Self.barInset + 8 * docked)
+                    .overlay(alignment: .top) { handle(stops) }
+                    .padding(.bottom, max(inset, keyboard))
+                    .frame(height: height + Self.floatGap * docked, alignment: .top)
+                    .clipShape(shape)
+                    .glassEffect(.regular, in: shape)
+                    .shadow(color: .black.opacity(0.10), radius: 14, y: 4)
+                    .padding(.horizontal, Self.sideInset * (1 - docked))
+                    .padding(.bottom, Self.floatGap * (1 - docked))
+            }
             .animation(animation, value: detent)
+            .animation(.easeOut(duration: 0.18), value: suggestedSymbols)
             .simultaneousGesture(dragGesture(stops), including: detent == .peek ? .all : .subviews)
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { onFrameChange($0) }
-            .padding(.horizontal, Self.sideInset * (1 - docked))
-            .padding(.bottom, Self.floatGap * (1 - docked))
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         }
         // The keyboard must not resize the dock: the frame would change under the drag and while it dismisses, which is what made collapsing judder.
@@ -159,11 +168,44 @@ struct MarketDock: View {
             [DockDetent.peek, .medium, .large].min { abs(height($0) - target) < abs(height($1) - target) } ?? .peek
         }
     }
+
+    private var storySuggestions: some View {
+        return ScrollView(.horizontal) {
+            HStack(spacing: 8) {
+                ForEach(suggestedSymbols.prefix(6), id: \.self) { symbol in
+                    Button {
+                        if let onSuggestionSelect { onSuggestionSelect(symbol) }
+                        else { onSelect(symbol) }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text(symbol)
+                            if let quote = quoteStore.quotes[symbol] {
+                                Text(QuoteFormat.percent(quote.changePercent))
+                                    .foregroundStyle(QuoteFormat.color(quote.changePercent))
+                            }
+                        }
+                        .font(.system(.caption, design: .monospaced).weight(.semibold))
+                        .padding(.horizontal, 12)
+                        .frame(height: 34)
+                        .glassEffect(.regular.interactive(), in: .capsule)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(symbol), mentioned in this story")
+                    .accessibilityHint("Shows quote details")
+                }
+            }
+            .frame(height: 34, alignment: .center)
+        }
+        .scrollIndicators(.hidden)
+        .scrollClipDisabled()
+    }
 }
 
 extension View {
     /// Keeps content clear of the dock's resting search bar.
-    func dockClearance() -> some View {
-        safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: MarketDock.clearance) }
+    func dockClearance(suggestions: Bool = false) -> some View {
+        safeAreaInset(edge: .bottom, spacing: 0) {
+            Color.clear.frame(height: MarketDock.clearance + (suggestions ? MarketDock.storySuggestionHeight : 0))
+        }
     }
 }

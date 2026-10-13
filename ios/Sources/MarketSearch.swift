@@ -211,8 +211,11 @@ nonisolated struct MarketQuote: Sendable, Hashable, Identifiable {
 }
 
 struct MarketSearchSheet: View {
+    private static let financeSymbols: [(String, String)] = [("^KS11", "KOSPI"), ("^N225", "NIKKEI"), ("^HSI", "HANG SENG"), ("^GDAXI", "DAX"), ("^FTSE", "FTSE"),
+                                                              ("^TNX", "US 10Y"), ("DX-Y.NYB", "DOLLAR"), ("JPY=X", "USD/JPY"), ("CL=F", "WTI"), ("GC=F", "GOLD")]
     @Binding var detent: DockDetent
     let onSelect: (String) -> Void
+    var onAsk: (String) -> Void = { _ in }
     @State private var query = ""
     @State private var matches: [TickerMatch] = []
     @State private var matchesQuery = ""
@@ -222,6 +225,7 @@ struct MarketSearchSheet: View {
     @State private var recents = MarketRecents.all
     @State private var moverList = MoverList(rawValue: UserDefaults.standard.string(forKey: "marketMovers") ?? "") ?? .gainers
     @State private var board = MarketBoard.shared
+    @State private var watchlist = Watchlist.shared
     @FocusState private var searching: Bool
     @Environment(\.scenePhase) private var phase
 
@@ -299,7 +303,7 @@ struct MarketSearchSheet: View {
             guard phase == .active else { return }
             while !Task.isCancelled {
                 if trimmed.isEmpty {
-                    let pinned = MarketRecents.popular + recents
+                    let pinned = MarketRecents.popular + recents + Self.financeSymbols.map(\.0) + watchlist.symbols
                     async let quotes: Void = board.refresh(quotes: pinned + MarketBoard.earningsWatch, sparks: pinned)
                     async let movers: Void = board.refresh(movers: moverList)
                     _ = await (quotes, movers)
@@ -342,6 +346,26 @@ struct MarketSearchSheet: View {
     private var suggestions: some View {
         ScrollView {
             LazyVStack(spacing: 0) {
+                Button {
+                    searching = false
+                    detent = .peek
+                    onAsk(trimmed)
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "sparkles").foregroundStyle(Color.wireAccent)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Ask the Markets").font(.body.weight(.semibold))
+                            Text(trimmed).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        Spacer(minLength: 0)
+                        Image(systemName: "arrow.up.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                    }
+                    .padding(.horizontal, 20)
+                    .frame(minHeight: 56)
+                    .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                Divider().padding(.leading, 20)
                 if let command = TerminalCommand.parse(trimmed) {
                     Button { choose(command.token) } label: {
                         HStack(spacing: 12) {
@@ -427,6 +451,12 @@ struct MarketSearchSheet: View {
                 section("Stocks") {
                     indices
                 }
+                section("Watchlist") {
+                    watchlistRows
+                }
+                section("Global & macro") {
+                    financeCards
+                }
                 section("Data") {
                     TerminalFunctionsRow(onSelect: choose, excluding: ["INST", "FLOW", "PTR"])
                 }
@@ -492,6 +522,47 @@ struct MarketSearchSheet: View {
         }
         .scrollIndicators(.hidden)
         .scrollClipDisabled()
+    }
+
+    private var financeCards: some View {
+        ScrollView(.horizontal) {
+            GlassEffectContainer(spacing: 10) {
+                HStack(spacing: 10) {
+                    ForEach(Self.financeSymbols, id: \.0) { symbol, label in
+                        Button { choose(symbol) } label: {
+                            IndexCard(symbol: symbol, quote: board.quotes[symbol], spark: board.sparks[symbol], label: label)
+                        }
+                        .buttonStyle(PressSpringStyle())
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+        }
+        .scrollIndicators(.hidden)
+        .scrollClipDisabled()
+    }
+
+    private var watchlistRows: some View {
+        let order = Dictionary(watchlist.symbols.enumerated().map { ($1, $0) }, uniquingKeysWith: min)
+        let symbols = watchlist.symbols.sorted { a, b in
+            switch (board.quotes[a]?.changePercent, board.quotes[b]?.changePercent) {
+            case let (x?, y?) where x != y: x > y
+            case (_?, nil): true
+            case (nil, _?): false
+            default: order[a, default: 0] < order[b, default: 0]
+            }
+        }
+        return Group {
+            if symbols.isEmpty {
+                Text("Star a quote to add it here.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+                    .padding(.horizontal, 20).padding(.vertical, 12)
+            } else {
+                ForEach(symbols, id: \.self) { symbol in
+                    row(symbol)
+                }
+            }
+        }
     }
 
     private var movers: some View {

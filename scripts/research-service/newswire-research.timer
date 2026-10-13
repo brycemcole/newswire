@@ -1,0 +1,11 @@
+[Unit]
+Description=Evaluate Newswire research every five minutes
+
+[Timer]
+OnBootSec=90
+OnUnitInactiveSec=300
+AccuracySec=10
+
+[Install]
+WantedBy=timers.target
+

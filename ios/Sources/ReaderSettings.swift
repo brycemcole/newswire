@@ -209,23 +209,37 @@ import UIKit
         }
     }
 
-    func open(storyID: String?, feed: FeedMode, fallback: URL?) async {
+    func resolveStory(storyID: String?, url: URL, title: String, source: String, publishedAt: Date) async -> Story {
         await ready()
-        func find(_ list: [Story]) -> Story? {
-            list.first { story in (storyID != nil && story.id == storyID) || (fallback != nil && story.url == fallback) }
-        }
+        func find(_ list: [Story]) -> Story? { list.first { $0.id == storyID || $0.url == url } }
         let known = stories + pending + Self.snapshots.values.flatMap(\.stories)
-        if let story = find(known) {
+        if let story = find(known) { return story }
+        if configured, let baseURL = NewswireAPI.validatedURL(serverURL) {
+            let api = NewswireAPI(baseURL: baseURL)
+            if let page = try? await api.page(mode: .wire, limit: 100, category: "", query: title),
+               let story = find(page.stories) { return story }
+        }
+        return Story(id: storyID ?? "external:\(url.absoluteString)", externalId: storyID ?? url.absoluteString, title: title, summary: "", body: "", source: source, url: url, publishedAt: publishedAt, receivedAt: .now, category: "markets", priority: "normal", tickers: [], tags: ["headlines", "markets"], agent: "market-feed", imageUrl: nil)
+    }
+
+    func open(storyID: String?, feed: FeedMode, fallback: URL?) async {
+        guard let fallback else { return }
+        await ready()
+        let known = stories + pending + Self.snapshots.values.flatMap(\.stories)
+        if let story = known.first(where: { $0.id == storyID || $0.url == fallback }) {
             path = NavigationPath([story])
             return
         }
         if configured, let baseURL = NewswireAPI.validatedURL(serverURL),
-           let page = try? await NewswireAPI(baseURL: baseURL).page(mode: feed, category: "", query: ""),
-           let story = find(page.stories) {
+           let page = try? await NewswireAPI(baseURL: baseURL).page(mode: feed, limit: 100, category: "", query: ""),
+           let story = page.stories.first(where: { $0.id == storyID || $0.url == fallback }) {
             path = NavigationPath([story])
-        } else if let fallback {
-            await UIApplication.shared.open(fallback)
+            return
         }
+        path = NavigationPath([Story(id: storyID ?? "external:\(fallback.absoluteString)", externalId: storyID ?? fallback.absoluteString,
+                                     title: "Market headline", summary: "", body: "", source: fallback.host() ?? "News", url: fallback,
+                                     publishedAt: .now, receivedAt: .now, category: "markets", priority: "normal", tickers: [],
+                                     tags: ["headlines", "markets"], agent: "market-feed", imageUrl: nil)])
     }
 
     var configured: Bool { NewswireAPI.validatedURL(serverURL) != nil }

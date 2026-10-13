@@ -99,6 +99,11 @@ nonisolated enum WireFilter: Hashable, Identifiable, Sendable {
     }
 }
 
+nonisolated struct ExtractedArticle: Decodable, Sendable {
+    let paragraphs: [String]
+    let image: String?
+}
+
 nonisolated struct APIError: Decodable, LocalizedError {
     nonisolated struct Detail: Decodable, Sendable {
         let code: String
@@ -188,6 +193,18 @@ nonisolated struct NewswireAPI: Sendable {
             throw WireError.status(response.statusCode)
         }
         return try Self.decoder().decode(StoryPage.self, from: data)
+    }
+
+    /// Article text pulled by the server's self-hosted Defuddle extractor, used when on-device extraction comes up short.
+    @concurrent func extract(_ article: URL) async throws -> ExtractedArticle {
+        var components = URLComponents(url: baseURL.appending(path: "v1/extract"), resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "url", value: article.absoluteString)]
+        guard let url = components?.url else { throw WireError.configuration }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 25)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (data, response) = try await send(request)
+        guard (200..<300).contains(response.statusCode) else { throw WireError.status(response.statusCode) }
+        return try Self.decoder().decode(ExtractedArticle.self, from: data)
     }
 
     private nonisolated struct FeedCursor: Codable, Sendable {

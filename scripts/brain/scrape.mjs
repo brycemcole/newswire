@@ -235,6 +235,11 @@ async function paperText(id) {
 async function linkText(url) {
   if (/\.pdf($|\?)/i.test(url)) return null;
   try {
+    const response = await fetch(new URL(`/v1/extract?url=${encodeURIComponent(url)}`, origin), { headers: { Authorization: `Bearer ${await token()}` }, signal: AbortSignal.timeout(30000) });
+    const page = response.ok ? await response.json() : null;
+    if (page?.text?.length > 600) return { text: page.text.slice(0, 20000), from: 'page' };
+  } catch { }
+  try {
     const html = await get(url, { timeout: 20000 });
     const main = html.match(/<article[\s\S]*<\/article>/i)?.[0] ?? html.match(/<main[\s\S]*<\/main>/i)?.[0] ?? html.match(/<body[\s\S]*<\/body>/i)?.[0] ?? html;
     const text = plain(main);

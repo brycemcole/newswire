@@ -4,11 +4,13 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { getText } from '../fetch.mjs';
-import { ask } from '../jev.mjs';
+import { ask, classifierIdentity } from '../jev.mjs';
 import { recent } from '../publish.mjs';
 import { load } from '../state.mjs';
 import { timeline } from '../x.mjs';
 import { readableCopy, walled } from '../syndication.mjs';
+import { archiveHeadlines } from '../headline-archive.mjs';
+import { canonicalUrl, dedupeCandidates, exactDuplicate, nearIdentical, recordDedupe } from '../headline-dedupe.mjs';
 
 export const id = 'headlines';
 
@@ -45,21 +47,15 @@ export const detailQuestions = {
     instructions: 'How urgent is this news story? Reserve breaking for rare, major events.',
   },
 };
-export const duplicateQuestion = {
-  duplicate: {
-    criteria: {
-      same: 'Covers the same underlying story as one already published: another outlet, different wording, extra detail, reactions, reviews, or incremental updates to it.',
-      new: 'A distinct event, or a major new turn that would deserve its own headline: a decision that changes the outcome, such as talks becoming a signed deal, a halt, ruling, resignation, or collapse.',
-    },
-    instructions: 'Would publishing the new story repeat news already on the wire?',
-  },
-};
-const classificationVersion = createHash('sha256').update(JSON.stringify({ topics, topicQuestion, detailQuestions })).digest('hex').slice(0, 12);
+const classificationVersion = createHash('sha256').update(JSON.stringify({ topics, topicQuestion, detailQuestions, classifierIdentity })).digest('hex').slice(0, 12);
 const formats = new Set(config.skip_sections ?? ['video', 'videos', 'live', 'live-updates', 'live-news', 'opinion', 'opinions', 'briefing', 'podcast', 'podcasts', 'newsletters', 'gallery', 'pictures', 'interactive']);
+// Quote, option-chain and calendar pages surface through Google News with article-style links.
+const quotePage = /stock price, news, quote & history$|interactive stock chart|^earnings calendar for\b|^-\s*yahoo|^meta_title_/i;
 
 // Formats Jev always rejects, decided from the URL alone: clips, live blogs, opinion, briefings, galleries.
 // X posts mostly in another script are local promos, never US news.
 export function prefiltered(item) {
+  if (quotePage.test(item.title)) return true;
   let segments = [];
   try { segments = new URL(item.url).pathname.toLowerCase().split('/'); } catch { return false; }
   if (!item.x && segments.some(segment => formats.has(segment))) return true;
@@ -69,8 +65,6 @@ export function prefiltered(item) {
   }
   return false;
 }
-
-const stopwords = new Set('the and for with from that this after over into amid about says said will its his her their has have had are was were but not new more than out off who what how why when year years report reports'.split(' '));
 
 function decode(text) {
   return text
@@ -142,24 +136,6 @@ function comparable(text) {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 }
 
-function words(text) {
-  return new Set(comparable(text).split(' ').filter(word => word.length > 2 && !stopwords.has(word)).map(word => word.replace(/(?<=\w{3})s$/, '')));
-}
-
-function shared(a, b) {
-  let count = 0;
-  for (const word of a) if (b.has(word)) count += 1;
-  return count;
-}
-
-function similar(item, published) {
-  return published
-    .map(story => ({ story, shared: shared(item.words, story.words), jaccard: shared(item.words, story.words) / (new Set([...item.words, ...story.words]).size || 1) }))
-    .filter(match => match.shared >= 2)
-    .sort((a, b) => b.jaccard - a.jaccard)
-    .slice(0, 5);
-}
-
 function distinctSummary(summary, title, publisher) {
   let rest = comparable(summary);
   const heading = comparable(title);
@@ -208,10 +184,11 @@ export function acceptedTopic(answers, { x = false, minimum = config.min_confide
   return answers.format.choice === 'news' || (!x && topic.allow_analysis && answers.format.choice === 'feature') ? topic.id : null;
 }
 
-export async function run() {
+export async function run({ lookbackHours } = {}) {
+  if (lookbackHours !== undefined && (!Number.isFinite(lookbackHours) || lookbackHours < 1 || lookbackHours > 168)) throw new Error('lookbackHours must be 1–168');
   const events = [];
   const failures = [];
-  const windowMs = (config.window_minutes ?? 30) * 60000;
+  const windowMs = lookbackHours === undefined ? (config.window_minutes ?? 30) * 60000 : lookbackHours * 3600000;
   const seen = new Map();
 
   const sources = [
@@ -222,11 +199,19 @@ export async function run() {
   const settled = await Promise.allSettled(sources.map(async source => {
     const xml = await getText(source.url);
     if (!/<(?:rss|feed)\b/i.test(xml)) throw new Error('Expected an RSS or Atom feed');
-    return parseFeed(xml, source.name).map(item => ({ ...item, via: source.via, windowMs: (source.window_minutes ?? config.window_minutes ?? 30) * 60000 }));
+    return parseFeed(xml, source.name).map(item => ({ ...item, via: source.via, windowMs: lookbackHours === undefined ? (source.window_minutes ?? config.window_minutes ?? 30) * 60000 : windowMs }));
   }));
   if (config.x !== false) {
     sources.push({ name: 'X Following' });
     settled.push(...await Promise.allSettled([timeline().then(posts => posts.map(item => ({ ...item, via: [] })))]));
+  }
+
+  const intake = settled.filter(entry => entry.status === 'fulfilled').flatMap(entry => entry.value).filter(item => !prefiltered(item));
+  const archived = await archiveHeadlines(intake);
+  if (archived.truncated) failures.push('headlines raw archive reached 10000-story cap');
+  if (lookbackHours !== undefined) {
+    sources.push({ name: 'Local raw headline archive' });
+    settled.push({ status: 'fulfilled', value: archived.records.map(item => ({ ...item, windowMs })) });
   }
 
   settled.forEach((entry, index) => {
@@ -246,20 +231,23 @@ export async function run() {
   const state = await load();
   const verdicts = Object.fromEntries(Object.entries(JSON.parse(await readFile(verdictsFile, 'utf8').catch(() => '{}'))).filter(([, verdict]) => verdict.version === classificationVersion));
   const minimum = config.min_confidence ?? 0.7;
-  const nearIdentical = config.near_identical ?? 0.6;
   let published = [];
+  let historyAvailable = true;
   try {
-    published = (await recent(config.dedupe_hours ?? 24)).map(story => ({ ...story, words: words(story.title) }));
+    published = await recent(config.dedupe_hours ?? 24);
   } catch (error) {
+    historyAvailable = false;
     failures.push(`headlines dedupe: ${error.message}`);
   }
-  const titles = new Set();
+  // Exact and near-identical copies skip classification entirely, saving free-tier quota.
+  const urls = new Set(published.map(story => canonicalUrl(story.url)).filter(Boolean));
+  const firstCopies = [];
   for (const entry of seen.values()) {
-    entry.item.words = words(entry.item.title);
-    const title = comparable(entry.item.title);
     if (state[entry.key]) continue;
-    if (titles.has(title) || similar(entry.item, published)[0]?.jaccard >= nearIdentical) entry.duplicate = true;
-    titles.add(title);
+    const link = canonicalUrl(entry.item.url);
+    if ((link && urls.has(link)) || [...published, ...firstCopies].some(story => exactDuplicate(entry.item, story) || nearIdentical(entry.item, story))) entry.duplicate = true;
+    else firstCopies.push(entry.item);
+    if (link) urls.add(link);
   }
   const apply = (entry, verdict) => {
     const topic = classified.find(candidate => candidate.id === verdict.topic);
@@ -296,36 +284,24 @@ export async function run() {
   const candidates = [...seen.values()]
     .filter(entry => entry.matched.length && !state[entry.key] && !entry.duplicate)
     .sort((a, b) => Number(Boolean(a.item.x)) - Number(Boolean(b.item.x)) || rank[a.priority ?? 'normal'] - rank[b.priority ?? 'normal'] || b.item.stamp - a.item.stamp);
-  let dedupeError;
-  for (const entry of candidates) {
-    const matches = similar(entry.item, published);
-    if (matches[0]?.jaccard >= nearIdentical) {
+  const byKey = new Map(candidates.map(entry => [entry.key, entry]));
+  const { decisions, error: dedupeError } = await dedupeCandidates(candidates.map(entry => ({ ...entry.item, key: entry.key })), published, { ask, minimum, historyAvailable });
+  for (const decision of decisions) {
+    const entry = byKey.get(decision.key);
+    if (decision.status === 'duplicate') {
       entry.duplicate = true;
-      continue;
-    }
-    if (matches.length) {
-      try {
-        const list = matches.map(match => `- ${match.story.title}`).join('\n');
-        const answer = (await ask(`New story: ${entry.item.title}\n\nAlready published:\n${list}`, duplicateQuestion)).duplicate;
-        if (answer.choice !== 'new' || answer.confidence < minimum) {
-          entry.duplicate = true;
-          if (verdicts[entry.key]) verdicts[entry.key].duplicate = true;
-          continue;
-        }
-      } catch (error) {
-        dedupeError ??= error;
-      }
-    }
-    published.push({ title: entry.item.title, source: entry.item.publisher, words: entry.item.words });
+      if (verdicts[entry.key]) verdicts[entry.key].duplicate = true;
+    } else if (decision.status === 'deferred') entry.deferred = true;
   }
-  if (dedupeError) failures.push(`headlines dedupe: ${dedupeError.message}`);
+  if (dedupeError) failures.push(`headlines dedupe: ${dedupeError}`);
+  await recordDedupe(decisions).catch(error => failures.push(`headlines dedupe log: ${error.message}`));
 
   const cacheWindowMs = Math.max(windowMs, ...config.feeds.map(feed => (feed.window_minutes ?? config.window_minutes ?? 30) * 60000));
   const kept = Object.fromEntries(Object.entries(verdicts).filter(([, verdict]) => Date.now() - Date.parse(verdict.at) < 2 * cacheWindowMs));
   await mkdir(dirname(verdictsFile), { recursive: true, mode: 0o700 });
   await writeFile(verdictsFile, `${JSON.stringify(kept)}\n`, { mode: 0o600 });
 
-  const publishable = [...seen.values()].filter(entry => entry.matched.length && !state[entry.key] && !entry.duplicate);
+  const publishable = [...seen.values()].filter(entry => entry.matched.length && !state[entry.key] && !entry.duplicate && !entry.deferred);
   await Promise.all(publishable.map(async entry => { entry.item.url = await resolveGoogleNews(entry.item.url); }));
   // A Bloomberg story waits up to `syndication_wait_minutes` for Yahoo's readable copy, then publishes with its own link.
   const wait = (config.syndication_wait_minutes ?? 10) * 60000;

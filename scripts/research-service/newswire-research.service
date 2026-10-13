@@ -1,0 +1,12 @@
+[Unit]
+Description=Newswire forecast capture and outcome evaluation
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/newswire
+ExecStart=/usr/bin/node %h/newswire/scripts/market-pulse/research.mjs --once
+TimeoutStartSec=240
+UMask=0077
+Nice=10
+

@@ -1,0 +1,10 @@
+[Unit]
+Description=Evaluate Newswire shadow models daily
+
+[Timer]
+OnCalendar=*-*-* 21:30:00 America/New_York
+Persistent=true
+AccuracySec=60
+
+[Install]
+WantedBy=timers.target

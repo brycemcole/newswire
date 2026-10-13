@@ -132,6 +132,8 @@ struct QuoteDetail: View {
     @State private var scrub = Scrub()
     @State private var holding: MarketSymbol?
     @State private var showingOptions = false
+    @State private var showingFilings = false
+    @State private var previewFiling: URL?
     @State private var showingQuestions = false
     @State private var aboutExpanded = false
     @State private var watchlist = Watchlist.shared
@@ -199,6 +201,8 @@ struct QuoteDetail: View {
         .navigationBarTitleDisplayMode(.inline)
         .navigationDestination(item: $holding) { QuoteDetail(symbol: $0.id) }
         .navigationDestination(isPresented: $showingOptions) { OptionChainView(symbol: symbol) }
+        .navigationDestination(item: $previewFiling) { FilingReaderView(url: $0) }
+        .navigationDestination(isPresented: $showingFilings) { DataScreen(route: DataRoute("sec/financials", ["symbol": symbol])).dockClearance() }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 let watching = watchlist.contains(symbol)
@@ -223,6 +227,14 @@ struct QuoteDetail: View {
         .onAppear { MarketRecents.add(symbol) }
         #if DEBUG
         .task {
+            if let index = CommandLine.arguments.firstIndex(of: "-filing"), let raw = CommandLine.arguments.dropFirst(index + 1).first {
+                try? await Task.sleep(for: .seconds(1))
+                previewFiling = URL(string: raw)
+            }
+            if CommandLine.arguments.contains("-filings") {
+                try? await Task.sleep(for: .seconds(1))
+                showingFilings = true
+            }
             if CommandLine.arguments.contains("-stockQuestions") {
                 try? await Task.sleep(for: .seconds(1))
                 showingQuestions = true
@@ -398,6 +410,7 @@ struct QuoteDetail: View {
         if let summary {
             analysts(summary)
             earnings(summary)
+            filings(summary)
             let valuation = stats([
                 ("P/E (TTM)", summary.text("summaryDetail", "trailingPE")),
                 ("Forward P/E", summary.text("summaryDetail", "forwardPE") ?? summary.text("defaultKeyStatistics", "forwardPE")),
@@ -522,6 +535,27 @@ struct QuoteDetail: View {
                                                 revenue: calendar?["revenueAverage"]?.text)
         return quarters + [EarningsQuarter(id: "Next", actual: nil, estimate: estimate, surprise: nil, fiscalQuarter: nil,
                                            reported: nil, revenue: nil, earnings: nil, upcoming: upcoming)]
+    }
+
+    @ViewBuilder
+    private func filings(_ summary: QuoteSummary) -> some View {
+        if summary.text("price", "quoteType") == "EQUITY", !symbol.contains(".") {
+            Button { showingFilings = true } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "doc.text.magnifyingglass").font(.title3).foregroundStyle(.tint)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Reported results and filings").font(.subheadline.weight(.semibold))
+                        Text("Revenue as filed, earnings releases, 10-Qs and 10-Ks").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                }
+                .padding(.horizontal, 16).padding(.vertical, 14)
+                .contentShape(.rect)
+                .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 22))
+            }
+            .buttonStyle(.plain)
+        }
     }
 
     @ViewBuilder

@@ -7,7 +7,9 @@ import SwiftUI
     var body: some Scene {
         WindowGroup {
             #if DEBUG
-            if CommandLine.arguments.contains("-notificationSetupPreview") {
+            if MarketResearchFixture.launch != nil || CommandLine.arguments.contains("-openResearch") {
+                MarketResearchView()
+            } else if CommandLine.arguments.contains("-notificationSetupPreview") {
                 NavigationStack { PushSettingsView(preview: PushStatusPreview.fromArguments) }
             } else if CommandLine.arguments.contains("-savedStoriesPreview") {
                 SavedStoriesPreview()
@@ -199,6 +201,23 @@ struct SavedStory: Codable, Identifiable {
 
 private enum FeedDestination: Hashable { case explore }
 
+private struct ConditionalWireSearch: ViewModifier {
+    @Binding var presented: Bool
+    @Binding var text: String
+    @Binding var filters: [WireFilter]
+
+    @ViewBuilder func body(content: Content) -> some View {
+        if presented {
+            content.searchable(text: $text, tokens: $filters, isPresented: $presented,
+                               placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search the wire") { filter in
+                Label(filter.title, systemImage: filter.symbol)
+            }
+        } else {
+            content
+        }
+    }
+}
+
 struct FeedView: View {
     @Environment(\.scenePhase) private var phase
     @State private var store = FeedStore.shared
@@ -211,11 +230,14 @@ struct FeedView: View {
     @State private var dataRoute: DataRoute?
     @State private var marketDepth: Int?
     @State private var asking: AskContext?
+    @State private var askPrompt = ""
     @State private var watchlist = Watchlist.shared
     @State private var board = MarketBoard.shared
     @State private var watchlistExpanded = UserDefaults.standard.bool(forKey: "watchlistExpanded")
     @State private var portfolioExpanded = UserDefaults.standard.bool(forKey: "portfolioExpanded")
     @State private var search = ""
+    @State private var searchPresented = false
+    @State private var storyMarketSymbols: [String] = []
     @AppStorage("headlinesOnly") private var headlinesOnly = false
     @AppStorage("compactHome") private var compactHome = false
     @AppStorage("homeOrder") private var homeOrder = "marketsFirst"
@@ -229,6 +251,20 @@ struct FeedView: View {
 
     private var selectionAnimation: Animation { reduceMotion ? .easeOut(duration: 0.15) : .spring(duration: 0.38, bounce: 0.18) }
 
+    private var subtitle: String {
+        guard !store.stories.isEmpty else {
+            if !store.configured { return "Not connected" }
+            return store.loading ? "Connecting" : "No stories yet"
+        }
+        let leadingCategories = Dictionary(grouping: store.stories, by: \.category)
+            .sorted { lhs, rhs in
+                lhs.value.count == rhs.value.count ? lhs.key < rhs.key : lhs.value.count > rhs.value.count
+            }
+            .prefix(2)
+            .map { $0.key.capitalized }
+        return "\(leadingCategories.joined(separator: " · ")) · \(store.stories.count) stories"
+    }
+
     private var navigation: some View {
         NavigationStack(path: $store.path) {
             Group {
@@ -238,14 +274,18 @@ struct FeedView: View {
                             .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 14, trailing: 16))
                             .listRowSeparator(.hidden)
                             .listRowBackground(Color.clear)
-                        MarketsHome(open: open(quote:))
-                            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 14, trailing: 16))
+                        PulseCard()
+                            .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 14, trailing: 16))
                             .listRowSeparator(.hidden)
                             .listRowBackground(Color.clear)
                     }
                     if search.isEmpty && store.filters.isEmpty && homeOrder == "newsFirst" {
                         dashboard
                             .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 14, trailing: 16))
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
+                        PulseCard()
+                            .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 14, trailing: 16))
                             .listRowSeparator(.hidden)
                             .listRowBackground(Color.clear)
                     }
@@ -292,10 +332,6 @@ struct FeedView: View {
                             .task(id: store.cursor) { await store.loadOlder() }
                     }
                     if search.isEmpty && store.filters.isEmpty && homeOrder == "newsFirst" {
-                        MarketsHome(open: open(quote:))
-                            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 14, trailing: 16))
-                            .listRowSeparator(.hidden)
-                            .listRowBackground(Color.clear)
                     }
                 }
                 .listStyle(.plain)
@@ -316,10 +352,10 @@ struct FeedView: View {
                 .task(id: store.stories.prefix(40).map(\.id)) {
                     Summarizer.shared.preload(store.stories)
                 }
-                .searchable(text: $search, tokens: $store.filters, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search the wire") { filter in
-                    Label(filter.title, systemImage: filter.symbol)
+                .modifier(ConditionalWireSearch(presented: $searchPresented, text: $search, filters: $store.filters))
+                .navigationDestination(for: Story.self) { story in
+                    StoryDetail(story: story) { storyMarketSymbols = $0 }
                 }
-                .navigationDestination(for: Story.self) { StoryDetail(story: $0) }
                 .navigationDestination(for: MarketSymbol.self) { QuoteDetail(symbol: $0.id).id($0.id).dockClearance() }
                 .navigationDestination(for: DataRoute.self) { route in
                     if DataScreen.designedPaths.contains(route.path) {
@@ -334,32 +370,30 @@ struct FeedView: View {
                         open(quote: token)
                     }
                 }
-                .navigationTitle("NEWSWIRE")
+                .navigationTitle(Date.now.formatted(.dateTime.month(.abbreviated).day()))
                 .navigationSubtitle(subtitle)
-                .navigationBarTitleDisplayMode(.inline)
+                .navigationBarTitleDisplayMode(.large)
                 .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button { asking = .markets } label: { Image(systemName: "sparkles") }
-                            .accessibilityLabel("Ask AI")
-                    }
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button { showingSaved = true } label: { Image(systemName: "bookmark") }
-                            .accessibilityLabel("Saved stories")
-                    }
                     ToolbarItem(placement: .topBarTrailing) {
-                        Button { portfolio = true } label: { Image(systemName: "briefcase") }
-                            .accessibilityLabel("Portfolio")
-                    }
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button { settings = true } label: { Image(systemName: "gearshape") }
-                            .accessibilityLabel("Settings")
+                        Menu {
+                            Button { portfolio = true } label: { Label("Portfolio", systemImage: "briefcase") }
+                            Button { settings = true } label: { Label("Settings", systemImage: "gearshape") }
+                            Button { showingSaved = true } label: { Label("Saved Stories", systemImage: "bookmark") }
+                            Divider()
+                            Button { searchPresented = true } label: { Label("Search the Wire", systemImage: "magnifyingglass") }
+                        } label: {
+                            Image(systemName: "ellipsis")
+                                .frame(width: 32, height: 32)
+                                .contentShape(.rect)
+                        }
+                        .accessibilityLabel("More")
                     }
                 }
             }
             .sheet(isPresented: $settings) { SettingsView(store: store) }
             .sheet(isPresented: $showingSaved) { SavedStoriesView() }
             .sheet(isPresented: $portfolio) { PortfolioView() }
-            .sheet(item: $asking) { AskSheet(context: $0) }
+            .sheet(item: $asking) { AskSheet(context: $0, initialQuestion: askPrompt) }
             .task(id: store.category + "|" + search + "|" + store.filters.map(\.id).joined(separator: "|") + "|" + store.serverURL) {
                 store.query = search.trimmingCharacters(in: .whitespacesAndNewlines)
                 store.reset()
@@ -428,10 +462,17 @@ struct FeedView: View {
                     }
                     withAnimation(selectionAnimation) { dock = .medium }
                     open(quote: symbol)
-                }, onFrameChange: { dockFrame = $0 })
+                }, onAsk: { question in
+                    askPrompt = question
+                    asking = .markets
+                }, onSuggestionSelect: { symbol in
+                    withAnimation(selectionAnimation) { dock = .peek }
+                    open(quote: symbol)
+                }, suggestedSymbols: storyMarketSymbols, onFrameChange: { dockFrame = $0 })
             }
         }
         .environment(\.feedStore, store)
+        .environment(\.openURL, OpenURLAction { InAppWeb.handle($0) })
         .onOpenURL { url in
             guard url.scheme == "newswire" else { return }
             settings = false
@@ -449,7 +490,12 @@ struct FeedView: View {
                     store.path = NavigationPath([story])
                 } else if let link = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "url" })?.value,
                           let web = URL(string: link), web.scheme == "https" {
-                    UIApplication.shared.open(web)
+                    let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+                    let title = items.first(where: { $0.name == "title" })?.value ?? web.host() ?? "Market story"
+                    store.path = NavigationPath([Story(id: id, externalId: id, title: title, summary: "", body: "",
+                                                        source: web.host() ?? "News", url: web, publishedAt: .now, receivedAt: .now,
+                                                        category: "markets", priority: "normal", tickers: [], tags: ["headlines", "markets"],
+                                                        agent: "market-feed", imageUrl: nil)])
                 }
             default: break
             }
@@ -485,7 +531,7 @@ struct FeedView: View {
                 let title = CommandLine.arguments.dropFirst(index + 2).first ?? link.lastPathComponent
                 store.path = NavigationPath([Story(id: "debug", externalId: "debug", title: title, summary: "", body: "", source: link.host() ?? "", url: link,
                                     publishedAt: .now, receivedAt: .now, category: "markets", priority: "normal",
-                                    tickers: [], tags: ["headlines"], agent: "debug", imageUrl: nil)])
+                                    tickers: TickerScanner.symbols(in: title), tags: ["headlines"], agent: "debug", imageUrl: nil)])
             }
         }
         #endif
@@ -665,13 +711,6 @@ struct FeedView: View {
         .padding(.vertical, 4)
     }
 
-    private var subtitle: String {
-        if !store.configured { return "Not connected" }
-        if store.error != nil { return "Offline" }
-        guard let updated = store.lastUpdated else { return store.stories.isEmpty ? "Connecting" : "Cached" }
-        return "Updated " + updated.formatted(date: .omitted, time: .shortened)
-    }
-
     private var filterBar: some View {
         ScrollViewReader { pills in
             ScrollView(.horizontal, showsIndicators: false) {
@@ -799,7 +838,6 @@ struct StoryRow: View {
             if story.isBrain {
                 Button { feedStore?.apply(.agent("brain")) } label: { Label("Only Brain picks", systemImage: "brain") }
             }
-            Link(destination: story.url) { Label("Read Source", systemImage: "safari") }
             ShareLink(item: story.url)
         }
         .task(id: story.id) { Summarizer.shared.request(story) }
@@ -888,8 +926,8 @@ extension Date {
 
 struct StoryDetail: View {
     let story: Story
+    var onSuggestedSymbolsChange: ([String]) -> Void = { _ in }
     @Environment(\.feedStore) private var feedStore
-    @State private var reading = false
     @State private var loading = false
     @State private var attempt = 0
     @State private var rerender = false
@@ -899,6 +937,7 @@ struct StoryDetail: View {
     @State private var selectedQuote: Quote?
     private var key: String { story.url.absoluteString }
     private var quotes: [Quote] { QuoteStore.shared.quotes(for: story) }
+    private var suggestedSymbols: [String] { QuoteStore.shared.symbols(for: story) }
     private var lead: String? {
         if story.isBrain && story.opensInReader && story.hasDistinctSummary { return StoryHTML.plainText(story.summary) }
         return glance == nil && !preparingGlance ? Summarizer.shared.summaries[key] : nil
@@ -984,7 +1023,7 @@ struct StoryDetail: View {
                             .symbolEffect(.pulse, options: .repeating)
                     } else if story.hasDistinctSummary && !story.isBrain {
                         Text(StoryHTML.plainText(story.summary)).fixedSize(horizontal: false, vertical: true)
-                    } else if story.url.host() != "news.google.com" {
+                    } else {
                         Button { attempt += 1 } label: { Label("Load article", systemImage: "arrow.clockwise") }
                             .font(.subheadline.weight(.semibold)).foregroundStyle(.secondary).buttonStyle(.plain)
                     }
@@ -1000,12 +1039,16 @@ struct StoryDetail: View {
                 relatedSection
             }.padding(20).frame(maxWidth: 760, alignment: .leading).frame(maxWidth: .infinity)
         }
+        .dockClearance(suggestions: !suggestedSymbols.isEmpty)
         #if DEBUG
         .defaultScrollAnchor(CommandLine.arguments.contains("-articlePreviewEnd") ? .bottom : .top)
         #endif
         .animation(.easeOut(duration: 0.2), value: excerpt)
         .animation(.easeOut(duration: 0.2), value: loading)
         .animation(.easeOut(duration: 0.2), value: quotes)
+        .onAppear { onSuggestedSymbolsChange(suggestedSymbols) }
+        .onChange(of: suggestedSymbols) { _, symbols in onSuggestedSymbolsChange(symbols) }
+        .onDisappear { onSuggestedSymbolsChange([]) }
         .task(id: story.id) {
             await QuoteStore.shared.load(story)
             while !Task.isCancelled {
@@ -1021,7 +1064,7 @@ struct StoryDetail: View {
                 await pending.value
                 loading = false
             }
-            guard story.opensInReader, story.url.host() != "news.google.com", Summarizer.shared.needsArticle(story) || rerender else { return }
+            guard story.opensInReader, Summarizer.shared.needsArticle(story) || rerender else { return }
             loading = true
             defer { loading = false; rerender = false }
             // Let the navigation push finish first: extraction can create a web view, which would drop frames mid-transition.
@@ -1067,7 +1110,6 @@ struct StoryDetail: View {
         }
         .dockClearance()
         .navigationTitle("STORY").navigationBarTitleDisplayMode(.inline)
-        .fullScreenCover(isPresented: $reading) { SafariView(url: story.url).ignoresSafeArea() }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
@@ -1107,7 +1149,10 @@ struct StoryDetail: View {
                             } label: { Label("Reload Article", systemImage: "arrow.clockwise") }
                             .disabled(loading)
                         }
-                        Button { reading = true } label: { Label("Read Source", systemImage: "safari") }
+                        Button {
+                            rerender = true
+                            attempt += 1
+                        } label: { Label("Load Article in Newswire", systemImage: "arrow.clockwise") }
                     } label: {
                         Image(systemName: loading && rerender ? "arrow.clockwise" : "ellipsis")
                             .symbolEffect(.rotate, options: .repeating, isActive: loading && rerender)
@@ -1213,11 +1258,14 @@ struct StoryDetail: View {
 
     @ViewBuilder private var sourceActions: some View {
         if ["http", "https"].contains(story.url.scheme?.lowercased() ?? "") {
-            Button { reading = true } label: {
+            Button {
+                rerender = true
+                attempt += 1
+            } label: {
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Read full story").font(.subheadline.weight(.semibold)).foregroundStyle(Color.wireAccent)
-                        Text(story.source).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                        Text("Load full story in Newswire").font(.subheadline.weight(.semibold)).foregroundStyle(Color.wireAccent)
+                        Text("Extract the article into the reader").font(.footnote).foregroundStyle(.secondary).lineLimit(1)
                     }
                     Spacer(minLength: 0)
                     Image(systemName: "arrow.up.right").font(.subheadline.weight(.semibold)).foregroundStyle(.tertiary)
@@ -1232,7 +1280,7 @@ struct StoryDetail: View {
         }
     }
 
-    private var canReload: Bool { story.opensInReader && story.url.host() != "news.google.com" }
+    private var canReload: Bool { story.opensInReader }
 
     private var reactionSymbol: String {
         switch interaction {

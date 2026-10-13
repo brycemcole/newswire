@@ -1,0 +1,10 @@
+[Unit]
+Description=Discover Newswire evidence every ten minutes
+
+[Timer]
+OnBootSec=120
+OnUnitInactiveSec=600
+AccuracySec=15
+
+[Install]
+WantedBy=timers.target

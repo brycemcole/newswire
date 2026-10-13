@@ -332,7 +332,7 @@ extension NewswireAPI {
 
     @concurrent func dataCatalog() async throws -> Data { try await dataBytes("v1/data/tools.json", [:]) }
 
-    private func dataBytes(_ path: String, _ items: [String: String]) async throws -> Data {
+    func dataBytes(_ path: String, _ items: [String: String]) async throws -> Data {
         var components = URLComponents(url: baseURL.appending(path: path), resolvingAgainstBaseURL: false)
         if !items.isEmpty { components?.queryItems = items.sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) } }
         guard let url = components?.url else { throw WireError.configuration }
@@ -1329,6 +1329,8 @@ struct DataScreen: View {
                 components?.queryItems = row.url.map { [URLQueryItem(name: "url", value: $0)] }
                 if let url = components?.url { openURL(url) }
             } label: { DataRowView(row: row, chevron: true) }.buttonStyle(.plain)
+        } else if let link = row.url.flatMap(URL.init(string:)), FilingLink.isFiling(link) {
+            NavigationLink { FilingReaderView(url: link, title: row.label) } label: { DataRowView(row: row, chevron: true) }.buttonStyle(.plain)
         } else if let link = row.url.flatMap(URL.init(string:)) {
             Button { openURL(link) } label: { DataRowView(row: row, chevron: true) }.buttonStyle(.plain)
         } else {

@@ -11,6 +11,11 @@ nonisolated struct TickerStory: Identifiable, Hashable, Sendable {
     let tagged: Bool
 
     var id: String { url.absoluteString }
+
+    var readerStory: Story {
+        Story(id: "ticker:\(id)", externalId: id, title: title, summary: "", body: "", source: publisher, url: url,
+              publishedAt: date, receivedAt: .now, category: "markets", priority: "normal", tickers: [], tags: ["headlines", "markets"], agent: "ticker-news", imageUrl: thumbnail?.absoluteString)
+    }
 }
 
 nonisolated enum TickerNews {
@@ -103,11 +108,16 @@ nonisolated enum TickerNews {
     @concurrent static func excerpt(_ story: TickerStory, core: String) async -> String? {
         var request = URLRequest(url: story.url, timeoutInterval: 6)
         request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) == true,
-              let html = String(data: data.prefix(1_500_000), encoding: .utf8) else { return nil }
-        let result = ArticleExtractor.extract(html: html, baseURL: story.url)
-        let text = result.paragraphs.filter { !$0.hasPrefix("•") }.joined(separator: " ")
+        var paragraphs: [String] = []
+        if let (data, response) = try? await URLSession.shared.data(for: request),
+           (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) == true,
+           let html = String(data: data.prefix(1_500_000), encoding: .utf8) {
+            paragraphs = ArticleExtractor.extract(html: html, baseURL: story.url).paragraphs
+        }
+        var text = paragraphs.filter { !$0.hasPrefix("•") }.joined(separator: " ")
+        if text.count < 200, let page = await Summarizer.extracted(story.url) {
+            text = page.text.split(separator: "\n").filter { !$0.hasPrefix("•") }.joined(separator: " ")
+        }
         guard text.count >= 200 else { return nil }
         return String(text.prefix(900))
     }
@@ -245,7 +255,7 @@ struct QuoteNewsSection: View {
     let move: Double?
     let price: String?
     @State private var model: QuoteNewsModel
-    @State private var reading: TickerStory?
+    @State private var reading: Story?
     @State private var expanded = false
 
     init(symbol: String, name: String, instrument: String?, move: Double?, price: String?) {
@@ -301,7 +311,10 @@ struct QuoteNewsSection: View {
             guard big, let move, let price else { return }
             model.explain(name: name, move: move, price: price)
         }
-        .fullScreenCover(item: $reading) { SafariView(url: $0.url).ignoresSafeArea() }
+        .fullScreenCover(item: $reading) { story in
+            NavigationStack { StoryDetail(story: story).navigationDestination(for: Story.self) { StoryDetail(story: $0) } }
+                .environment(\.feedStore, FeedStore.shared)
+        }
     }
 
     private func askButton(move: Double, price: String) -> some View {
@@ -360,7 +373,7 @@ struct QuoteNewsSection: View {
     }
 
     private func row(_ story: TickerStory) -> some View {
-        Button { reading = story } label: {
+        Button { reading = story.readerStory } label: {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(story.title).font(.subheadline.weight(.semibold)).lineLimit(3).multilineTextAlignment(.leading)

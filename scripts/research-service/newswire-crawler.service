@@ -1,0 +1,13 @@
+[Unit]
+Description=Newswire bounded source discovery
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/newswire
+Environment=LD_LIBRARY_PATH=%h/.local/share/newswire-browser/runtime/usr/lib64
+ExecStart=/usr/bin/node %h/newswire/scripts/research-service/discover.mjs
+TimeoutStartSec=240
+UMask=0077
+Nice=15
+

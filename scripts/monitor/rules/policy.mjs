@@ -3,6 +3,9 @@ import { getJson } from '../fetch.mjs';
 export const id = 'policy';
 
 const cutoff = 3 * 86400000;
+// Federal Register dates are Eastern calendar days; documents can be listed a day before their publication date.
+const easternToday = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+const stamp = date => (date > easternToday() ? NaN : Math.min(Date.parse(`${date}T12:00:00Z`), Date.now()));
 
 async function executiveOrders(events, failures) {
   try {
@@ -13,7 +16,7 @@ async function executiveOrders(events, failures) {
     for (const field of ['title', 'html_url', 'publication_date', 'signing_date', 'executive_order_number', 'document_number', 'abstract']) url.searchParams.append('fields[]', field);
     const feed = await getJson(url);
     for (const document of feed.results ?? []) {
-      const published = Date.parse(`${document.signing_date ?? document.publication_date}T12:00:00Z`);
+      const published = stamp(document.signing_date ?? document.publication_date);
       if (!Number.isFinite(published) || Date.now() - published > cutoff) continue;
       events.push({
         key: `policy:eo:${document.document_number}`,
@@ -43,7 +46,7 @@ async function significantRules(events, failures) {
     for (const field of ['title', 'html_url', 'publication_date', 'document_number', 'agencies', 'abstract']) url.searchParams.append('fields[]', field);
     const feed = await getJson(url);
     for (const document of (feed.results ?? []).slice(0, 5)) {
-      const published = Date.parse(`${document.publication_date}T12:00:00Z`);
+      const published = stamp(document.publication_date);
       if (!Number.isFinite(published) || Date.now() - published > cutoff) continue;
       const agency = document.agencies?.[0]?.name ?? 'A federal agency';
       events.push({

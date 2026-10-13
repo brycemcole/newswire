@@ -229,7 +229,7 @@ nonisolated struct ArticlePage: Sendable {
 
     private func wantsPreload(_ story: Story) -> Bool {
         let key = story.url.absoluteString
-        return !story.isBrain && story.opensInReader && story.url.host() != "news.google.com"
+        return !story.isBrain && story.opensInReader
             && !preloadAttempted.contains(key) && preloadPending[key] == nil && needsArticle(story)
     }
 
@@ -272,7 +272,7 @@ nonisolated struct ArticlePage: Sendable {
         await load()
         for (index, story) in stories.enumerated() {
             guard !Task.isCancelled else { break }
-            guard !story.isBrain, story.opensInReader, story.url.host() != "news.google.com" else { continue }
+            guard !story.isBrain, story.opensInReader else { continue }
             let key = story.url.absoluteString
             let needsDigest = wantsSummaries && available && glances[key] == nil
             if texts[key] == nil || (story.thumbnail == nil && images[key] == nil) {
@@ -425,7 +425,16 @@ nonisolated struct ArticlePage: Sendable {
             await fetched(url, refresh: force || retry)
         }, rendered: {
             await RenderedPage.load(url, refresh: force)
+        }, extracted: {
+            await extracted(url)
         })
+    }
+
+    @concurrent nonisolated static func extracted(_ url: URL) async -> ArticlePage? {
+        guard let base = NewswireAPI.validatedURL(UserDefaults.standard.string(forKey: "serverURL") ?? "https://bryce-newswire.bryce-e19.workers.dev"),
+              let article = try? await NewswireAPI(baseURL: base).extract(url), !article.paragraphs.isEmpty else { return nil }
+        let image = article.image.flatMap(URL.init(string:)).flatMap { $0.scheme == "https" ? $0 : nil }
+        return ArticlePage(text: ArticleExtractor.clean(article.paragraphs, minimum: 30).joined(separator: "\n"), image: image, video: nil)
     }
 
     @concurrent nonisolated private static func fetched(_ url: URL, refresh: Bool) async -> ArticleExtractor.Result? {
