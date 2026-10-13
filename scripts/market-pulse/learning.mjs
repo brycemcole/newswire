@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
-import { chronologicalSplit, trainLogistic, brierScore, calibrationBins, predictCandidate, promotionGate } from '../../backend/src/forecast-model.ts';
+import { forecastModel, chronologicalSplit, trainLogistic, brierScore, calibrationBins, predictCandidate, promotionGate } from '../../backend/src/forecast-model.ts';
 import { token } from '../monitor/publish.mjs';
 
 const origin = process.env.NEWSWIRE_URL ?? 'https://bryce-newswire.bryce-e19.workers.dev';
@@ -14,7 +14,7 @@ export function evaluateLearning(rows, symbol, horizon) {
   const train = split.train.map(row => ({ features: row.features, outcome: row.direction > 0 ? 1 : 0 }));
   if (split.sessionCounts.train < 180 || split.sessionCounts.calibration < 60 || split.sessionCounts.test < 60)
     return { status: 'shadow', eligible: false, symbol, horizon, reason: 'insufficient chronological train/calibration/test support', support: split.sessionCounts };
-  const model = trainLogistic(train, Object.keys(train[0].features), 0.2);
+  const model = trainLogistic(train, Object.keys(train[0].features).filter(key => key !== 'score_delta'), 0.2);
   const priceKeys = ['market_points', 'market_available', 'market_coverage'];
   const priceModel = trainLogistic(train, priceKeys, 0.2);
   const fitCalibrator = predictor => {
@@ -69,7 +69,7 @@ export async function syncLearning(now = Date.now()) {
     ]);
     const rows = training.rows ?? [];
     const result = evaluateLearning(rows, symbol, horizon);
-    const list = candidates.candidates ?? [];
+    const list = (candidates.candidates ?? []).filter(candidate => candidate.model_version === forecastModel.candidate.version);
     const month = new Date(now).toISOString().slice(0, 7);
     const latestThisMonth = list.some(candidate => String(candidate.created_at ?? '').slice(0, 7) === month);
     if (result.candidate && !latestThisMonth) {

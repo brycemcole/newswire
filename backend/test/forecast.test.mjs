@@ -24,7 +24,7 @@ const barsArchive = () => {
 };
 
 test('saved research preserves evidence dates and opposing driver direction', async () => {
-  const snap = snapshot('2026-10-14T11:06:00Z', '2026-10-14T11:05:00Z');
+  const snap = snapshot('2026-10-14T12:36:00Z', '2026-10-14T12:35:00Z');
   snap.inputs.prices.QQQ.previous_close_at = '2026-10-13T19:55:00Z';
   const item = { title: 'Energy supply improves', source: 'Source', url: 'https://example.com/energy', received_at: '2026-10-14T10:31:00Z', published_at: '2026-10-14T10:30:00Z', direction: 1 };
   snap.pulse = { ...pulse, components: { ...pulse.components, news: { ...pulse.components.news, channels: [{ channel: 'energy', top: [item] }] } },
@@ -32,7 +32,7 @@ test('saved research preserves evidence dates and opposing driver direction', as
       { kind: 'news', title: item.title, source: item.source, url: item.url, at: item.published_at, effect: 'higher', channel: 'energy' },
       { kind: 'news', title: 'Conflicting report', source: 'Source', url: 'https://example.com/conflict', at: '2026-10-14T10:40:00Z', effect: 'lower', detail: 'Supply risk' },
     ] };
-  await forecast.captureForecast(db, { symbol: 'QQQ', snapshot: snap }, Date.parse('2026-10-14T11:07:00Z'));
+  await forecast.captureForecast(db, { symbol: 'QQQ', snapshot: snap }, Date.parse('2026-10-14T12:37:00Z'));
   const research = await forecast.getResearch(db, 'QQQ');
   assert.equal(research.latest.evidence.length, 1);
   assert.equal(research.latest.evidence[0].received_at, item.received_at);
@@ -64,15 +64,15 @@ test('capture freezes all eligible horizons, ignores duplicate edits and rejects
   assert.equal(duplicate.inserted, 0);
   assert.equal(duplicate.forecasts[0].score, first.forecasts[0].score);
   const frozen = await db.prepare('SELECT model_version,snapshot_json FROM forecasts WHERE id=?').bind(first.forecasts[0].id).first();
-  assert.equal(frozen.model_version, 'forecast-adaptive-v1');
-  assert.equal(JSON.parse(frozen.snapshot_json).learning.model, 'forecast-adaptive-v1');
-  const preopen = await forecast.captureForecast(db, { symbol: 'QQQ', snapshot: snapshot('2026-10-13T11:06:00Z', '2026-10-13T11:05:00Z') }, Date.parse('2026-10-13T11:07:00Z'));
+  assert.equal(frozen.model_version, 'forecast-adaptive-v2');
+  assert.equal(JSON.parse(frozen.snapshot_json).learning.model, 'forecast-adaptive-v2');
+  const preopen = await forecast.captureForecast(db, { symbol: 'QQQ', snapshot: snapshot('2026-10-13T12:36:00Z', '2026-10-13T12:35:00Z') }, Date.parse('2026-10-13T12:37:00Z'));
   assert.deepEqual(preopen.forecasts.map(r => r.horizon), ['opening_gap']);
   const openToClose = await forecast.captureForecast(db, { symbol: 'QQQ', snapshot: snapshot('2026-10-13T13:28:00Z', '2026-10-13T13:27:00Z') }, Date.parse('2026-10-13T13:29:00Z'));
   assert.deepEqual(openToClose.forecasts.map(r => r.horizon), ['open_to_close']);
-  const leaky = snapshot('2026-10-13T11:06:00Z', '2026-10-13T11:05:00Z');
-  leaky.inputs.stories.push({ published_at: '2026-10-13T11:05:01Z', received_at: '2026-10-13T11:05:01Z' });
-  await assert.rejects(forecast.captureForecast(db, { symbol: 'QQQ', snapshot: leaky }, Date.parse('2026-10-13T11:07:00Z')), /after as_of/);
+  const leaky = snapshot('2026-10-13T12:36:00Z', '2026-10-13T12:35:00Z');
+  leaky.inputs.stories.push({ published_at: '2026-10-13T12:35:01Z', received_at: '2026-10-13T12:35:01Z' });
+  await assert.rejects(forecast.captureForecast(db, { symbol: 'QQQ', snapshot: leaky }, Date.parse('2026-10-13T12:37:00Z')), /after as_of/);
 });
 
 test('settlement requires matured timestamped source bars and writes immutable outcomes once', async () => {
@@ -155,4 +155,33 @@ test('candidate registration is scoped, immutable and receives only prospective 
   const research = await forecast.getResearch(db, 'SPY');
   assert.equal(Object.hasOwn(research.latest, 'snapshot_json'), false);
   assert.equal(research.latest.probability_up, null);
+});
+
+test('post-release opening forecasts use capture prices and reject stale or future baselines', async () => {
+  assert.equal(forecast.captureWindow(Date.parse('2026-10-15T11:05:00Z')).length, 0);
+  assert.equal(forecast.captureWindow(Date.parse('2026-10-15T12:35:00Z'))[0].horizon, 'opening_gap');
+  const snap = snapshot('2026-10-15T12:36:00Z', '2026-10-15T12:35:00Z');
+  const quote = snap.inputs.prices.SPY;
+  const now = Date.parse('2026-10-15T12:37:00Z');
+  quote.price_at = '2026-10-15T12:29:00Z';
+  await assert.rejects(forecast.captureForecast(db, { symbol: 'SPY', snapshot: snap }, now), /fresh frozen pre-market/);
+  quote.price_at = '2026-10-15T12:36:00Z';
+  await assert.rejects(forecast.captureForecast(db, { symbol: 'SPY', snapshot: snap }, now));
+  quote.price_at = '2026-10-15T12:35:00Z';
+  quote.previous_close = 50;
+  const captured = await forecast.captureForecast(db, { symbol: 'SPY', snapshot: snap }, now);
+  const row = await db.prepare('SELECT baseline_price,target_start_at FROM forecasts WHERE id=?').bind(captured.forecasts[0].id).first();
+  assert.equal(row.baseline_price, 100);
+  assert.equal(row.target_start_at, '2026-10-15T12:35:00.000Z');
+  const archive = barsArchive();
+  archive.retrieved_at = '2026-10-15T14:00:00Z';
+  archive.payload.chart.result[0].timestamp = [Date.parse('2026-10-15T13:30:00Z') / 1000];
+  const settled = await forecast.settleForecast(db, { symbol: 'SPY', prices: { SPY: archive } }, Date.parse('2026-10-15T14:01:00Z'));
+  const outcome = settled.outcomes.find(o => o.forecast_id === captured.forecasts[0].id);
+  assert.ok(Math.abs(outcome.return_pct - 1) < 1e-8);
+  await db.prepare('UPDATE forecasts SET model_version=? WHERE id=?').bind('forecast-adaptive-v1', captured.forecasts[0].id).run();
+  const training = await forecast.listForecastTrainingRows(db, 'SPY', 'opening_gap');
+  assert.equal(training.rows.some(r => r.id === captured.forecasts[0].id), false);
+  const research = await forecast.getResearch(db, 'SPY');
+  assert.equal(research.performance.horizons.opening_gap.count, 0);
 });

@@ -21,9 +21,9 @@ test('a sudden one-hour move registers before the 24-hour change catches up', ()
   assert.ok(scoreMarket(withInput('futures', 0, -0.6), 'SPY').points < -1.5);
 });
 
-test('a fast yen rally is a headwind; yen weakness adds nothing', () => {
+test('yen moves have symmetric effects around neutral', () => {
   assert.ok(scoreMarket(withInput('yen', -1.5, -0.5), 'SPY').points < -2);
-  assert.equal(scoreMarket(withInput('yen', 1.5, 0.5), 'SPY').points, 0);
+  assert.equal(scoreMarket(withInput('yen', 1.5, 0.5), 'SPY').points, -scoreMarket(withInput('yen', -1.5, -0.5), 'SPY').points);
 });
 
 test('stale or missing prices never stand in for current conditions', () => {
@@ -109,4 +109,12 @@ test('the explanation leads with a plain call and the biggest driver', async () 
   assert.ok(text.drivers.some(d => d.kind === 'news' && d.url === 'https://example.com/a'));
   assert.equal(text.drivers.find(d => d.kind === 'price').stat.label, 'WTI crude, per barrel');
   assert.equal(explain(calculatePulse([], cutoff, 'SPY', false, { market: calm() })).call.headline, 'No clear direction');
+});
+
+test('all formerly asymmetric inputs cancel for equal opposite moves across profiles', () => {
+  for (const symbol of ['SPY', 'QQQ', 'XLE', 'DAL']) for (const id of ['yen', 'vix', 'yield', 'credit', 'dollar']) {
+    const base = ['yen', 'vix', 'yield', 'credit', 'dollar'].map(key => input(key, 0));
+    const points = sign => scoreMarket(base.map(i => i.id === id ? input(id, sign * 0.5, sign * 0.2) : i), symbol).points;
+    assert.equal(points(1) + points(-1), 0, `${symbol} ${id}`);
+  }
 });

@@ -65,22 +65,22 @@ test('classifier outage leaves older unclassified headlines queued for recovery 
   };
   const options = { now, archiveFile, verdictFile, post: false, classify };
   const unavailable = await classifyImpacts(options);
-  assert.equal(unavailable.calls, 1);
+  assert.equal(unavailable.calls, 2);
   assert.equal(unavailable.backlog, 2);
   assert.equal(unavailable.expired, 1);
   assert.match(prompts[0], /Oldest recoverable story/);
 
   outage = false;
-  const recovered = await classifyImpacts(options);
+  const recovered = await classifyImpacts({ ...options, now: now + 61000 });
   assert.equal(recovered.calls, 2);
   assert.equal(recovered.backlog, 0);
   assert.equal(recovered.expired, 1);
-  assert.match(prompts[1], /Oldest recoverable story/);
-  assert.match(prompts[2], /Next recoverable story/);
+  assert.match(prompts[2], /Oldest recoverable story/);
+  assert.match(prompts[3], /Next recoverable story/);
   const classifierVersion = JSON.parse(await readFile(verdictFile, 'utf8')).oldest.classifier_version;
   const events = await readEvidence(`${archiveFile}.evidence.jsonl`, { type: 'impact_classification', classifierVersion, ids: ['oldest', 'next'], history: true });
   assert.deepEqual(events.filter(event => event.type === 'impact_classification').map(event => [event.id, event.status]), [
-    ['oldest', 'failure'], ['oldest', 'classified'], ['next', 'classified'],
+    ['oldest', 'failure'], ['oldest', 'classified'], ['next', 'failure'], ['next', 'classified'],
   ]);
 });
 
@@ -118,4 +118,26 @@ test('systemic events reach market analysis before routine coverage, preserve pr
   assert.equal((await classifyImpacts({ ...options, limit: 0 })).posted, 1);
   assert.equal((await classifyImpacts({ ...options, limit: 0 })).posted, 0);
   assert.equal(prompts.length, 1);
+});
+
+test('malformed items do not block healthy stories and repeated failures reach durable dead letters', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'newswire-dead-letter-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const archiveFile = join(dir, 'archive.json'), verdictFile = join(dir, 'verdicts.json');
+  const now = Date.now();
+  const entry = title => ({ title, publisher: 'Wire', stamp: now, first_seen_at: new Date(now).toISOString(), url: 'https://example.com/story' });
+  await writeFile(archiveFile, JSON.stringify({ bad: entry('Malformed story'), good: entry('Healthy macro release') }));
+  const options = { archiveFile, verdictFile, post: false, now, classify: async prompt => prompt.startsWith('Malformed') ? {} : {
+    market: { choice: 'higher', confidence: 0.9 }, channel: { choice: 'growth', confidence: 0.9 }, size: { choice: 'moderate', confidence: 0.9 },
+  } };
+  const first = await classifyImpacts(options);
+  assert.equal(first.calls, 2);
+  assert.equal(first.moving, 1);
+  assert.equal((await classifyImpacts(options)).calls, 0);
+  await classifyImpacts({ ...options, now: now + 61000 });
+  assert.equal((await classifyImpacts({ ...options, now: now + 182000 })).dead_letters, 1);
+  assert.equal((await classifyImpacts({ ...options, now: now + 600000 })).calls, 0);
+  const classifierVersion = JSON.parse(await readFile(verdictFile, 'utf8')).bad.classifier_version;
+  const evidence = await readEvidence(`${archiveFile}.evidence.jsonl`, { type: 'impact_classification', classifierVersion, ids: ['bad'] });
+  assert.equal(evidence[0].status, 'dead_letter');
+  assert.equal(evidence[0].attempts, 3);
 });

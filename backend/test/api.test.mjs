@@ -65,7 +65,7 @@ test('research ledger is reader protected and mutations are writer-only without 
   assert.equal(payload.performance.settled, 0);
   assert.equal(payload.performance.candidate_status, 'adaptive learning');
   assert.ok(payload.current);
-  assert.equal(payload.current.learning.model, 'forecast-adaptive-v1');
+  assert.equal(payload.current.learning.model, 'forecast-adaptive-v2');
   assert.equal(payload.current.learning.settled, 0);
   for (const q of ['symbol=INVALID', 'symbol=SPY&symbol=QQQ', 'as_of=2020-01-01']) {
     assert.equal((await request(`/v1/research?${q}`)).status, 400);

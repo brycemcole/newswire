@@ -59,7 +59,7 @@ test('snapshot preserves the full calculation inputs and the same explained live
   assert.ok(Date.parse(snapshot.created_at));
   assert.deepEqual(snapshot.inputs, { stories, impacts: [impact], market, calendar });
   assert.deepEqual(snapshot.pulse, { ...expected, ...explain(expected) });
-  assert.deepEqual(snapshot.model, { version: 'market-pulse-v2.1', windowHours: 96, halfLifeHours: 36, staleAfterHours: 24,
+  assert.deepEqual(snapshot.model, { version: 'market-pulse-v2.2', windowHours: 96, halfLifeHours: 36, staleAfterHours: 24,
     factorPoints: { energy: 12, trade: 10, rates: 10, growth: 8, credit: 10 }, symbols: ['SPY', 'QQQ', 'XLE', 'DAL'],
     calibration: 'Uncalibrated research index; not a probability or expected return.' });
 });

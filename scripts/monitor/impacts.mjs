@@ -60,14 +60,15 @@ async function classifyBatch({ limit = 25, maxAge = 48, now = Date.now(), post =
   const durableEvents = await readEvidence(evidenceFile, { type: 'impact_classification', classifierVersion, ids: archiveEntries.map(([id]) => id) });
   for (const event of durableEvents) durable.set(event.id, event);
   for (const [id, event] of durable) {
-    if (event.status === 'failure') delete verdicts[id];
+    if (event.status === 'failure' || event.status === 'dead_letter') verdicts[id] = { at: event.classified_at, status: event.status, attempts: event.attempts ?? 1, retry_at: event.retry_at, classifier_version: classifierVersion };
     else verdicts[id] = { ...event.verdict, at: event.classified_at, status: event.status, classifier_version: event.classifier_version };
   }
   const seen = Object.values(verdicts).filter(v => v.title);
   const unclassified = ([id]) => !verdicts[id] || verdicts[id].classifier_version !== classifierVersion || verdicts[id].status === 'failure';
   const publicationCutoff = now - maxAge * 3600000;
   const eligible = Object.entries(archive).filter(([, item]) => Number.isFinite(item.stamp) && item.stamp <= now && item.stamp >= publicationCutoff);
-  const candidates = eligible.filter(unclassified)
+  const waiting = eligible.filter(unclassified);
+  const candidates = waiting.filter(([id]) => !verdicts[id]?.retry_at || Date.parse(verdicts[id].retry_at) <= now)
     .sort((a, b) => impactQueuePriority(a[1], headlineVerdicts) - impactQueuePriority(b[1], headlineVerdicts)
       || Date.parse(a[1].first_seen_at) - Date.parse(b[1].first_seen_at) || a[1].stamp - b[1].stamp);
   const expiredIds = Object.entries(archive).filter(([id, item]) => unclassified([id, item]) && Number.isFinite(item.stamp) && item.stamp < publicationCutoff).map(([id]) => id);
@@ -90,6 +91,10 @@ async function classifyBatch({ limit = 25, maxAge = 48, now = Date.now(), post =
     try {
       const answers = await classify(`${item.title}\n${(item.summary ?? '').slice(0, 300)}`.trim(), impactQuestions);
       classifiedAt = new Date().toISOString();
+      for (const [key, question] of Object.entries(impactQuestions)) {
+        const answer = answers?.[key];
+        if (!answer || !Object.hasOwn(question.criteria, answer.choice) || !Number.isFinite(answer.confidence) || answer.confidence < 0 || answer.confidence > 1) throw new Error('Invalid impact classification');
+      }
       // An unsure market call counts as no effect.
       const direction = answers.market.confidence < 0.5 ? 0 : answers.market.choice === 'lower' ? -1 : answers.market.choice === 'higher' ? 1 : 0;
       const verdict = { at: classifiedAt, title: item.title, summary: item.summary ?? '', direction, channel: answers.channel.choice, size: answers.size.choice,
@@ -101,9 +106,13 @@ async function classifyBatch({ limit = 25, maxAge = 48, now = Date.now(), post =
     } catch (error) {
       failures.push(`impacts: ${error.message}`);
       classifiedAt = new Date().toISOString();
-      const event = { type: 'impact_classification', id, status: 'failure', classified_at: classifiedAt, classifier_version: classifierVersion, error: String(error.message ?? error).slice(0, 500) };
+      const attempts = (verdicts[id]?.attempts ?? 0) + 1;
+      const event = { type: 'impact_classification', id, status: attempts >= 3 ? 'dead_letter' : 'failure', attempts,
+        retry_at: new Date(now + 60000 * 2 ** (attempts - 1)).toISOString(), classified_at: classifiedAt,
+        classifier_version: classifierVersion, error: 'Impact classification failed' };
       classifications.push(event);
-      break;
+      verdicts[id] = { at: classifiedAt, status: event.status, attempts, retry_at: event.retry_at, classifier_version: classifierVersion };
+      continue;
     }
   }
   await appendEvidence(evidenceFile, classifications);
@@ -140,7 +149,7 @@ async function classifyBatch({ limit = 25, maxAge = 48, now = Date.now(), post =
   const temporary = `${verdictPath}.${process.pid}.tmp`;
   await writeFile(temporary, JSON.stringify(kept) + '\n', { mode: 0o600 });
   await rename(temporary, verdictPath);
-  return { calls, skipped, copies, moving: impacts.length, posted, backlog: Math.max(0, candidates.length - resolved), expired, failures };
+  return { calls, skipped, copies, moving: impacts.length, posted, backlog: Math.max(0, waiting.length - resolved - classifications.filter(e => e.status === 'dead_letter').length), expired, dead_letters: Object.values(verdicts).filter(v => v.status === 'dead_letter').length, failures };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
