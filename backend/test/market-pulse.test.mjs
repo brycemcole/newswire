@@ -118,3 +118,36 @@ test('missing, stale and incomplete prices stay unavailable', () => {
   incomplete.retrieved_at = '2026-10-12T19:57:00Z';
   assert.equal(priceComparison(incomplete, cutoff).regular_close, null);
 });
+
+test('bellwether earnings: scheduled reports lower confidence, reported surprises move the score by exposure', async () => {
+  const { scoreEarnings } = await import(`data:text/javascript,${encodeURIComponent((await build({ entryPoints: ['src/market-pulse.ts'], bundle: true, format: 'esm', write: false })).outputFiles[0].text)}`);
+  const now = Date.parse(cutoff);
+  const asml = { symbol: 'ASML', at: '2026-10-12T12:30:00Z', estimate: 10.76, actual: null, surprise: null };
+  const base = calculatePulse([story()], cutoff, 'QQQ');
+  const pending = calculatePulse([story()], cutoff, 'QQQ', false, { earnings: { events: [asml], loaded: 1, requested: 1 } });
+  assert.equal(pending.score, base.score);
+  assert.equal(pending.confidence, 'low');
+  assert.equal(pending.components.earnings.upcoming[0].name, 'ASML');
+
+  const jpmMiss = { symbol: 'JPM', at: '2026-10-12T10:30:00Z', estimate: 5.94, actual: 5.75, surprise: -0.0324 };
+  const spy = scoreEarnings([jpmMiss], now, 'SPY');
+  assert.ok(spy.points < -0.5);
+  assert.ok(Math.abs(scoreEarnings([jpmMiss], now, 'QQQ').points) < Math.abs(spy.points));
+  assert.ok(calculatePulse([story()], cutoff, 'SPY', false, { earnings: { events: [jpmMiss], loaded: 1, requested: 1 } }).score < calculatePulse([story()], cutoff, 'SPY').score);
+  // A typical small beat is expected and barely moves anything; a large beat helps.
+  assert.ok(Math.abs(scoreEarnings([{ ...jpmMiss, surprise: 0.04 }], now, 'SPY').points) < 0.01);
+  assert.ok(scoreEarnings([{ ...jpmMiss, surprise: 0.15 }], now, 'SPY').points > 0.5);
+  // Results older than a day and unknown tickers do not count.
+  assert.equal(scoreEarnings([{ ...jpmMiss, at: '2026-10-11T09:00:00Z' }], now, 'SPY').released.length, 0);
+  assert.equal(scoreEarnings([{ ...jpmMiss, symbol: 'ZZZZ' }], now, 'SPY').released.length, 0);
+  assert.equal(scoreEarnings([{ ...jpmMiss, symbol: 'XOM', surprise: -0.2 }], now, 'XLE').points < scoreEarnings([{ ...jpmMiss, symbol: 'XOM', surprise: -0.2 }], now, 'SPY').points, true);
+});
+
+test('medium-impact releases are listed as coming up without scoring or lowering confidence', () => {
+  const claims = { title: 'Unemployment Claims', at: '2026-10-12T10:30:00Z', forecast: '230K', actual: '260K', surprise: 30, threshold: 10, impact: 'Medium' };
+  const scored = calculatePulse([story()], cutoff, 'SPY', false, { calendar: [claims] });
+  assert.equal(scored.components.calendar.points, 0);
+  const upcoming = calculatePulse([story()], cutoff, 'SPY', false, { calendar: [{ ...claims, at: '2026-10-12T12:30:00Z', actual: null, surprise: null }] });
+  assert.equal(upcoming.components.calendar.upcoming.length, 1);
+  assert.equal(upcoming.components.calendar.upcoming[0].high, false);
+});

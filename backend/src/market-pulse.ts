@@ -74,7 +74,7 @@ export function scoreImpacts(impacts: Impact[] | undefined, now: number, symbol:
   return { points: round(clamp(channels.reduce((s, c) => s + c.points, 0), 25)), classified: available.filter(i => Date.parse(i.received_at) > now - 48 * hour).length, channels };
 }
 
-export interface CalendarEvent { title: string; at: string; forecast: string | null; actual: string | null; surprise: number | null; threshold: number | null; actual_available_at?: string | null }
+export interface CalendarEvent { title: string; at: string; forecast: string | null; actual: string | null; surprise: number | null; threshold: number | null; actual_available_at?: string | null; impact?: string }
 
 // Above-forecast inflation or joblessness is a headwind; above-forecast activity a modest tailwind.
 const releaseDirection = (title: string) => /cpi|pce|ppi|earnings|unemployment|claims/i.test(title) ? -1 : /employment change|retail|gdp|jolts|pmi|ism/i.test(title) ? 0.6 : 0;
@@ -84,12 +84,47 @@ export function scoreCalendar(events: CalendarEvent[] | undefined, now: number, 
   const exposure = { SPY: 1, QQQ: 1.2, XLE: 0.6, DAL: 0.9 }[symbol] ?? 1;
   const vintageAvailable = (e: CalendarEvent) => !requireVintage || (typeof e.actual_available_at === 'string'
     && Number.isFinite(Date.parse(e.actual_available_at)) && Date.parse(e.actual_available_at) <= now);
-  const released = events.filter(e => Date.parse(e.at) <= now && Date.parse(e.at) > now - 24 * hour && e.surprise !== null && e.threshold && vintageAvailable(e))
+  // Medium-impact releases (Fed speakers, auctions, inventories) are listed as coming up but never scored.
+  const high = (e: CalendarEvent) => e.impact === undefined || e.impact === 'High';
+  const released = events.filter(e => high(e) && Date.parse(e.at) <= now && Date.parse(e.at) > now - 24 * hour && e.surprise !== null && e.threshold && vintageAvailable(e))
     .map(e => ({ ...e, points: round(releaseDirection(e.title) * Math.tanh(e.surprise! / e.threshold!) * 5 * exposure) }));
-  const upcoming = events.filter(e => Date.parse(e.at) > now && Date.parse(e.at) <= now + 18 * hour).map(({ title, at, forecast }) => ({ title, at, forecast }));
+  const upcoming = events.filter(e => Date.parse(e.at) > now && Date.parse(e.at) <= now + 18 * hour).map(({ title, at, forecast, impact }) => ({ title, at, forecast, high: impact === undefined || impact === 'High' }));
   const withheld = requireVintage && events.some(e => Date.parse(e.at) <= now && Date.parse(e.at) > now - 24 * hour && e.surprise !== null && e.threshold && !vintageAvailable(e));
   return { points: round(clamp(released.reduce((sum, e) => sum + e.points, 0), 10)), released, upcoming,
     ...(requireVintage ? { actuals_status: withheld ? 'withheld_no_archived_vintage' : 'archived_vintage_only' } : {}) };
+}
+
+// Companies whose results move the index or the profile on their own. Weights are per profile: SPY, QQQ, XLE, DAL.
+export const bellwethers: Record<string, { name: string; weight: [number, number, number, number] }> = {
+  NVDA: { name: 'Nvidia', weight: [1.5, 2, 0.3, 0.3] }, MSFT: { name: 'Microsoft', weight: [1.3, 1.6, 0.2, 0.2] },
+  AAPL: { name: 'Apple', weight: [1.3, 1.6, 0.2, 0.2] }, AMZN: { name: 'Amazon', weight: [1.2, 1.5, 0.2, 0.3] },
+  GOOGL: { name: 'Alphabet', weight: [1.2, 1.5, 0.2, 0.2] }, META: { name: 'Meta', weight: [1, 1.3, 0.2, 0.2] },
+  AVGO: { name: 'Broadcom', weight: [0.8, 1.1, 0.1, 0.1] }, TSLA: { name: 'Tesla', weight: [0.7, 1, 0.1, 0.1] },
+  TSM: { name: 'TSMC', weight: [0.9, 1.3, 0.1, 0.1] }, ASML: { name: 'ASML', weight: [0.8, 1.2, 0.1, 0.1] },
+  NFLX: { name: 'Netflix', weight: [0.5, 0.8, 0, 0.1] }, JPM: { name: 'JPMorgan', weight: [0.9, 0.4, 0.3, 0.4] },
+  BAC: { name: 'Bank of America', weight: [0.5, 0.2, 0.2, 0.3] }, GS: { name: 'Goldman Sachs', weight: [0.5, 0.2, 0.2, 0.2] },
+  WMT: { name: 'Walmart', weight: [0.6, 0.4, 0.1, 0.3] }, LLY: { name: 'Eli Lilly', weight: [0.5, 0.2, 0, 0] },
+  UNH: { name: 'UnitedHealth', weight: [0.4, 0.1, 0, 0] }, XOM: { name: 'Exxon Mobil', weight: [0.4, 0.1, 1.6, 0] },
+  CVX: { name: 'Chevron', weight: [0.3, 0.1, 1.2, 0] }, DAL: { name: 'Delta', weight: [0.2, 0.1, 0.1, 1.6] },
+  UAL: { name: 'United Airlines', weight: [0.1, 0.1, 0.1, 1.2] },
+};
+
+export interface EarningsEvent { symbol: string; at: string; estimate: number | null; actual: number | null; surprise: number | null }
+export interface EarningsFeed { events: EarningsEvent[]; loaded: number; requested: number; error?: string }
+
+// About three in four companies beat EPS estimates, so a small beat is the expected result and only the excess counts.
+const typicalBeat = 0.04, surpriseScale = 0.08;
+
+export function scoreEarnings(events: EarningsEvent[] | undefined, now: number, symbol: string) {
+  if (!events) return null;
+  const column = pulseModel.symbols.indexOf(symbol as typeof pulseModel.symbols[number]);
+  const weightOf = (s: string) => bellwethers[s]?.weight[column] ?? 0;
+  const released = events.filter(e => Date.parse(e.at) <= now && Date.parse(e.at) > now - 24 * hour && e.surprise !== null && weightOf(e.symbol) > 0)
+    .map(e => ({ ...e, name: bellwethers[e.symbol].name, weight: weightOf(e.symbol), points: round(Math.tanh((e.surprise! - typicalBeat) / surpriseScale) * 1.5 * weightOf(e.symbol)) }));
+  const upcoming = events.filter(e => Date.parse(e.at) > now && Date.parse(e.at) <= now + 36 * hour && weightOf(e.symbol) >= 0.5)
+    .map(e => ({ symbol: e.symbol, name: bellwethers[e.symbol].name, at: e.at, estimate: e.estimate, weight: weightOf(e.symbol) }));
+  return { points: round(clamp(released.reduce((sum, e) => sum + e.points, 0), 6)), released, upcoming,
+    pending: upcoming.some(e => e.weight >= 1 && Date.parse(e.at) <= now + 18 * hour) };
 }
 
 // Backtested Jul–Oct 2026: the 7 a.m. score tracked the close-to-open gap (SPY r≈0.44) but not the open-to-close move (r≈0.12).
@@ -183,7 +218,7 @@ export function pulseTime(value: string): number {
   return Date.parse(value);
 }
 
-export function calculatePulse(stories: PulseStory[], asOf: string, symbol = 'SPY', truncated = false, extras: { market?: MarketInput[]; calendar?: CalendarEvent[]; impacts?: Impact[]; calendarRequiresVintage?: boolean; impactInputsTruncated?: boolean } = {}) {
+export function calculatePulse(stories: PulseStory[], asOf: string, symbol = 'SPY', truncated = false, extras: { market?: MarketInput[]; calendar?: CalendarEvent[]; earnings?: EarningsFeed; impacts?: Impact[]; calendarRequiresVintage?: boolean; impactInputsTruncated?: boolean } = {}) {
   const now = pulseTime(asOf);
   symbol = symbol.toUpperCase();
   if (!Object.hasOwn(exposures, symbol)) throw new Error(`Supported symbols: ${pulseModel.symbols.join(', ')}`);
@@ -239,25 +274,28 @@ export function calculatePulse(stories: PulseStory[], asOf: string, symbol = 'SP
   const market = scoreMarket(extras.market, symbol);
   const marketLive = market?.status === 'available';
   const calendar = scoreCalendar(extras.calendar, now, symbol, extras.calendarRequiresVintage);
-  const calendarPoints = calendar?.points ?? 0;
+  const earnings = scoreEarnings(extras.earnings?.events, now, symbol);
+  const calendarPoints = (calendar?.points ?? 0) + (earnings?.points ?? 0);
+  const released = Boolean(calendar?.released.length || earnings?.released.length);
   // News points count only when coverage is current; live prices alone can carry the score.
   const counted = (newsStatus === 'available' ? newsPoints : 0) + (marketLive ? market!.points : 0) + calendarPoints;
-  const raw = newsSignal || marketLive || calendar?.released.length ? round(50 + clamp((newsSignal ? newsPoints : 0) + (marketLive ? market!.points : 0) + calendarPoints, 50)) : null;
-  const status = truncated ? 'incomplete' : marketLive || calendar?.released.length ? 'available' : newsStatus;
+  const raw = newsSignal || marketLive || released ? round(50 + clamp((newsSignal ? newsPoints : 0) + (marketLive ? market!.points : 0) + calendarPoints, 50)) : null;
+  const status = truncated ? 'incomplete' : marketLive || released ? 'available' : newsStatus;
   const score = status === 'available' ? round(50 + clamp(counted, 50)) : null;
   return {
     model: pulseModel.version, as_of: new Date(now).toISOString(), symbol, ...pulseHorizon(now),
     score, research_score: raw, status,
     outlook: score === null ? 'unavailable' : score < 40 ? 'headwinds' : score > 60 ? 'tailwinds' : 'balanced',
-    // A scheduled high-impact release still ahead can overwhelm everything the score knows now.
-    confidence: status !== 'available' || calendar?.upcoming.length || (factors.filter(f => f.evidence.length).length < 2 && !(marketLive && newsStatus === 'available')) ? 'low' : 'medium',
-    components: { news: { status: newsStatus, points: newsStatus === 'available' ? round(newsPoints) : 0, method: useRead ? 'jev' : 'rules', ...(useRead ? { classified: read!.classified, channels: read!.channels } : {}) }, ...(market ? { market } : {}), ...(calendar ? { calendar } : {}) },
+    // A scheduled high-impact release or bellwether report still ahead can overwhelm everything the score knows now.
+    confidence: status !== 'available' || calendar?.upcoming.some(e => e.high) || earnings?.pending || (factors.filter(f => f.evidence.length).length < 2 && !(marketLive && newsStatus === 'available')) ? 'low' : 'medium',
+    components: { news: { status: newsStatus, points: newsStatus === 'available' ? round(newsPoints) : 0, method: useRead ? 'jev' : 'rules', ...(useRead ? { classified: read!.classified, channels: read!.channels } : {}) }, ...(market ? { market } : {}), ...(calendar ? { calendar } : {}), ...(earnings ? { earnings: { points: earnings.points, released: earnings.released, upcoming: earnings.upcoming, coverage: { loaded: extras.earnings!.loaded, requested: extras.earnings!.requested, ...(extras.earnings!.error ? { error: extras.earnings!.error } : {}) } } } : {}) },
     coverage: { window_start: new Date(start).toISOString(), eligible_stories: eligible.length, headline_stories: news.length,
       matched_stories: new Set(evidence.map(e => e.story_id)).size, event_groups: anchors.size, impact_inputs_truncated: extras.impactInputsTruncated ?? false,
       latest_headline_at: Number.isFinite(latest) ? new Date(latest).toISOString() : null, headline_age_hours: age === null ? null : round(age), truncated },
     factors, limitations: [pulseModel.calibration, 'Conservative headline rules cover only explicit macro events; unmatched stories are unclassified, not neutral.',
       market ? 'Price inputs are delayed Yahoo Finance quotes scored by fixed rules; they describe current conditions, not a forecast of returns.' : 'No price inputs, forecasts of returns, company earnings model, or automatic attribution of market moves.',
       'Historical calculations use current model rules with point-in-time news; they were not predictions saved at the time.',
+      ...(earnings ? ['Bellwether earnings count by EPS surprise beyond a typical beat; guidance and revenue reach the score only through headlines. Requests for a past time omit earnings because estimates are not archived point in time.'] : []),
       ...(calendar?.actuals_status === 'withheld_no_archived_vintage' ? ['Historical calendar actuals are withheld because no point-in-time vintage is archived.'] : []),
       ...(status !== 'available' ? ['A tradable outlook is withheld when coverage is stale, incomplete, absent, or contains no recognized signal.'] : [])],
   };
@@ -278,26 +316,26 @@ async function loadPulseInputs(db: D1Database, asOf: string, historyHours: numbe
   return { now, iso, stories, truncated: results.length > 8000, impacts: impactRows, impactInputsTruncated };
 }
 
-export async function loadPulseSnapshot(db: D1Database, asOf: string, symbol = 'SPY', marketInputs?: MarketInput[], calendar?: CalendarEvent[]) {
+export async function loadPulseSnapshot(db: D1Database, asOf: string, symbol = 'SPY', marketInputs?: MarketInput[], calendar?: CalendarEvent[], earnings?: EarningsFeed) {
   const { iso, stories, truncated, impacts, impactInputsTruncated } = await loadPulseInputs(db, asOf, 0);
-  const pulse = calculatePulse(stories, iso, symbol, truncated || impactInputsTruncated, { market: marketInputs, calendar, impacts, impactInputsTruncated });
+  const pulse = calculatePulse(stories, iso, symbol, truncated || impactInputsTruncated, { market: marketInputs, calendar, earnings, impacts, impactInputsTruncated });
   return { created_at: new Date().toISOString(), as_of: iso, pulse: { ...pulse, ...explain(pulse) },
-    inputs: { stories, impacts: impacts ?? [], market: marketInputs ?? null, calendar: calendar ?? null }, model: pulseModel };
+    inputs: { stories, impacts: impacts ?? [], market: marketInputs ?? null, calendar: calendar ?? null, ...(earnings ? { earnings } : {}) }, model: pulseModel };
 }
 
-export async function loadPulse(db: D1Database, asOf: string, symbol = 'SPY', marketAt?: (t: number) => MarketInput[] | undefined, historyHours = 0, calendar?: CalendarEvent[]) {
+export async function loadPulse(db: D1Database, asOf: string, symbol = 'SPY', marketAt?: (t: number) => MarketInput[] | undefined, historyHours = 0, calendar?: CalendarEvent[], earnings?: EarningsFeed) {
   const { now, iso, stories, truncated, impacts, impactInputsTruncated } = await loadPulseInputs(db, asOf, historyHours);
   const calendarRequiresVintage = historyHours > 0 || now < Date.now() - 60000;
   const outcomes = await learningOutcomes(db, symbol, iso);
-  const current = adaptPulse(calculatePulse(stories, iso, symbol, truncated || impactInputsTruncated, { market: marketAt?.(now), calendar, impacts, calendarRequiresVintage, impactInputsTruncated }), outcomes);
+  const current = adaptPulse(calculatePulse(stories, iso, symbol, truncated || impactInputsTruncated, { market: marketAt?.(now), calendar, earnings, impacts, calendarRequiresVintage, impactInputsTruncated }), outcomes);
   if (!historyHours) return { ...current, ...explain(current) };
   const step = 30 * 60000, history = [];
   for (let t = Math.ceil((now - historyHours * hour) / step) * step; t < now; t += step) {
-    const p = adaptPulse(calculatePulse(stories, new Date(t).toISOString(), symbol, truncated || impactInputsTruncated, { market: marketAt?.(t), calendar, impacts, calendarRequiresVintage: true, impactInputsTruncated }), outcomes);
+    const p = adaptPulse(calculatePulse(stories, new Date(t).toISOString(), symbol, truncated || impactInputsTruncated, { market: marketAt?.(t), calendar, earnings, impacts, calendarRequiresVintage: true, impactInputsTruncated }), outcomes);
     history.push({ as_of: p.as_of, score: p.score, news_points: p.components.news.points, market_points: p.components.market?.points ?? 0,
-      calendar_points: p.components.calendar?.points ?? 0, calendar_actuals_status: p.components.calendar?.actuals_status });
+      calendar_points: p.components.calendar?.points ?? 0, earnings_points: p.components.earnings?.points ?? 0, calendar_actuals_status: p.components.calendar?.actuals_status });
   }
-  history.push({ as_of: current.as_of, score: current.score, news_points: current.components.news.points, market_points: current.components.market?.points ?? 0, calendar_points: current.components.calendar?.points ?? 0 });
+  history.push({ as_of: current.as_of, score: current.score, news_points: current.components.news.points, market_points: current.components.market?.points ?? 0, calendar_points: current.components.calendar?.points ?? 0, earnings_points: current.components.earnings?.points ?? 0 });
   return { ...current, ...explain(current), history };
 }
 

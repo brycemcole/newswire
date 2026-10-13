@@ -1,5 +1,5 @@
 import { cached, quote, type Quote } from './quotes';
-import { loadPulse, pulseModel, pulseTime } from './market-pulse';
+import { bellwethers, loadPulse, pulseModel, pulseTime, type EarningsEvent } from './market-pulse';
 import { filingTools, readerRoute } from './filings';
 
 export interface DataEnv { DB: D1Database; FRED_API_KEY?: string }
@@ -383,13 +383,60 @@ export function actualFrom(event: { at: string; forecast: string }, measure: Mea
 }
 /** US high-impact events around a cutoff: releases already out (with their surprise) and scheduled ones still ahead. */
 export async function pulseCalendar(env: DataEnv, asOf: number, historyHours: number) {
-  const { results } = await env.DB.prepare("SELECT * FROM econ_events WHERE country = 'USD' AND impact = 'High' AND at >= ? AND at <= ? ORDER BY at")
+  const { results } = await env.DB.prepare("SELECT * FROM econ_events WHERE country = 'USD' AND impact IN ('High', 'Medium') AND at >= ? AND at <= ? ORDER BY at")
     .bind(iso(asOf - (historyHours + 24) * 3600000), iso(asOf + 24 * 3600000)).all<EconEvent>();
   return Promise.all(results.map(async e => {
     const measure = measureFor(e.country, e.title);
-    const a = Date.parse(e.at) <= Math.min(asOf, Date.now()) ? await actual(e, env).catch(() => undefined) : undefined;
-    return { title: e.title, at: e.at, forecast: e.forecast || null, actual: a?.text ?? null, surprise: a?.surprise ?? null, threshold: measure?.surprise ?? null };
+    const a = e.impact === 'High' && Date.parse(e.at) <= Math.min(asOf, Date.now()) ? await actual(e, env).catch(() => undefined) : undefined;
+    return { title: e.title, at: e.at, impact: e.impact, forecast: e.forecast || null, actual: a?.text ?? null, surprise: a?.surprise ?? null, threshold: measure?.surprise ?? null };
   }));
+}
+
+// Bellwether report dates, consensus EPS and the matching reported quarter, refreshed by the cron trigger because 21 Yahoo
+// requests do not fit in one pulse request's subrequest budget. Live only: Yahoo does not keep past estimates.
+type EarningsFeed = { events: EarningsEvent[]; loaded: number; requested: number; error?: string };
+export async function refreshEarnings(env: DataEnv): Promise<EarningsFeed> {
+  type SummaryResult = { quoteSummary?: { result?: Record<string, unknown>[] } };
+  const symbols = Object.keys(bellwethers);
+  const stored = await env.DB.prepare('SELECT payload FROM bellwether_earnings WHERE id = 1').first<{ payload: string }>().catch(() => null);
+  const previous = new Map((stored ? (JSON.parse(stored.payload) as EarningsFeed).events : []).map(e => [e.symbol, e]));
+  const results: PromiseSettledResult<EarningsEvent | null>[] = [];
+  await yahooSession();
+  for (let i = 0; i < symbols.length; i += 4) results.push(...await Promise.allSettled(symbols.slice(i, i + 4).map(async symbol => {
+    const data = await yahooAuthed<SummaryResult>(`https://query2.finance.yahoo.com/v10/finance/quoteSummary/${symbol}?modules=calendarEvents,earningsHistory`);
+    const result = data.quoteSummary?.result?.[0];
+    if (!result) throw new Error(`No Yahoo summary for ${symbol}`);
+    const calendar = objectValue(objectValue(result.calendarEvents).earnings);
+    const when = yahooRaw(Array.isArray(calendar.earningsDate) ? calendar.earningsDate[0] : undefined);
+    if (when === undefined || calendar.isEarningsDateEstimate === true) return null;
+    const at = when * 1000;
+    // The reported quarter must end shortly before this report; an older quarter belongs to the previous report.
+    const history = objectValue(result.earningsHistory).history;
+    const match = (Array.isArray(history) ? history : []).map(objectValue)
+      .map(h => ({ end: (yahooRaw(h.quarter) ?? 0) * 1000, actual: yahooRaw(h.epsActual), estimate: yahooRaw(h.epsEstimate), surprise: yahooRaw(h.surprisePercent) }))
+      .find(h => h.end < at && at - h.end < 80 * day && h.actual !== undefined && at <= Date.now());
+    return { symbol, at: iso(at), estimate: match?.estimate ?? yahooRaw(calendar.earningsAverage) ?? null, actual: match?.actual ?? null,
+      surprise: match?.surprise ?? (match?.actual !== undefined && match.estimate ? (match.actual - match.estimate) / Math.abs(match.estimate) : null) };
+  })));
+  // A symbol that failed this time keeps its last good row.
+  const events = symbols.flatMap((symbol, i) => {
+    const r = results[i];
+    const value = r.status === 'fulfilled' ? r.value : previous.get(symbol) ?? null;
+    return value ? [value] : [];
+  });
+  const failure = results.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+  const feed: EarningsFeed = { events, loaded: results.filter(r => r.status === 'fulfilled').length, requested: symbols.length,
+    ...(failure ? { error: String(failure.reason instanceof Error ? failure.reason.message : failure.reason).slice(0, 160) } : {}) };
+  await env.DB.prepare('INSERT INTO bellwether_earnings (id, payload, updated_at) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at')
+    .bind(JSON.stringify(feed), iso()).run();
+  return feed;
+}
+
+export async function pulseEarnings(env: DataEnv): Promise<EarningsFeed> {
+  const row = await env.DB.prepare('SELECT payload, updated_at FROM bellwether_earnings WHERE id = 1').first<{ payload: string; updated_at: string }>();
+  if (!row) return { events: [], loaded: 0, requested: Object.keys(bellwethers).length, error: 'Earnings calendar has not been collected yet' };
+  const feed = JSON.parse(row.payload) as EarningsFeed;
+  return Date.now() - Date.parse(row.updated_at) > 2 * 3600000 ? { ...feed, error: `Earnings calendar last refreshed ${row.updated_at}` } : feed;
 }
 
 function eventRow(e: EconEvent, a?: Actual): Row {

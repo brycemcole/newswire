@@ -64,6 +64,14 @@ export function explain(p: Pulse) {
       detail: /cpi|pce|ppi|earnings/i.test(r.title) ? (r.points < 0 ? 'Hotter inflation makes Fed rate cuts less likely.' : 'Cooler inflation leaves room for Fed rate cuts.') : r.points < 0 ? 'A weaker reading than expected.' : 'A stronger reading than expected.',
       stat: { label: r.title, value: r.actual ?? '—', change: `Expected ${r.forecast ?? '—'}` }, at: r.at });
   }
+  for (const r of p.components.earnings?.released ?? []) {
+    if (Math.abs(r.points) < 0.3 || r.surprise === null) continue;
+    const beat = r.surprise >= 0, pctText = `${Math.abs(r.surprise * 100).toFixed(1)}%`;
+    drivers.push({ kind: 'data', effect: r.points < 0 ? 'lower' : 'higher', points: r.points,
+      title: `${r.name} ${beat ? 'beat' : 'missed'} earnings estimates by ${pctText}`,
+      detail: r.points < 0 ? (beat ? 'A smaller beat than companies usually deliver.' : `A miss from a company this size weighs on ${names[symbol]}.`) : `A bigger beat than usual lifts ${names[symbol]}.`,
+      stat: { label: `${r.name} EPS`, value: r.actual === null ? '—' : r.actual.toFixed(2), change: `Expected ${r.estimate === null ? '—' : r.estimate.toFixed(2)}` }, at: r.at });
+  }
   drivers.sort((a, b) => Math.abs(b.points) - Math.abs(a.points));
 
   const lean = p.score === null ? null : p.score - 50;
@@ -79,6 +87,29 @@ export function explain(p: Pulse) {
   const summary = lean === null ? 'Markets are closed and there is no fresh news to read.'
     : !lead || call.strength === 0 ? `Nothing is pushing ${names[symbol]} hard in either direction right now.`
     : `${phrase(lead).replace(/^./, c => c.toUpperCase())}${against[1] ? `, plus ${phrase(against[1])},` : ''} ${against[1] ? 'point' : 'points'} to ${lean < 0 ? 'weaker' : 'stronger'} ${names[symbol]} at the ${when}.`;
-  const coming = (p.components.calendar?.upcoming ?? []).map(e => ({ title: e.title, at: e.at, detail: `${e.forecast ? `Forecast ${e.forecast}. ` : ''}A surprise here can outweigh everything above.` }));
+  const coming = [...comingData(p.components.calendar?.upcoming ?? []), ...(p.components.earnings?.upcoming ?? []).map(e => ({
+    title: `${e.name} earnings`, at: e.at, timing: session(e.at),
+    detail: `${e.estimate === null ? '' : `Expected EPS ${e.estimate.toFixed(2)}. `}${e.weight >= 1 ? `Big enough to move ${names[symbol]} on its own.` : `Can sway ${names[symbol]}.`}` }))]
+    .sort((a, b) => a.at.localeCompare(b.at)).slice(0, 8);
   return { call, summary, drivers: drivers.slice(0, 8), coming_up: coming };
+}
+
+// Yahoo stamps reports with placeholder times, so only the side of the session is reliable.
+function session(at: string) {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date(at));
+  const minutes = Number(parts.find(x => x.type === 'hour')?.value) % 24 * 60 + Number(parts.find(x => x.type === 'minute')?.value);
+  return minutes < 570 ? 'before the open' : minutes >= 960 ? 'after the close' : undefined;
+}
+
+// Releases at the same minute (CPI m/m, y/y, core) are one event to a reader.
+function comingData(events: { title: string; at: string; forecast: string | null; high: boolean }[]) {
+  const groups = new Map<string, typeof events>();
+  for (const e of events) groups.set(e.at, [...(groups.get(e.at) ?? []), e]);
+  return [...groups.entries()].map(([at, list]) => {
+    const families = [...new Set(list.map(e => e.title.replace(/^Core /, '').replace(/ [mqy]\/[mqy]$/, '').trim()))];
+    const headline = list.find(e => e.forecast && e.high && !/^Core /.test(e.title)) ?? list.find(e => e.forecast);
+    const high = list.some(e => e.high);
+    return { title: families.join(', '), at,
+      detail: `${headline?.forecast ? `${headline.title} forecast ${headline.forecast}. ` : ''}${high ? 'A surprise here can outweigh everything above.' : 'Usually a smaller mover.'}` };
+  });
 }

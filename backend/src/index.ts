@@ -1,5 +1,5 @@
 import { AttestError, checkChallenge, fromBase64, makeChallenge, sha256, toBase64, verifyAssertion, verifyAttestation } from './attest';
-import { DataError, dataRoute, mcpRoute, shipAreas, pulseCalendar, storeEconEvents, storeEconHistory, storeEconSeries, storePublicSources } from './data';
+import { DataError, dataRoute, mcpRoute, shipAreas, pulseCalendar, pulseEarnings, refreshEarnings, storeEconEvents, storeEconHistory, storeEconSeries, storePublicSources } from './data';
 import { quotes, resolve, type Mention } from './quotes';
 import { impactChannels, loadPulse, loadPulseSnapshot, pulseModel, pulseTime } from './market-pulse';
 import { captureForecast, captureWindow, evaluateForecastCandidate, ForecastError, getResearch, listForecastTrainingRows, registerForecastCandidate, settleForecast } from './forecast';
@@ -30,16 +30,16 @@ const bodyLimit = 131072;
 
 async function livePulseSnapshot(env: Env, symbol: string) {
   const started = Date.now();
-  const [bars, calendar] = await Promise.all([loadBars(started, 0), pulseCalendar(env, started, 0).catch(() => undefined)]);
+  const [bars, calendar, earnings] = await Promise.all([loadBars(started, 0), pulseCalendar(env, started, 0).catch(() => undefined), pulseEarnings(env).catch(() => undefined)]);
   const now = Date.now();
   const observedCalendar = calendar?.map(event => ({ ...event, actual_available_at: new Date(now).toISOString() }));
-  return loadPulseSnapshot(env.DB, new Date(now).toISOString(), symbol, inputsAt(bars, now, true), observedCalendar);
+  return loadPulseSnapshot(env.DB, new Date(now).toISOString(), symbol, inputsAt(bars, now, true), observedCalendar, earnings);
 }
 
 async function liveResearchPulse(env: Env, symbol: string) {
   const now = Date.now();
-  const [bars, calendar] = await Promise.all([loadBars(now, 0), pulseCalendar(env, now, 0).catch(() => undefined)]);
-  return loadPulse(env.DB, new Date(now).toISOString(), symbol, time => inputsAt(bars, time, true), 0, calendar);
+  const [bars, calendar, earnings] = await Promise.all([loadBars(now, 0), pulseCalendar(env, now, 0).catch(() => undefined), pulseEarnings(env).catch(() => undefined)]);
+  return loadPulse(env.DB, new Date(now).toISOString(), symbol, time => inputsAt(bars, time, true), 0, calendar, earnings);
 }
 
 class ApiError extends Error {
@@ -650,8 +650,8 @@ async function route(request: Request, env: Env, ctx?: ExecutionContext): Promis
     if (!Number.isInteger(history) || history < 0 || history > 48) invalid('history must be 0–48 hours');
     if (q.market !== undefined && !['on', 'off'].includes(q.market)) invalid('market must be on or off');
     const cutoff = pulseTime(asOf), live = Date.now() - cutoff < 3 * 60000;
-    const [bars, calendar] = q.market === 'off' ? [null, undefined] : await Promise.all([loadBars(cutoff, history), live ? pulseCalendar(env, cutoff, history).catch(() => undefined) : undefined]);
-    return json(await loadPulse(env.DB, asOf, symbol, bars ? t => inputsAt(bars, t, live && t === cutoff) : undefined, history, calendar));
+    const [bars, calendar, earnings] = q.market === 'off' ? [null, undefined, undefined] : await Promise.all([loadBars(cutoff, history), live ? pulseCalendar(env, cutoff, history).catch(() => undefined) : undefined, live ? pulseEarnings(env).catch(() => undefined) : undefined]);
+    return json(await loadPulse(env.DB, asOf, symbol, bars ? t => inputsAt(bars, t, live && t === cutoff) : undefined, history, calendar, earnings));
   }
   if (path === '/v1/quotes') {
     if (request.method !== 'GET') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
@@ -704,5 +704,8 @@ export default {
     secured.headers.set('Vary', 'Authorization');
     if (response.status === 401) secured.headers.set('WWW-Authenticate', 'Bearer');
     return secured;
+  },
+  async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(refreshEarnings(env).then(() => undefined));
   },
 };
