@@ -51,15 +51,24 @@ const channelExposure: Record<string, Record<string, number>> = {
 };
 const sizeWeight = { major: 1, moderate: 0.5, minor: 0.2 } as const;
 
-// Each headline counts by size, confidence and age (12-hour half-life). Within a channel, tanh gives diminishing returns,
-// so twenty outlets repeating one story saturate the channel instead of multiplying it.
+// Repeated titles share the earliest evidence clock and contribute once per channel.
 export function scoreImpacts(impacts: Impact[] | undefined, now: number, symbol: string) {
   if (!impacts) return null;
   const available = impacts.filter(i => Number.isFinite(Date.parse(i.classified_at)) && Date.parse(i.classified_at) <= now
     && Date.parse(i.received_at) <= now && Date.parse(i.published_at) <= now);
-  const live = available.filter(i => Date.parse(i.published_at) > now - 48 * hour && i.direction !== 0)
+  const groups = new Map<string, Impact>();
+  for (const item of [...available].sort((a, b) => Date.parse(a.received_at) - Date.parse(b.received_at) || a.id.localeCompare(b.id))) {
+    const key = `${item.channel}|${item.direction}|${item.title.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()}`;
+    if (!groups.has(key)) groups.set(key, item);
+  }
+  const evidenceAt = (item: Impact) => {
+    const published = Date.parse(item.published_at), received = Date.parse(item.received_at);
+    // Midnight UTC is a common date-only RSS placeholder; preserve exact publication ages otherwise.
+    return new Date(published).toISOString().endsWith('T00:00:00.000Z') && received - published < 24 * hour ? received : Math.min(published, received);
+  };
+  const live = [...groups.values()].filter(i => evidenceAt(i) > now - 48 * hour && i.direction !== 0)
     .map(i => {
-      const age = (now - Math.min(Date.parse(i.published_at), Date.parse(i.received_at))) / hour;
+      const age = (now - evidenceAt(i)) / hour;
       // Energy shocks hurt most stocks but help energy producers.
       const exposure = channelExposure[i.channel]?.[symbol] ?? 1;
       return { ...i, weight: round(i.direction * Math.sign(exposure) * sizeWeight[i.size] * i.confidence * 2 ** (-age / 12)), exposure: Math.abs(exposure) };
@@ -144,7 +153,7 @@ export function scoreMarket(inputs: MarketInput[] | undefined, symbol: string) {
     const input = inputs.find(i => i.id === spec.id);
     const usable = input?.status === 'live' && input.change_day !== null;
     const signal = usable ? 0.7 * Math.tanh(input!.change_day! / spec.typical) + 0.3 * Math.tanh((input!.change_hour ?? 0) / (spec.typical / 3)) : 0;
-    const weight = signal >= 0 ? spec.up : spec.down;
+    const weight = (spec.up + spec.down) / 2;
     const exposure = spec.exposure[symbol as keyof typeof spec.exposure];
     return { ...(input ?? { id: spec.id, label: spec.label, symbol: spec.symbol, unit: spec.unit, price: null, price_at: null, change_day: null, change_hour: null, status: 'unavailable' as const }),
       exposure, reason: spec.reason, points: round(spec.direction * weight * signal * spec.points * exposure) };
@@ -159,7 +168,7 @@ interface Rule {
 }
 
 export const pulseModel = {
-  version: 'market-pulse-v2.1', windowHours: 96, halfLifeHours: 36,
+  version: 'market-pulse-v2.2', windowHours: 96, halfLifeHours: 36,
   staleAfterHours: 24, factorPoints: { energy: 12, trade: 10, rates: 10, growth: 8, credit: 10 },
   symbols: ['SPY', 'QQQ', 'XLE', 'DAL'],
   calibration: 'Uncalibrated research index; not a probability or expected return.',

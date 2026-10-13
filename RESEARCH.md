@@ -10,7 +10,7 @@ Capture windows use New York time and the exchange session calendar:
 
 | Window | Target |
 | --- | --- |
-| 07:00–07:15 | Opening gap from the previous session close |
+| 08:35–08:50 | Fresh captured pre-market ETF price to the opening bar’s open |
 | 09:25–09:30 | Open-to-close return |
 | Last 15 minutes of the session | Remaining move from the observed price to the next session open |
 
@@ -22,9 +22,11 @@ Authenticated readers use `GET /v1/research?symbol=SPY`. The native Market Pulse
 
 ## Learning
 
-SPY and QQQ use `forecast-adaptive-v1` immediately. Every live refresh and scheduled capture reads up to 180 completed forecasts for that symbol, using only outcomes received by the calculation timestamp. There is no minimum-day gate. Research shows this live reading separately from the immutable saved forecast and refreshes while visible every minute.
+SPY and QQQ use `forecast-adaptive-v2`. Learning uses only completed v2 forecasts in the same horizon and outcomes received by the calculation timestamp. The live pulse keeps its unadjusted score until 60 eligible training sessions exist. Twenty earlier same-horizon returns, available before each forecast, provide its rolling sample volatility; zero or missing volatility excludes that training row. This requires at least 80 distinct sessions.
 
-Completed outcomes adjust the existing signal weights toward a directional target index (35 down, 50 flat, 65 up). The adjustment has eight units of prior support, a ten-session half-life, quarter weight for other forecast periods, and normalization within each session. Coefficients stay between zero and twice their original weights, and the total correction is capped at 12 index points. These are heuristic learning choices, not fitted return probabilities. Small samples have small influence; repeated runs add no observations. New captures freeze the weights and support with their evidence. Existing forecasts and outcomes are never rewritten.
+The target is `50 + 15 × clamp(return_pct / prior_20_session_sigma, -3, 3)`. A joint ridge regression fits residual corrections for news, market, calendar and earnings, with ridge penalty 8, a 60-session recency half-life and a total correction capped at 12 index points. The aggregate `score_delta` is excluded from adaptive and new shadow training. Correlated inputs are solved jointly; other horizons contribute zero weight. The correction does not establish calibrated probabilities or predictive skill.
+
+New captures freeze the model version and evidence. Existing forecasts and outcomes are never rewritten. Legacy v1 outcomes remain visible individually but are excluded from v2 performance aggregates and training. Legacy probability candidates cannot attach to v2 captures. The morning window has shifted after the usual 08:30 releases; it requires a completed target-price bar no more than five minutes old, and never falls back to yesterday’s close. Delayed quotes may therefore skip a capture. Its actual baseline time is exposed; this remains a bar-based approximation, not an auction feed.
 
 The separate daily probability-model experiment still uses chronological training, calibration and holdout blocks and compares candidates with a base-rate and a price-only model. Its stricter promotion gates do not block the adaptive index or live direction changes.
 
@@ -53,3 +55,9 @@ On the Fedora Mini, `bash scripts/research-service/prepare-browser.sh` extracts 
 For local checks, use Node 22 or newer and run `npm run typecheck` and `npm test` from `backend/`. The crawler supports `--once --dry-run` for inspection without archive writes. A frozen live snapshot is available from `GET /v1/market-pulse/snapshot?symbol=SPY`; this endpoint does not accept historical cutoffs.
 
 Stop the three research timers to disable new research work. Restore the previous Worker version and backed-up Mini code if rollback is needed. Additive database tables preserve collected evidence and do not need to be deleted during code rollback.
+
+## Audit follow-ups requiring further work
+
+The revised historical backtest uses the 08:35 capture-price baseline; old prior-close correlations are not forward-alpha evidence. A new out-of-sample performance run has not been completed.
+
+Calendar surprise residualization still needs a point-in-time reaction dataset and fitted coefficients. The heuristic pulse can still count a release and its price reaction together. Semantic event clustering, direct per-ticker Jev impacts, additional volatility/fuel/breadth inputs, official auction settlement, dynamic exchange calendars and historical consensus feeds remain follow-ups. No provider subscription or data migration is part of this patch. Do not assume that adding those signals improves predictive performance without chronological validation.

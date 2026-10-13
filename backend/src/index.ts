@@ -625,7 +625,7 @@ async function route(request: Request, env: Env, ctx?: ExecutionContext): Promis
     if (request.method === 'GET') {
       const symbol = choice(q.symbol, 'symbol', ['SPY', 'QQQ']);
       const horizon = choice(q.horizon, 'horizon', ['opening_gap', 'cutoff_to_open', 'open_to_close']);
-      return json({ candidates: (await env.DB.prepare("SELECT id,symbol,horizon,status,created_at FROM forecast_models WHERE symbol=? AND horizon=? AND status IN ('shadow','promoted') ORDER BY created_at DESC LIMIT 100").bind(symbol, horizon).all()).results });
+      return json({ candidates: (await env.DB.prepare("SELECT id,symbol,horizon,model_version,status,created_at FROM forecast_models WHERE symbol=? AND horizon=? AND status IN ('shadow','promoted') ORDER BY created_at DESC LIMIT 100").bind(symbol, horizon).all()).results });
     }
     if (request.method !== 'POST') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
     const input = await readBody(request) as Parameters<typeof registerForecastCandidate>[1];

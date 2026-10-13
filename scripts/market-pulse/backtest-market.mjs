@@ -31,20 +31,21 @@ const offset = d => { const probe = Date.parse(`${d}T13:25:00Z`); return et(prob
 const corr = (x, y) => { const n = x.length, mx = x.reduce((a, b) => a + b) / n, my = y.reduce((a, b) => a + b) / n;
   let sxy = 0, sxx = 0, syy = 0; for (let i = 0; i < n; i++) { sxy += (x[i] - mx) * (y[i] - my); sxx += (x[i] - mx) ** 2; syy += (y[i] - my) ** 2; } return sxx && syy ? sxy / Math.sqrt(sxx * syy) : 0; };
 const results = {};
-// The predictable part of overnight news is the gap from the last regular close to the next open.
+// Only measure the move after the post-release capture baseline.
 for (const withFutures of [true, false]) {
   for (const profile of profiles) {
     const rows = [];
     days.forEach((d, i) => {
       if (!i) return;
-      const t = Date.parse(`${d}T11:00:00Z`) + offset(d), today = session(profile, d), before = session(profile, days[i - 1]);
-      if (!today || !before) return;
+      const t = Date.parse(`${d}T12:35:00Z`) + offset(d), today = session(profile, d);
+      const baseline = raw[profile].filter(r => r.t + 300000 <= t && t - (r.t + 300000) <= 300000).at(-1)?.close;
+      if (!today || !(baseline > 0)) return;
       const inputs = inputsAt(bars, t).map(x => !withFutures && x.id === 'futures' ? { ...x, status: 'unavailable' } : x), scored = scoreMarket(inputs, profile);
       if (scored.status !== 'available') return;
-      rows.push({ points: scored.points, ret: (today.open / before.close - 1) * 100, per: Object.fromEntries(scored.inputs.map(x => [x.id, x.points])) });
+      rows.push({ points: scored.points, ret: (today.open / baseline - 1) * 100, per: Object.fromEntries(scored.inputs.map(x => [x.id, x.points])) });
     });
     const x = rows.map(r => r.points), y = rows.map(r => r.ret), strong = rows.filter(r => Math.abs(r.points) >= 2);
-    results[`7:00 → gap (prior close → open) ${withFutures ? 'with' : 'without'} futures ${profile}`] = { days: rows.length, correlation: +corr(x, y).toFixed(3), strong_days: strong.length,
+    results[`8:35 → open (capture price → open) ${withFutures ? 'with' : 'without'} futures ${profile}`] = { days: rows.length, correlation: +corr(x, y).toFixed(3), strong_days: strong.length,
       hit_rate: strong.length ? +(strong.filter(r => Math.sign(r.points) === Math.sign(r.ret)).length / strong.length).toFixed(3) : null,
       per_input_correlation: Object.fromEntries(marketInstruments.map(i => [i.id, +corr(rows.map(r => r.per[i.id] ?? 0), y).toFixed(3)])) };
   }

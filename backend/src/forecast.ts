@@ -152,7 +152,7 @@ export function captureWindow(now = Date.now()): { symbol: string; horizon: Hori
   const local = parts(now), today = `${local.year}-${local.month}-${local.day}`, session = sessionFor(today);
   if (!session) return [];
   const minute = Number(local.hour) * 60 + Number(local.minute), close = timeFmt.format(new Date(session.close)).split(':').map(Number), closeMinute = close[0] * 60 + close[1];
-  let horizon: Horizon | null = minute >= 420 && minute < 435 ? 'opening_gap' : minute >= 565 && minute < 570 ? 'open_to_close' : minute >= closeMinute - 15 && minute <= closeMinute ? 'cutoff_to_open' : null;
+  let horizon: Horizon | null = minute >= 515 && minute < 530 ? 'opening_gap' : minute >= 565 && minute < 570 ? 'open_to_close' : minute >= closeMinute - 15 && minute <= closeMinute ? 'cutoff_to_open' : null;
   if (!horizon) return [];
   const date = horizon === 'cutoff_to_open' ? nextSession(today).date : today;
   return forecastModel.symbols.map(symbol => ({ symbol, horizon: horizon!, session_date: date }));
@@ -170,14 +170,15 @@ export async function captureForecast(db: DB, input: { symbol: string; snapshot:
   const closeParts = currentSession ? timeFmt.format(new Date(currentSession.close)).split(':').map(Number) : [0, 0];
   const closeMinute = closeParts[0] * 60 + closeParts[1];
   let horizon: Horizon | null = null, target = currentSession, baseline: { price: number; at: number } | null = null;
-  if (currentSession && hhmm >= 420 && hhmm < 435) {
+  if (currentSession && hhmm >= 515 && hhmm < 530) {
     horizon = 'opening_gap';
-    const prior = priorSession(today);
     target = currentSession;
     const quote = (input.snapshot.inputs as any).targets?.[symbol] ?? (input.snapshot.inputs as any).prices?.[symbol];
-    const previousClose = Number(quote?.previous_close ?? quote?.prior_close?.price), previousCloseAt = Date.parse(quote?.previous_close_at ?? quote?.prior_close?.at);
-    if (!(previousClose > 0) || !Number.isFinite(previousCloseAt) || previousCloseAt > asOf || Math.abs(previousCloseAt - prior.close) > 10 * 60000) invalid('Opening gap requires the frozen prior-session close in snapshot.inputs.targets');
-    baseline = { price: previousClose, at: previousCloseAt };
+    const price = Number(quote?.price), at = Date.parse(quote?.price_at);
+    const observed = quote?.observed_at === undefined ? asOf : Date.parse(quote.observed_at);
+    if (!(price > 0) || !Number.isFinite(at) || at > asOf || asOf - at > 5 * 60000
+      || !Number.isFinite(observed) || observed > asOf) invalid('Opening gap requires a fresh frozen pre-market target price at capture');
+    baseline = { price, at };
   } else if (currentSession && hhmm >= 565 && hhmm < 570) {
     horizon = 'open_to_close';
     target = currentSession;
@@ -192,7 +193,7 @@ export async function captureForecast(db: DB, input: { symbol: string; snapshot:
   if (!horizon || !target) return { inserted: 0, forecasts: [] };
   if (input.targetSession && input.targetSession !== (horizon === 'cutoff_to_open' ? target.date : today)) invalid('targetSession does not match the session window');
   const features = makeFeatures(input.snapshot), createdAt = iso(now), forecastAt = iso(asOf);
-  const forecast = adaptiveForecast(features, await learningOutcomes(db, symbol, forecastAt), horizon, forecastAt);
+  const forecast = adaptiveForecast(features, await learningOutcomes(db, symbol, forecastAt, horizon), horizon, forecastAt);
   const frozen = JSON.stringify({ ...input.snapshot, learning: forecast }), inputVersion = await sha256(stable({ ...input.snapshot.inputs, learning: forecast }));
   const marketPoints = Number((input.snapshot.pulse as any).components?.market?.points ?? 0);
   const priceOnlyDirection = marketPoints > 0 ? 1 : marketPoints < 0 ? -1 : 0;
@@ -205,7 +206,7 @@ export async function captureForecast(db: DB, input: { symbol: string; snapshot:
   const insertion = await db.prepare(`INSERT INTO forecasts (id,symbol,session_date,horizon,forecast_at,target_start_at,target_end_at,model_version,input_version,score,baseline_price,baseline_at,price_only_direction,tilt,probabilities_json,features_json,snapshot_json,created_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(symbol,session_date,horizon) DO NOTHING`).bind(row.id,row.symbol,row.session_date,row.horizon,row.forecast_at,row.target_start_at,row.target_end_at,row.model_version,row.input_version,row.score,row.baseline_price,row.baseline_at,row.price_only_direction,row.tilt,row.probabilities_json,row.features_json,row.snapshot_json,row.created_at).run();
   if (insertion.meta.changes > 0) {
-    const candidates = await db.prepare("SELECT id,coefficients_json,status FROM forecast_models WHERE symbol=? AND horizon=? AND status IN ('shadow','promoted') ORDER BY created_at DESC LIMIT 10").bind(symbol,horizon).all<any>();
+    const candidates = await db.prepare("SELECT id,coefficients_json,status FROM forecast_models WHERE symbol=? AND horizon=? AND model_version='ridge-logit-shadow-v2' AND status IN ('shadow','promoted') ORDER BY created_at DESC LIMIT 10").bind(symbol,horizon).all<any>();
     for (const candidate of candidates.results) {
     const saved = JSON.parse(candidate.coefficients_json), probability = predictCandidate(saved, features);
     const priceOnlyProbability = predictCandidate(saved.priceOnly, features);
@@ -288,7 +289,7 @@ export async function listForecastTrainingRows(db: DB, symbol: string, horizon: 
   symbol = String(symbol ?? '').toUpperCase();
   if (!symbolOK(symbol) || !(forecastModel.horizons as readonly string[]).includes(horizon)) invalid('symbol and horizon are invalid');
   const { results } = await db.prepare(`SELECT f.id,f.symbol,f.session_date,f.horizon,f.forecast_at,f.tilt,f.features_json,o.direction,o.return_pct
-    FROM forecasts f JOIN forecast_outcomes o ON o.forecast_id=f.id WHERE f.symbol=? AND f.horizon=? ORDER BY f.session_date,f.forecast_at`).bind(symbol,horizon).all<any>();
+    FROM forecasts f JOIN forecast_outcomes o ON o.forecast_id=f.id WHERE f.symbol=? AND f.horizon=? AND f.model_version=? ORDER BY f.session_date,f.forecast_at`).bind(symbol,horizon,adaptiveVersion).all<any>();
   return { symbol, horizon, rows: results.map(row => ({ ...row, features: JSON.parse(row.features_json) })) };
 }
 
@@ -304,11 +305,11 @@ export async function registerForecastCandidate(db: DB, input: { symbol: string;
   if (!priceOnly || !Number.isFinite(priceOnly.coefficients?.intercept) || !priceOnly.coefficients?.weights || Object.values(priceOnly.coefficients.weights).some(value => !Number.isFinite(value)) || !priceOnly.coefficients?.means || !priceOnly.coefficients?.scales || !Number.isFinite(priceOnly.calibrator?.slope) || !Number.isFinite(priceOnly.calibrator?.intercept)) invalid('candidate requires a finite price-only comparator');
   const coefficients = JSON.stringify({ coefficients: input.coefficients, calibrator: input.calibrator, priceOnly });
   const evaluationJSON = JSON.stringify({ ...(input.evaluation as any), baselineUpProbability: input.baselineUpProbability });
-  const id = await sha256(`${symbol}|${horizon}|${input.trainThrough}|${input.trainingHash}|${coefficients}|${evaluationJSON}`);
+  const id = await sha256(`${forecastModel.candidate.version}|${symbol}|${horizon}|${input.trainThrough}|${input.trainingHash}|${coefficients}|${evaluationJSON}`);
   const createdAt = iso(now);
   await db.prepare(`INSERT INTO forecast_models (id,symbol,horizon,model_version,status,coefficients_json,evaluation_json,train_through,created_at)
-    VALUES (?,?,?,'ridge-logit-shadow-v1','shadow',?,?,?,?) ON CONFLICT(id) DO NOTHING`).bind(id,symbol,horizon,coefficients,evaluationJSON,input.trainThrough,createdAt).run();
-  return { id, symbol, horizon, status: 'shadow', model_version: 'ridge-logit-shadow-v1', training_hash: input.trainingHash, created_at: createdAt };
+    VALUES (?,?,?,'ridge-logit-shadow-v2','shadow',?,?,?,?) ON CONFLICT(id) DO NOTHING`).bind(id,symbol,horizon,coefficients,evaluationJSON,input.trainThrough,createdAt).run();
+  return { id, symbol, horizon, status: 'shadow', model_version: 'ridge-logit-shadow-v2', training_hash: input.trainingHash, created_at: createdAt };
 }
 
 export async function evaluateForecastCandidate(db: DB, candidateId: string, now = Date.now()) {
@@ -400,9 +401,9 @@ export async function getResearch(db: DB, symbol: string) {
       f.price_only_direction,o.baseline_price,o.baseline_at,o.endpoint_price,o.endpoint_at,o.return_pct,o.direction,o.source AS outcome_source,o.source_retrieved_at
       FROM forecasts f LEFT JOIN forecast_outcomes o ON o.forecast_id=f.id WHERE f.symbol=? ORDER BY f.forecast_at DESC,f.session_date DESC LIMIT 300`).bind(symbol).all<any>(),
     db.prepare("SELECT id,query,reason,status,created_at,event_id FROM research_questions WHERE status IN ('open','queued') ORDER BY created_at DESC LIMIT 30").all<any>(),
-    db.prepare("SELECT * FROM forecast_models WHERE symbol=? AND status='promoted' ORDER BY created_at DESC LIMIT 1").bind(symbol).first<any>(),
+    db.prepare("SELECT * FROM forecast_models WHERE symbol=? AND model_version='ridge-logit-shadow-v2' AND status='promoted' ORDER BY created_at DESC LIMIT 1").bind(symbol).first<any>(),
   ]);
-  const rows = forecasts.results, settled = rows.filter(r => r.return_pct !== null && r.return_pct !== undefined);
+  const rows = forecasts.results, settled = rows.filter(r => r.model_version === adaptiveVersion && r.return_pct !== null && r.return_pct !== undefined);
   const byHorizon = Object.fromEntries(forecastModel.horizons.map(h => [h, directionalScore(settled.filter(r => r.horizon === h))]));
   const latest = rows[0] ?? null;
   let latestDrivers: { evidence: any[]; contradictions: any[] } = { evidence: [], contradictions: [] };
@@ -416,7 +417,7 @@ export async function getResearch(db: DB, symbol: string) {
   const latestDTO = latest ? { ...compactForecast(latest, latestDrivers), probability_up: probabilityById.get(latest.id) ?? null } : null;
   return { symbol, status: latest ? (latest.tilt === 'unavailable' ? 'limited' : 'available') : 'collecting',
     summary: latest ? `${latest.tilt} research tilt; experimental and uncalibrated` : 'Collecting frozen forecasts; no probability estimate is validated.',
-    latest: latestDTO, performance: { settled: settled.length, horizons: byHorizon, probability_metrics: null,
+    latest: latestDTO, performance: { model_version: adaptiveVersion, excluded_legacy: rows.filter(r => r.model_version !== adaptiveVersion && r.return_pct !== null && r.return_pct !== undefined).length, settled: settled.length, horizons: byHorizon, probability_metrics: null,
       candidate_status: 'adaptive learning', candidate: activeModel ? JSON.parse(activeModel.evaluation_json) : null },
     recent, questions: questions.results.map(({ event_id, ...q }) => ({ ...q, ...(event_id ? { event_id } : {}) })),
     model: { ...forecastModel, active_candidate: activeModel ? { version: activeModel.model_version, promoted_at: activeModel.promoted_at } : null } };
