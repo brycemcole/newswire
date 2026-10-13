@@ -11,6 +11,15 @@ struct ArticleReaderPreview: View {
     }
 }
 
+struct StoryLayoutPreview: View {
+    private static let paragraphs = (1...10).map { "<p>Paragraph \($0). Apple sued OpenAI in July, accusing it of misusing confidential Apple material. The judge ordered OpenAI to hand over hiring records, and the case continues while both sides collect more documents and testimony.</p>" }.joined()
+    var body: some View {
+        NavigationStack {
+            StoryDetail(story: Story(id: "layout-preview", externalId: "layout-preview", title: "Judge orders OpenAI to turn over hiring records in Apple trade secrets case", summary: "", body: Self.paragraphs, source: "TechCrunch", url: URL(string: "https://example.com/layout-preview")!, publishedAt: .now, receivedAt: .now, category: "technology", priority: "urgent", tickers: ["AAPL"], tags: [], agent: "preview", imageUrl: "https://picsum.photos/seed/newswire-layout/1200/800"))
+        }
+    }
+}
+
 struct StoryDesignPreview: View {
     @State private var store = FeedStore()
     private static func story(_ id: String, _ title: String, source: String, minutes: Double, category: String = "economy", tickers: [String] = [], body: String = "") -> Story {

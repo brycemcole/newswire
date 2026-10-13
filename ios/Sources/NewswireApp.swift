@@ -15,6 +15,8 @@ import SwiftUI
                 SavedStoriesPreview()
             } else if CommandLine.arguments.contains("-institutionalPreview") {
                 InstitutionalPreview()
+            } else if CommandLine.arguments.contains("-storyLayoutPreview") {
+                StoryLayoutPreview()
             } else if let index = CommandLine.arguments.firstIndex(of: "-articlePreview"),
                let raw = CommandLine.arguments.dropFirst(index + 1).first, let url = URL(string: raw) {
                 ArticleReaderPreview(url: url)
@@ -960,6 +962,7 @@ struct StoryDetail: View {
         let _ = Summarizer.shared.revision
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                Text(story.title).font(.largeTitle.weight(.bold)).fixedSize(horizontal: false, vertical: true)
                 if let video = Summarizer.shared.videos[key] {
                     StoryVideoView(url: video, poster: Summarizer.shared.poster(for: story), page: story.url, title: story.title, source: story.source)
                 } else if let hero = Summarizer.shared.poster(for: story) {
@@ -981,7 +984,6 @@ struct StoryDetail: View {
                 }
                 .font(.system(.caption, design: .monospaced).weight(.semibold))
                 .foregroundStyle(.secondary)
-                Text(story.title).font(.largeTitle.weight(.bold)).fixedSize(horizontal: false, vertical: true)
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     filterButton(.source(story.source)) {
                         Text(story.source).fontWeight(.bold).foregroundStyle(.secondary).lineLimit(1)
@@ -1110,7 +1112,7 @@ struct StoryDetail: View {
             _ = await feedStore?.brain(story, action: "view")
         }
         .dockClearance()
-        .navigationTitle("STORY").navigationBarTitleDisplayMode(.inline)
+        .navigationTitle("").navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
