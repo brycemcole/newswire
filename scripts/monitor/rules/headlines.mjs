@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { getText } from '../fetch.mjs';
@@ -46,7 +46,21 @@ export const detailQuestions = {
     },
     instructions: 'How urgent is this news story? Reserve breaking for rare, major events.',
   },
+  significance: {
+    criteria: {
+      'systemic-event': 'A concrete development with broad consequences: military escalation or de-escalation, a credible new official war threat or deployment, shipping or energy supply disruption, major economic data or monetary/trade policy, or systemic banking stress. Not an incidental mention of war, tariffs or inflation in a stock opinion.',
+      'material-company-event': 'A material company development: earnings, guidance changes, major deals, defaults, dividend cuts or suspensions, or a substantial dividend change. Not an unchanged routine dividend declaration.',
+      'routine-company-update': 'A routine dividend declaration or ex-dividend reminder, stock picks, or generic what-next / should-you-buy stock commentary with no material new development.',
+      other: 'Other reporting or analysis; insufficient evidence for any of the above.',
+    },
+    instructions: 'Classify the substantive new development, separately from alert urgency. Judge only the supplied evidence. Routine stock coverage is not broadly important just because it mentions a major macro event.',
+  },
 };
+
+export function significanceTag(answers, minimum = config.min_confidence ?? 0.7) {
+  const answer = answers.significance;
+  return answer?.confidence >= minimum && answer.choice !== 'other' && Object.hasOwn(detailQuestions.significance.criteria, answer.choice) ? answer.choice : null;
+}
 const classificationVersion = createHash('sha256').update(JSON.stringify({ topics, topicQuestion, detailQuestions, classifierIdentity })).digest('hex').slice(0, 12);
 const formats = new Set(config.skip_sections ?? ['video', 'videos', 'live', 'live-updates', 'live-news', 'opinion', 'opinions', 'briefing', 'podcast', 'podcasts', 'newsletters', 'gallery', 'pictures', 'interactive']);
 // Quote, option-chain and calendar pages surface through Google News with article-style links.
@@ -253,12 +267,21 @@ export async function run({ lookbackHours } = {}) {
     const topic = classified.find(candidate => candidate.id === verdict.topic);
     if (!entry.matched.length && topic) entry.matched.push(topic);
     entry.priority = verdict.priority;
+    entry.significance = verdict.significance;
     if (verdict.duplicate) entry.duplicate = true;
   };
   for (const entry of seen.values()) if (verdicts[entry.key]) apply(entry, verdicts[entry.key]);
   const pending = [...seen.values()].filter(entry => !state[entry.key] && !verdicts[entry.key] && !entry.duplicate);
+  const cacheWindowMs = Math.max(windowMs, ...config.feeds.map(feed => (feed.window_minutes ?? config.window_minutes ?? 30) * 60000));
+  const checkpoint = async () => {
+    const kept = Object.fromEntries(Object.entries(verdicts).filter(([, verdict]) => Date.now() - Date.parse(verdict.at) < 2 * cacheWindowMs));
+    await mkdir(dirname(verdictsFile), { recursive: true, mode: 0o700 });
+    const temporary = `${verdictsFile}.${process.pid}.tmp`;
+    await writeFile(temporary, `${JSON.stringify(kept)}\n`, { mode: 0o600 });
+    await rename(temporary, verdictsFile);
+  };
   let classifyError;
-  for (let start = 0; start < pending.length && !classifyError; start += 8) {
+  for (let start = 0; start < Math.min(pending.length, 16) && !classifyError; start += 8) {
     await Promise.all(pending.slice(start, start + 8).map(async entry => {
       try {
         const text = `${entry.item.title}\n\n${entry.item.summary.slice(0, 300)}`.trim();
@@ -269,6 +292,7 @@ export async function run({ lookbackHours } = {}) {
           topic: acceptedTopic(answers, { x: entry.item.x, minimum }),
           format: answers.format?.choice ?? null,
           priority: answers.format?.choice === 'feature' ? 'normal' : answers.priority?.confidence >= minimum && rank[answers.priority.choice] !== undefined ? answers.priority.choice : null,
+          significance: significanceTag(answers, minimum),
           version: classificationVersion,
           at: new Date().toISOString(),
         };
@@ -278,11 +302,12 @@ export async function run({ lookbackHours } = {}) {
         classifyError ??= error;
       }
     }));
+    await checkpoint();
   }
   if (classifyError) failures.push(`headlines classifier: ${classifyError.message}`);
 
   const candidates = [...seen.values()]
-    .filter(entry => entry.matched.length && !state[entry.key] && !entry.duplicate)
+    .filter(entry => entry.matched.length && verdicts[entry.key] && !state[entry.key] && !entry.duplicate)
     .sort((a, b) => Number(Boolean(a.item.x)) - Number(Boolean(b.item.x)) || rank[a.priority ?? 'normal'] - rank[b.priority ?? 'normal'] || b.item.stamp - a.item.stamp);
   const byKey = new Map(candidates.map(entry => [entry.key, entry]));
   const { decisions, error: dedupeError } = await dedupeCandidates(candidates.map(entry => ({ ...entry.item, key: entry.key })), published, { ask, minimum, historyAvailable });
@@ -296,12 +321,9 @@ export async function run({ lookbackHours } = {}) {
   if (dedupeError) failures.push(`headlines dedupe: ${dedupeError}`);
   await recordDedupe(decisions).catch(error => failures.push(`headlines dedupe log: ${error.message}`));
 
-  const cacheWindowMs = Math.max(windowMs, ...config.feeds.map(feed => (feed.window_minutes ?? config.window_minutes ?? 30) * 60000));
-  const kept = Object.fromEntries(Object.entries(verdicts).filter(([, verdict]) => Date.now() - Date.parse(verdict.at) < 2 * cacheWindowMs));
-  await mkdir(dirname(verdictsFile), { recursive: true, mode: 0o700 });
-  await writeFile(verdictsFile, `${JSON.stringify(kept)}\n`, { mode: 0o600 });
+  await checkpoint();
 
-  const publishable = [...seen.values()].filter(entry => entry.matched.length && !state[entry.key] && !entry.duplicate && !entry.deferred);
+  const publishable = [...seen.values()].filter(entry => entry.matched.length && verdicts[entry.key] && !state[entry.key] && !entry.duplicate && !entry.deferred);
   await Promise.all(publishable.map(async entry => { entry.item.url = await resolveGoogleNews(entry.item.url); }));
   // A Bloomberg story waits up to `syndication_wait_minutes` for Yahoo's readable copy, then publishes with its own link.
   const wait = (config.syndication_wait_minutes ?? 10) * 60000;
@@ -311,7 +333,7 @@ export async function run({ lookbackHours } = {}) {
     else if (Date.now() - entry.item.stamp < wait) entry.held = true;
   }));
 
-  for (const { key, item, matched, priority } of publishable.filter(entry => !entry.held)) {
+  for (const { key, item, matched, priority, significance } of publishable.filter(entry => !entry.held)) {
     const best = matched.reduce((top, topic) => (rank[topic.priority ?? 'normal'] < rank[top.priority ?? 'normal'] ? topic : top), matched[0]);
     const labels = matched.map(topic => topic.label ?? topic.id).join(', ');
     const when = new Date(item.stamp).toISOString().replace('T', ' ').slice(0, 16);
@@ -327,7 +349,7 @@ export async function run({ lookbackHours } = {}) {
       category: best.category ?? 'general',
       priority: priority ?? best.priority ?? 'normal',
       tickers: [],
-      tags: [...new Set(['deterministic', item.x ? 'x' : 'headlines', ...matched.map(topic => topic.id)])],
+      tags: [...new Set(['deterministic', item.x ? 'x' : 'headlines', ...matched.map(topic => topic.id), ...(significance ? [significance] : [])])],
     });
   }
 

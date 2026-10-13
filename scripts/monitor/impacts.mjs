@@ -5,12 +5,13 @@ import { ask } from './jev.mjs';
 import { token } from './publish.mjs';
 import { nearIdentical } from './headline-dedupe.mjs';
 import { prefiltered } from './rules/headlines.mjs';
-import { appendEvidence, readEvidence } from './evidence-store.mjs';
+import { appendEvidence, readEvidence, withFileLock } from './evidence-store.mjs';
 import { createHash } from 'node:crypto';
 
 const config = join(homedir(), '.config', 'newswire');
 const archiveFile = join(config, 'raw-headlines.json');
 const verdictFile = join(config, 'impact-verdicts.json');
+const headlineVerdictFile = join(config, 'headlines-verdicts.json');
 const origin = process.env.NEWSWIRE_URL ?? 'https://bryce-newswire.bryce-e19.workers.dev';
 // Culture, local and lab-blog feeds never move the broad market; skipping them saves classifier calls.
 const skipPublishers = /^(defector|aftermath|hell gate|flaming hydra|range media|the verge|404 media|hugging face|mistral|google deepmind|google ai blog|openai news|meta newsroom)/i;
@@ -38,11 +39,23 @@ export const impactQuestions = {
   },
 };
 
-export async function classifyImpacts({ limit = 25, maxAge = 48, now = Date.now(), post = true, archiveFile: archivePath = archiveFile, verdictFile: verdictPath = verdictFile, evidenceFile = `${archivePath}.evidence.jsonl`, classify = ask } = {}) {
+export function impactQueuePriority(item, verdicts = {}) {
+  const publisher = String(item.publisher ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'feed';
+  const key = `headlines:${publisher}:${createHash('sha256').update(String(item.guid ?? item.url)).digest('hex').slice(0, 24)}`;
+  const significance = verdicts[key]?.significance;
+  return significance === 'systemic-event' ? 0 : significance === 'material-company-event' ? 1 : significance === 'routine-company-update' ? 3 : 2;
+}
+
+export async function classifyImpacts(options = {}) {
+  return withFileLock(`${options.verdictFile ?? verdictFile}.processing`, () => classifyBatch(options));
+}
+
+async function classifyBatch({ limit = 25, maxAge = 48, now = Date.now(), post = true, archiveFile: archivePath = archiveFile, verdictFile: verdictPath = verdictFile, headlineVerdictFile: headlinePath = headlineVerdictFile, evidenceFile = `${archivePath}.evidence.jsonl`, classify = ask, deliver = null } = {}) {
   const archive = JSON.parse(await readFile(archivePath, 'utf8').catch(() => '{}'));
   const classifierVersion = createHash('sha256').update(JSON.stringify(impactQuestions)).digest('hex').slice(0, 12);
   const durable = new Map();
   const verdicts = JSON.parse(await readFile(verdictPath, 'utf8').catch(() => '{}'));
+  const headlineVerdicts = JSON.parse(await readFile(headlinePath, 'utf8').catch(() => '{}'));
   const archiveEntries = Object.entries(archive);
   const durableEvents = await readEvidence(evidenceFile, { type: 'impact_classification', classifierVersion, ids: archiveEntries.map(([id]) => id) });
   for (const event of durableEvents) durable.set(event.id, event);
@@ -55,7 +68,8 @@ export async function classifyImpacts({ limit = 25, maxAge = 48, now = Date.now(
   const publicationCutoff = now - maxAge * 3600000;
   const eligible = Object.entries(archive).filter(([, item]) => Number.isFinite(item.stamp) && item.stamp <= now && item.stamp >= publicationCutoff);
   const candidates = eligible.filter(unclassified)
-    .sort((a, b) => Date.parse(a[1].first_seen_at) - Date.parse(b[1].first_seen_at) || a[1].stamp - b[1].stamp);
+    .sort((a, b) => impactQueuePriority(a[1], headlineVerdicts) - impactQueuePriority(b[1], headlineVerdicts)
+      || Date.parse(a[1].first_seen_at) - Date.parse(b[1].first_seen_at) || a[1].stamp - b[1].stamp);
   const expiredIds = Object.entries(archive).filter(([id, item]) => unclassified([id, item]) && Number.isFinite(item.stamp) && item.stamp < publicationCutoff).map(([id]) => id);
   const expired = expiredIds.length;
   const pending = candidates.slice(0, Math.max(limit, 0));
@@ -104,14 +118,16 @@ export async function classifyImpacts({ limit = 25, maxAge = 48, now = Date.now(
         received_at: item.first_seen_at, classified_at: event.classified_at, classifier_version: event.classifier_version,
         direction: verdict.direction, channel: verdict.channel, size: verdict.size, confidence: verdict.confidence };
     }).filter(Boolean);
+  let posted = 0;
   if (post && impacts.length) {
     for (let i = 0; i < impacts.length; i += 100) {
       const batch = impacts.slice(i, i + 100);
       try {
-        const response = await fetch(new URL('/v1/market-pulse/impacts', origin), { method: 'POST', headers: { Authorization: `Bearer ${await token()}`, 'Content-Type': 'application/json' },
+        const response = deliver ? await deliver(batch) : await fetch(new URL('/v1/market-pulse/impacts', origin), { method: 'POST', headers: { Authorization: `Bearer ${await token()}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ impacts: batch }), signal: AbortSignal.timeout(20000) });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         await appendEvidence(evidenceFile, batch.map(impact => ({ type: 'impact_delivery', id: impact.id, status: 'posted', delivered_at: new Date().toISOString() })));
+        posted += batch.length;
       } catch (error) {
         failures.push(`impacts post: ${error.message}`);
         await appendEvidence(evidenceFile, batch.map(impact => ({ type: 'impact_delivery', id: impact.id, status: 'failed', attempted_at: new Date().toISOString(), error: String(error.message ?? error).slice(0, 500) })));
@@ -124,7 +140,7 @@ export async function classifyImpacts({ limit = 25, maxAge = 48, now = Date.now(
   const temporary = `${verdictPath}.${process.pid}.tmp`;
   await writeFile(temporary, JSON.stringify(kept) + '\n', { mode: 0o600 });
   await rename(temporary, verdictPath);
-  return { calls, skipped, copies, moving: impacts.length, backlog: Math.max(0, candidates.length - resolved), expired, failures };
+  return { calls, skipped, copies, moving: impacts.length, posted, backlog: Math.max(0, candidates.length - resolved), expired, failures };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

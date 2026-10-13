@@ -1,13 +1,14 @@
 {
   "userAgent": "NewswireResearchCrawler/1.0 (public-interest research; contact via repository owner)",
   "feeds": [
+    { "name": "Bellingcat", "url": "https://www.bellingcat.com/feed/", "kind": "rss", "topics": ["geopolitics", "security"] },
     { "name": "Federal Reserve", "url": "https://www.federalreserve.gov/feeds/press_all.xml", "kind": "rss", "topics": ["rates", "monetary policy"] },
     { "name": "European Central Bank", "url": "https://www.ecb.europa.eu/rss/press.html", "kind": "rss", "topics": ["rates", "monetary policy", "Europe"] },
     { "name": "gCaptain", "url": "https://gcaptain.com/feed/", "kind": "rss", "topics": ["shipping", "energy", "trade"] },
     { "name": "FreightWaves", "url": "https://www.freightwaves.com/feed", "kind": "rss", "topics": ["freight", "supply chain", "trade"] }
   ],
   "discovery": { "googleNews": false, "gdelt": true },
-  "browserDomains": ["federalreserve.gov", "ecb.europa.eu", "gcaptain.com", "freightwaves.com"],
+  "browserDomains": ["federalreserve.gov", "ecb.europa.eu", "gcaptain.com", "freightwaves.com", "bellingcat.com", "www.bellingcat.com"],
   "limits": {
     "maxPages": 10,
     "maxDepth": 2,

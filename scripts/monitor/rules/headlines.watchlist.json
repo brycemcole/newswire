@@ -3,6 +3,9 @@
   "min_confidence": 0.7,
   "max_x_per_run": 2,
   "feeds": [
+    { "name": "Bellingcat", "url": "https://www.bellingcat.com/feed/", "window_minutes": 2880 },
+    { "name": "UKMTO discovery", "url": "https://news.google.com/rss/search?q=site:ukmto.org+when:2d&hl=en-US&gl=US&ceid=US:en", "window_minutes": 2880 },
+    { "name": "ISW discovery", "url": "https://news.google.com/rss/search?q=site:understandingwar.org+when:2d&hl=en-US&gl=US&ceid=US:en", "window_minutes": 2880 },
     { "name": "BBC", "url": "https://feeds.bbci.co.uk/news/world/rss.xml" },
     { "name": "NPR", "url": "https://feeds.npr.org/1001/rss.xml" },
     { "name": "The Guardian", "url": "https://www.theguardian.com/world/rss" },
@@ -51,6 +54,13 @@
     { "name": "Mistral AI", "url": "https://mistral.ai/rss.xml", "via": ["ai-labs"] }
   ],
   "topics": [
+    {
+      "id": "geopolitical-security",
+      "label": "geopolitical and security developments",
+      "category": "world",
+      "priority": "normal",
+      "description": "A concrete, consequential international security development: military escalation or de-escalation, a new official threat of war, military deployments, attacks, ceasefire agreements or breakdowns, nuclear negotiations or inspections, sanctions, or disruption to strategic shipping routes or energy infrastructure. Include Iran, the Strait of Hormuz, the Red Sea, Ukraine and Taiwan when there is a specific new development; no stock-market reaction is required. Not historical explainers, generic geopolitical commentary, unsubstantiated social-media rumors, or routine domestic crime."
+    },
     {
       "id": "market-analysis",
       "label": "market reporting and analysis",

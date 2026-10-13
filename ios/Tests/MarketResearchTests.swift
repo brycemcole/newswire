@@ -4,6 +4,12 @@ import Testing
 
 @MainActor
 struct MarketResearchTests {
+    @Test func researchErrorsDistinguishAuthorizationTimeoutAndFormat() {
+        #expect(researchFailureMessage(WireError.status(403)).contains("authorize"))
+        #expect(researchFailureMessage(URLError(.timedOut)).contains("timed out"))
+        #expect(researchFailureMessage(DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "bad"))).contains("unreadable format"))
+    }
+
     @Test func liveLearningIsSeparateFromTheSavedForecast() throws {
         var payload = try #require(JSONSerialization.jsonObject(with: Data(MarketResearchFixture.settledJSON.utf8)) as? [String: Any])
         let live = #"{"symbol":"QQQ","score":38,"status":"available","confidence":"low","as_of":"2026-10-13T18:00:00Z","components":{"news":{"status":"available","points":-4}},"factors":[],"coverage":{"headline_stories":12,"matched_stories":2},"call":{"headline":"Expect a lower session","tone":"negative","strength":2},"learning":{"model":"forecast-adaptive-v1","adjustment":-0.2,"settled":1,"same_horizon":0,"sessions":1,"note":"Learning from one completed forecast."}}"#

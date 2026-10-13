@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { classifyImpacts } from '../../scripts/monitor/impacts.mjs';
 import { appendEvidence, readEvidence } from '../../scripts/monitor/evidence-store.mjs';
+import { archiveHeadlines } from '../../scripts/monitor/headline-archive.mjs';
+import { createHash } from 'node:crypto';
 
 test('skipped impact classifications persist with classifier version and classified time', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'newswire-impact-')); t.after(() => rm(dir, { recursive: true, force: true }));
@@ -80,4 +82,40 @@ test('classifier outage leaves older unclassified headlines queued for recovery 
   assert.deepEqual(events.filter(event => event.type === 'impact_classification').map(event => [event.id, event.status]), [
     ['oldest', 'failure'], ['oldest', 'classified'], ['next', 'classified'],
   ]);
+});
+
+test('systemic events reach market analysis before routine coverage, preserve provenance and retry delivery', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'newswire-event-impact-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const archiveFile = join(dir, 'archive.json'), verdictFile = join(dir, 'impacts.json'), headlineVerdictFile = join(dir, 'headlines.json');
+  const now = Date.now();
+  const routine = { title: 'Acme declares unchanged quarterly dividend', summary: '', publisher: 'Wire', guid: 'routine', url: 'https://example.com/routine', stamp: now - 7200000 };
+  const event = { title: 'Iran increases threat to Strait of Hormuz shipping', summary: 'New military deployments threaten commercial shipping and energy supplies.', publisher: 'UKMTO', guid: 'warning-123', url: 'https://www.ukmto.org/warning-123', stamp: now - 3600000 };
+  await archiveHeadlines([routine], { file: archiveFile, now: now - 1000 });
+  await archiveHeadlines([event], { file: archiveFile, now });
+  const key = (publisher, guid) => `headlines:${publisher}:${createHash('sha256').update(guid).digest('hex').slice(0, 24)}`;
+  await writeFile(headlineVerdictFile, JSON.stringify({
+    [key('wire', 'routine')]: { significance: 'routine-company-update' },
+    [key('ukmto', 'warning-123')]: { significance: 'systemic-event' },
+  }));
+  const prompts = [], batches = [];
+  const classify = async prompt => {
+    prompts.push(prompt);
+    return { market: { choice: 'lower', confidence: 0.9 }, channel: { choice: 'energy', confidence: 0.9 }, size: { choice: 'major', confidence: 0.9 } };
+  };
+  let ok = false;
+  const options = { now, limit: 1, archiveFile, verdictFile, headlineVerdictFile, classify,
+    deliver: async batch => { batches.push(batch); return { ok, status: ok ? 201 : 503 }; } };
+  const failed = await classifyImpacts(options);
+  assert.match(prompts[0], /Iran increases threat/);
+  assert.equal(failed.posted, 0);
+  assert.equal(failed.backlog, 1);
+  assert.equal(batches[0][0].source, 'UKMTO');
+  assert.equal(batches[0][0].url, event.url);
+  assert.equal(batches[0][0].published_at, new Date(event.stamp).toISOString());
+  assert.equal(batches[0][0].received_at, new Date(now).toISOString());
+  assert.equal(batches[0][0].direction, -1);
+  ok = true;
+  assert.equal((await classifyImpacts({ ...options, limit: 0 })).posted, 1);
+  assert.equal((await classifyImpacts({ ...options, limit: 0 })).posted, 0);
+  assert.equal(prompts.length, 1);
 });

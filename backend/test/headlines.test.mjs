@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { acceptedTopic, balanceHeadlines, parseFeed } from '../../scripts/monitor/rules/headlines.mjs';
+import { acceptedTopic, balanceHeadlines, parseFeed, significanceTag } from '../../scripts/monitor/rules/headlines.mjs';
 
 test('Yahoo RSS links decode query entities and remove syndication tracking', () => {
   const items = parseFeed(`<rss><channel><item>
@@ -39,4 +39,20 @@ test('useful publisher financial analysis is accepted without admitting X commen
   assert.equal(acceptedTopic(answers('market-analysis', 'feature', 0.5)), null);
   assert.equal(acceptedTopic(answers('ai-and-antitrust', 'feature')), null);
   assert.equal(acceptedTopic(answers('company-outlook', 'news')), 'company-outlook');
+});
+
+test('geopolitical developments are accepted without requiring a market reaction', () => {
+  const answers = { topic: { choice: 'geopolitical-security', confidence: 0.95 }, format: { choice: 'news', confidence: 0.95 } };
+  assert.equal(acceptedTopic(answers), 'geopolitical-security');
+  assert.equal(acceptedTopic({ ...answers, format: { choice: 'feature', confidence: 0.95 } }), null);
+});
+
+test('only supported confident significance labels reach story tags', () => {
+  for (const choice of ['systemic-event', 'material-company-event', 'routine-company-update']) {
+    assert.equal(significanceTag({ significance: { choice, confidence: 0.9 } }), choice);
+    assert.equal(significanceTag({ significance: { choice, confidence: 0.4 } }), null);
+  }
+  assert.equal(significanceTag({}), null);
+  assert.equal(significanceTag({ significance: { choice: 'other', confidence: 1 } }), null);
+  assert.equal(significanceTag({ significance: { choice: 'made-up', confidence: 1 } }), null);
 });

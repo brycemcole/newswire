@@ -405,8 +405,7 @@ struct FeedView: View {
                     do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
                 }
                 await store.ready()
-                // A cache under an hour old keeps its order and only gains new stories on top; an older one is
-                // re-ranked in place before the reader has had time to start reading it.
+                // Recent caches merge arrivals when the reader is at the top; stale caches fetch a fresh window.
                 let stale = store.lastUpdated.map { $0.timeIntervalSinceNow < -3600 } ?? true
                 await store.sync(stale ? .replace : .merge, quiet: true)
             }

@@ -121,7 +121,7 @@ const report = {
   mode: seed ? 'seed' : dryRun ? 'dry-run' : 'publish',
   classifier: 'zen:jev-1.13 (free first, paid fallback)',
   classifier_calls: classifierUsage(),
-  impacts: impacts && { calls: impacts.calls, moving: impacts.moving, backlog: impacts.backlog },
+  impacts: impacts && { calls: impacts.calls, moving: impacts.moving, posted: impacts.posted, backlog: impacts.backlog },
   backfill_hours: lookbackHours ?? null,
   notifications: noNotify ? 'suppressed' : 'normal',
   candidates: candidates.length,

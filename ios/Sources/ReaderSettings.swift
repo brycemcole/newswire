@@ -29,7 +29,7 @@ import UIKit
     /// Reported by the feed. New stories are only inserted while the list rests at the top, so rows the reader
     /// is looking at never move; anything that arrives while they are scrolled down waits in `pending`.
     @ObservationIgnored var atTop = true {
-        didSet { if atTop && !oldValue { applyPending() } }
+        didSet { if atTop && !oldValue { Task { await applyPending() } } }
     }
     @ObservationIgnored private var pending: [Story] = []
     @ObservationIgnored private var generation = UUID()
@@ -81,6 +81,10 @@ import UIKit
         await summaries.value
         for (key, value) in loaded where Self.snapshots[key] == nil { Self.snapshots[key] = value }
         restoreCache()
+        let current = generation
+        let cached = stories
+        let ranked = await rank(cached, query: query)
+        if generation == current && stories == cached { stories = ranked }
         restored = true
     }
 
@@ -276,7 +280,7 @@ import UIKit
 
     /// Fetches the newest page.
     /// - `.replace` re-ranks and swaps the whole list: for pull to refresh, Retry, an empty feed, and background refresh.
-    /// - `.merge` never moves a row that is already shown; it inserts only unseen stories at the top (see `atTop`).
+    /// - `.merge` queues arrivals while reading and ranks them into the recent window once back at the top.
     /// `quiet` keeps automatic refreshes from flashing an error banner while cached stories are on screen.
     @discardableResult func sync(_ kind: Sync, quiet: Bool = false) async -> Bool {
         await ready()
@@ -315,11 +319,14 @@ import UIKit
             error = nil
             lastUpdated = .now
             hasLoaded = true
-            guard !fresh.isEmpty else { return true }
+            guard !fresh.isEmpty else {
+                await applyPending()
+                return true
+            }
             let ranked = await rank(fresh, query: query)
             guard generation == current else { return false }
             pending = ranked + pending
-            applyPending()
+            await applyPending()
             return true
         } catch {
             guard generation == current, !Task.isCancelled else { return false }
@@ -338,14 +345,19 @@ import UIKit
         }
     }
 
-    private func applyPending() {
+    private func applyPending() async {
         guard atTop, !pending.isEmpty else { return }
+        let current = generation
+        let displayed = stories
         let known = Set(stories.map(\.id))
         let fresh = pending.filter { !known.contains($0.id) }
-        pending = []
         guard !fresh.isEmpty else { return }
+        let ranked = await rank(fresh + Array(displayed.prefix(Self.maxSavedStories)), query: query)
+        guard generation == current, atTop, stories == displayed else { return }
+        let applied = known.union(fresh.map(\.id))
+        pending.removeAll { applied.contains($0.id) }
         let animation: Animation = UIAccessibility.isReduceMotionEnabled ? .easeOut(duration: 0.15) : .smooth(duration: 0.3)
-        withAnimation(animation) { stories = fresh + stories }
+        withAnimation(animation) { stories = ranked + displayed.dropFirst(Self.maxSavedStories) }
         saved.count += fresh.count
         remember()
     }
@@ -359,12 +371,15 @@ import UIKit
         defer { if generation == current { loadingOlder = false } }
         guard let page = try? await NewswireAPI(baseURL: baseURL).feedPage(cursor: cursor, category: category, query: query, filters: filters),
               generation == current, self.cursor == cursor else { return }
+        let ranked = await rank(page.stories, query: query)
+        guard generation == current, self.cursor == cursor else { return }
         let before = stories.count
         let ids = Set(stories.map(\.id))
-        stories += page.stories.filter { !ids.contains($0.id) }
+        stories += ranked.filter { !ids.contains($0.id) }
         self.cursor = page.nextCursor
         if saved.count == before && stories.count <= Self.maxSavedStories { saved = (stories.count, page.nextCursor) }
         remember()
+        await applyPending()
     }
 
     /// The row whose appearance starts loading the next page, about fifteen rows before the end.
@@ -375,8 +390,14 @@ import UIKit
 
     private func rank(_ page: [Story], query: String) async -> [Story] {
         guard query.isEmpty else { return page }
-        let symbols = Set(Watchlist.shared.symbols + PortfolioStore.shared.snapshot.positions.map(\.symbol))
-        return await StoryRanking.ranked(page, symbols: symbols)
+        let positions = PortfolioStore.shared.snapshot.positions.filter { $0.quantity != 0 }
+        let holdings = Set(positions.map(\.symbol))
+        let symbols = Set(Watchlist.shared.symbols).union(holdings)
+        var names = QuoteStore.shared.quotes.mapValues(\.name)
+        for position in positions where position.option == nil {
+            if let name = position.name { names[position.symbol] = name }
+        }
+        return await StoryRanking.ranked(page, symbols: symbols, holdings: holdings, companyNames: names)
     }
 
     private static func message(for error: Error) -> String {

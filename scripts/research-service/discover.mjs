@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { token } from '../monitor/publish.mjs';
+import { classifyImpacts } from '../monitor/impacts.mjs';
 
 const state = join(homedir(), '.config', 'newswire', 'crawler');
 const origin = process.env.NEWSWIRE_URL ?? 'https://bryce-newswire.bryce-e19.workers.dev';
@@ -46,6 +47,9 @@ if (result.code === 0) {
     headers: { Authorization: `Bearer ${await token()}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(report), signal: AbortSignal.timeout(20000) });
   if (!posted.ok) { failures.push(`Discovery report HTTP ${posted.status}`); process.exitCode = 1; }
+  const impacts = await classifyImpacts({ limit: 25 }).catch(error => ({ failures: [error.message] }));
+  failures.push(...(impacts.failures ?? []));
+  console.log(JSON.stringify({ crawler_impacts: impacts }));
 }
 console.log(JSON.stringify({ questions: questions.size, failures, ...result }));
-if (result.code !== 0 || result.signal) process.exitCode = 1;
+if (result.code !== 0 || result.signal || failures.length) process.exitCode = 1;

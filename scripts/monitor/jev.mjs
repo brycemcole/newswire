@@ -54,7 +54,8 @@ async function call(model, state, questions, timeout) {
   const response = await fetch(endpoint, {
     method: 'POST',
     headers: { Authorization: `Bearer ${await key()}`, 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ model, questions: Object.fromEntries(Object.entries(questions).map(([name, question]) => [name, { type: 'choice', ...question }])), state }),
+    body: JSON.stringify({ model, questions: Object.fromEntries(Object.entries(questions).map(([name, question]) => [name, { type: 'choice', ...question }])), state },
+      (_key, value) => typeof value === 'string' ? value.toWellFormed() : value),
     signal: AbortSignal.timeout(timeout),
   });
   if (!response.ok) {

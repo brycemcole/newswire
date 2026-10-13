@@ -57,3 +57,19 @@ test('unknown choices and malformed confidence fail closed', async t => {
     t.mock.restoreAll();
   }
 });
+
+test('truncated emoji and legacy malformed Unicode cannot poison classifier requests', async t => {
+  const bodies = [];
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    const body = JSON.parse(init.body);
+    bodies.push(body);
+    assert.equal(body.state.isWellFormed(), true);
+    assert.equal(body.questions.topic.instructions.isWellFormed(), true);
+    return Response.json({ answers: { topic: { choice: 'energy', confidence: 0.9 } } });
+  });
+  const text = 'Shipping warning ' + '🌊'.slice(0, 1);
+  await ask(text, { topic: { ...questions.topic, instructions: 'Choose\uDC00' } });
+  await ask('Valid 🌊 shipping warning', questions);
+  assert.equal(bodies[0].state, 'Shipping warning �');
+  assert.equal(bodies[1].state, 'Valid 🌊 shipping warning');
+});

@@ -237,12 +237,26 @@ enum MarketResearchFixture: String {
 }
 #endif
 
+nonisolated func researchFailureMessage(_ error: Error) -> String {
+    if error is DecodingError { return "The server returned research in an unreadable format. Try refreshing again." }
+    if let error = error as? URLError {
+        if error.code == .timedOut { return "Loading research timed out. Try again." }
+        return "Research couldn't connect to the server. \(error.localizedDescription)"
+    }
+    if let error = error as? WireError, case .status(let code) = error {
+        if code == 401 || code == 403 { return "The server couldn't authorize this device to load research (\(code)). Try again." }
+        return "Research couldn't be loaded from the server (\(code)). Try again."
+    }
+    return error.localizedDescription
+}
+
 struct MarketResearchView: View {
     @AppStorage("researchSymbol") private var symbol = "SPY"
     @Environment(\.scenePhase) private var phase
     @State private var response: MarketResearchResponse?
     @State private var isLoading = false
     @State private var failed = false
+    @State private var failureMessage = "Saved forecasts couldn't be loaded. Try again."
     @State private var loadedAt: Date?
     @State private var loadedSymbol: String?
 
@@ -287,7 +301,7 @@ struct MarketResearchView: View {
                     ContentUnavailableView {
                         Label("Research unavailable", systemImage: "exclamationmark.triangle")
                     } description: {
-                        Text("Saved forecasts couldn't be loaded. Check the connection and try again.")
+                        Text(failureMessage)
                     } actions: {
                         Button("Retry") { Task { await refresh() } }
                     }
@@ -560,7 +574,7 @@ struct MarketResearchView: View {
         }
         #endif
         if !force, loadedSymbol == symbol, let loadedAt, loadedAt.timeIntervalSinceNow > -60 { return }
-        guard let baseURL = NewswireAPI.validatedURL(FeedStore.shared.serverURL) else { failed = true; return }
+        guard let baseURL = NewswireAPI.validatedURL(FeedStore.shared.serverURL) else { failureMessage = WireError.configuration.localizedDescription; failed = true; return }
         isLoading = true
         defer { isLoading = false }
         do {
@@ -571,7 +585,7 @@ struct MarketResearchView: View {
             loadedSymbol = result.symbol
             failed = false
         } catch {
-            if !Task.isCancelled { failed = true }
+            if !Task.isCancelled { failureMessage = researchFailureMessage(error); failed = true }
         }
     }
 }
