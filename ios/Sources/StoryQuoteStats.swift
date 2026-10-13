@@ -5,35 +5,29 @@ struct StoryQuoteStats: View {
     let quotes: [String: Quote]
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(alignment: .top, spacing: 16) {
-                ForEach(symbols, id: \.self) { symbol in group(symbol) }
-            }
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(symbols, id: \.self) { symbol in group(symbol) }
+        GlassEffectContainer(spacing: 6) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 6) { ForEach(symbols, id: \.self) { pill($0) } }
+                VStack(alignment: .leading, spacing: 6) { ForEach(symbols, id: \.self) { pill($0) } }
             }
         }
-        .padding(.top, 3)
+        .padding(.top, 4)
     }
 
-    private func group(_ symbol: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 7) {
-                Text(symbol).fontWeight(.semibold).foregroundStyle(.primary)
-                if let quote = quotes[symbol] {
-                    Text(QuoteFormat.percent(quote.changePercent)).foregroundStyle(QuoteFormat.color(quote.changePercent))
-                    Text("day").foregroundStyle(.secondary)
-                }
+    private func pill(_ symbol: String) -> some View {
+        HStack(spacing: 6) {
+            Text(symbol).fontWeight(.semibold).foregroundStyle(.primary)
+            if let quote = quotes[symbol] {
+                Text(QuoteFormat.percent(quote.changePercent)).foregroundStyle(QuoteFormat.color(quote.changePercent))
             }
-            .font(.caption.monospaced()).monospacedDigit()
             if let extended = quotes[symbol]?.extended {
-                HStack(spacing: 6) {
-                    Text(extended.session == "pre" ? "Pre-market" : "After hours").foregroundStyle(.secondary)
-                    Text(QuoteFormat.percent(extended.changePercent)).foregroundStyle(QuoteFormat.color(extended.changePercent))
-                }
-                .font(.caption2).monospacedDigit()
+                Text(extended.session == "pre" ? "Pre" : "AH").foregroundStyle(.secondary)
+                Text(QuoteFormat.percent(extended.changePercent)).foregroundStyle(QuoteFormat.color(extended.changePercent))
             }
         }
+        .font(.caption.monospaced()).monospacedDigit()
+        .padding(.horizontal, 10).padding(.vertical, 5)
+        .glassEffect(.regular, in: .capsule)
         .fixedSize(horizontal: true, vertical: false)
         .accessibilityElement(children: .combine)
     }

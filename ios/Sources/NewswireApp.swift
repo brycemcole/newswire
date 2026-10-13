@@ -312,7 +312,8 @@ struct FeedView: View {
                     }
                     let olderTrigger = store.olderTriggerID
                     ForEach(store.stories) { story in
-                        NavigationLink(value: story) { StoryRow(story: story, showSummary: !headlinesOnly) }
+                        StoryRow(story: story, showSummary: !headlinesOnly)
+                            .background { NavigationLink(value: story) { EmptyView() }.opacity(0) }
                             .id(story.id)
                             .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 12))
                             .listRowBackground(Color.clear)
