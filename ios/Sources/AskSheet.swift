@@ -75,7 +75,7 @@ struct AskSheet: View {
     private var market: Bool { thread.symbol.isEmpty }
     private var price: String? { thread.symbol == context.symbol ? context.price : nil }
     private var suggestions: [String] {
-        market ? ["What moved markets overnight?", "Is inflation getting better or worse?", "Will the Fed cut or hike at the next meeting?"]
+        market ? ["What moved markets overnight?", "Is inflation getting better or worse?", "Will the Fed cut or hike at the next meeting?", "Show me QQQ calls and a bull call spread"]
             : ["Why is \(thread.symbol) moving today?", "What does \(thread.name) do, in plain terms?", "Compare bullish earnings trades with a $1,000 budget"]
     }
 
@@ -193,6 +193,7 @@ struct AskSheet: View {
                     StockChatMessage(user: false, text: "**Most likely neither: traders expect the Fed to hold rates on Wednesday, Oct 28.**\n\n- **Rates now:** 3.50–3.75%.\n- **Odds:** about a 20% chance of a quarter-point hike, 80% no change.\n- **Inflation:** CPI ran 2.9% over the past year in August, above the Fed's 2% goal.\n- **Jobs:** unemployment held at 4.3% in September.\n\nSources: CME fed funds futures, FRED.", sources: [StockSource(title: "Fed rate expectations", url: URL(string: "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm")!), StockSource(title: "FRED", url: URL(string: "https://fred.stlouisfed.org")!)], provider: "DeepSeek")
                 ]
             }
+            if CommandLine.arguments.contains("-askOptionsSample") { chat.messages = ChatWidgetFixture.messages }
             if CommandLine.arguments.contains("-askFailure") { chat.loadFailedAnswerFixture() }
             if CommandLine.arguments.contains("-askLongThread") { chat.loadLongThreadFixture() }
         }
@@ -244,32 +245,35 @@ struct AskSheet: View {
         Text(text)
             .textSelection(.enabled)
             .padding(.horizontal, 14).padding(.vertical, 10)
-            .background(.fill.tertiary, in: .rect(cornerRadius: 20, style: .continuous))
+            .glassEffect(.regular, in: .rect(cornerRadius: 20, style: .continuous))
             .frame(maxWidth: .infinity, alignment: .trailing)
             .padding(.leading, 48)
     }
 
     private func answer(_ message: StockChatMessage) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            MarkdownText(message.text)
+            MarkdownText(message.text, options: message.options)
             if !message.sources.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(message.sources) { source in
-                            let reads = FilingLink.isFiling(source.url)
-                            Button {
-                                if reads { filing = source } else { openURL(source.url) }
-                            } label: {
-                                HStack(spacing: 6) {
-                                    Image(systemName: reads ? "doc.text" : "arrow.up.right").font(.caption2.weight(.bold))
-                                    Text(source.title).lineLimit(1)
+                    GlassEffectContainer(spacing: 8) {
+                        HStack(spacing: 8) {
+                            ForEach(message.sources) { source in
+                                let reads = FilingLink.isFiling(source.url)
+                                Button {
+                                    if reads { filing = source } else { openURL(source.url) }
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: reads ? "doc.text" : "arrow.up.right").font(.caption2.weight(.bold))
+                                        Text(source.title).lineLimit(1)
+                                    }
+                                    .font(.caption.weight(.medium))
+                                    .padding(.horizontal, 12).frame(minHeight: 32).frame(maxWidth: 240)
+                                    .contentShape(.capsule)
                                 }
-                                .font(.caption.weight(.medium))
-                                .padding(.horizontal, 12).frame(minHeight: 32).frame(maxWidth: 240)
-                                .background(.fill.quaternary, in: .capsule)
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.primary)
+                                .glassEffect(.regular.interactive(), in: .capsule)
                             }
-                            .buttonStyle(.plain)
-                            .foregroundStyle(.primary)
                         }
                     }
                 }
@@ -366,11 +370,18 @@ struct MarkdownText: View {
         case paragraph(String)
         case heading(String)
         case item(marker: String, text: String, depth: Int)
+        case code(String)
+        case widget(ChatWidget)
     }
 
     private let blocks: [Block]
+    private let options: [ChatOption]
 
-    init(_ source: String) { blocks = Self.parse(source) }
+    /// `options` are the quotes behind any ```options or ```strategy widget blocks in `source`.
+    init(_ source: String, options: [ChatOption] = []) {
+        blocks = Self.parse(source)
+        self.options = options
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -387,6 +398,14 @@ struct MarkdownText: View {
                         Text(Self.inline(text))
                     }
                     .padding(.leading, CGFloat(depth) * 18)
+                case .code(let text):
+                    Text(text)
+                        .font(.footnote.monospaced())
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.fill.quaternary, in: .rect(cornerRadius: 12, style: .continuous))
+                case .widget(let widget):
+                    ChatWidgetView(widget: widget, options: options)
                 }
             }
         }
@@ -406,9 +425,25 @@ struct MarkdownText: View {
             if !paragraph.isEmpty { blocks.append(.paragraph(paragraph.joined(separator: " "))) }
             paragraph = []
         }
+        var fence: (language: String, lines: [String])?
         for raw in source.components(separatedBy: .newlines) {
             let indent = raw.prefix { $0 == " " || $0 == "\t" }.count
             let line = raw.trimmingCharacters(in: .whitespaces)
+            if var open = fence {
+                if line.hasPrefix("```") {
+                    if let block = fenced(open.language, open.lines) { blocks.append(block) }
+                    fence = nil
+                } else {
+                    open.lines.append(raw)
+                    fence = open
+                }
+                continue
+            }
+            if line.hasPrefix("```") {
+                flush()
+                fence = (String(line.dropFirst(3)).trimmingCharacters(in: .whitespaces), [])
+                continue
+            }
             if line.isEmpty || line.allSatisfy({ $0 == "-" || $0 == "*" || $0 == "_" }) && line.count >= 3 { flush(); continue }
             if line.hasPrefix("#") {
                 flush()
@@ -426,7 +461,16 @@ struct MarkdownText: View {
             }
         }
         flush()
+        if let open = fence, let block = fenced(open.language, open.lines) { blocks.append(block) }
         return blocks
+    }
+
+    /// A widget when the fence names one and its JSON parses; plain code otherwise. A broken widget block is dropped rather than shown as raw JSON.
+    private static func fenced(_ language: String, _ lines: [String]) -> Block? {
+        let body = lines.joined(separator: "\n")
+        if let widget = ChatWidget.parse(language: language, body: body) { return .widget(widget) }
+        if ChatWidget.languages.contains(ChatWidget.normalize(language)) { return nil }
+        return body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : .code(body)
     }
 }
 

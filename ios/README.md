@@ -33,3 +33,12 @@ Rows show an on-device Apple Intelligence summary for publisher stories when the
 ## Separate device Beta build
 
 Run `xcodegen generate --spec project-beta.yml` before a development install to use **Newswire Beta** (`com.brycecole.newswire.beta`). Its widget, app group, Keychain access, and URL scheme (`newswire-beta`) are separate from the TestFlight app. Run `xcodegen generate` for the original release identity. The `ChartCatalysts` scheme validates the stock chart hold interaction using live AAPL data.
+
+## Ask: options and strategy widgets
+
+Ask can look up options on any ticker (`stock_data` takes a `symbol`, so market-wide chats work too) and render the results as native cards instead of prose. The model writes a fenced block with JSON that names contracts by OCC symbol; the app draws it from the quotes the tool actually returned (`ChatOption`, stored on the message), so prices never come from model text.
+
+- ` ```options ` `{"title":"QQQ Oct 30","contracts":["QQQ261030C00600000"]}` lists contracts with mid, bid–ask, cost per contract, breakeven and IV.
+- ` ```strategy ` `{"name":"Bull call spread","outlook":"bullish","legs":[{"contract":"...","side":"buy","qty":1}]}` (also ` ```position `) shows the legs, net cost, max profit and loss, breakevens and an expiry payoff chart, computed by `StrategyAnalysis` from bid/ask. A leg `{"shares":100,"side":"buy"}` adds the stock. Strategies must use one underlying and one expiry; otherwise, or if any leg was never quoted, the card says it can't price it.
+
+Brokerage holdings are never sent to the model, so "positions" here are proposed ones. `-askMarkets -askOptionsSample` opens Ask with sample widgets in Debug builds. The Ask sheet opens from the sparkles button beside the search field in the market dock; text typed there is sent as the first question.

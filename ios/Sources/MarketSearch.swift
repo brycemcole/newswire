@@ -318,6 +318,15 @@ struct MarketSearchSheet: View {
     }
 
     private var searchBar: some View {
+        GlassEffectContainer(spacing: 10) {
+            HStack(spacing: 10) {
+                searchField
+                askButton
+            }
+        }
+    }
+
+    private var searchField: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
             TextField("Search markets", text: $query)
@@ -343,29 +352,27 @@ struct MarketSearchSheet: View {
         .glassEffect(.regular.interactive(), in: .capsule)
     }
 
+    /// Opens the Ask sheet. Anything typed in the field is sent as the first question.
+    private var askButton: some View {
+        Button {
+            searching = false
+            detent = .peek
+            onAsk(trimmed)
+        } label: {
+            Image(systemName: "sparkles")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(Color.wireAccent)
+                .frame(width: 48, height: 48)
+                .contentShape(.circle)
+        }
+        .buttonStyle(.plain)
+        .glassEffect(.regular.interactive(), in: .circle)
+        .accessibilityLabel(trimmed.isEmpty ? "Ask the markets" : "Ask the markets about \(trimmed)")
+    }
+
     private var suggestions: some View {
         ScrollView {
             LazyVStack(spacing: 0) {
-                Button {
-                    searching = false
-                    detent = .peek
-                    onAsk(trimmed)
-                } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: "sparkles").foregroundStyle(Color.wireAccent)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Ask the Markets").font(.body.weight(.semibold))
-                            Text(trimmed).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                        }
-                        Spacer(minLength: 0)
-                        Image(systemName: "arrow.up.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
-                    }
-                    .padding(.horizontal, 20)
-                    .frame(minHeight: 56)
-                    .contentShape(.rect)
-                }
-                .buttonStyle(.plain)
-                Divider().padding(.leading, 20)
                 if let command = TerminalCommand.parse(trimmed) {
                     Button { choose(command.token) } label: {
                         HStack(spacing: 12) {
