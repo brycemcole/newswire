@@ -1,0 +1,11 @@
+[Unit]
+Description=Newswire research agent: frozen index predictions and background question answering
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/newswire
+ExecStart=/usr/bin/node %h/newswire/scripts/research-service/agent.mjs
+TimeoutStartSec=900
+UMask=0077
+Nice=10

@@ -40,11 +40,11 @@ export const detailQuestions = {
   },
   priority: {
     criteria: {
-      breaking: 'Major, fast-moving news most people would want an immediate phone alert for: war or major attack, head of state news, market crash, huge disaster, landmark ruling, or an event that moves markets right now.',
-      urgent: 'Significant, time-sensitive news worth reading today, but not worth interrupting someone for.',
-      normal: 'Routine coverage, analysis, features, or incremental updates.',
+      breaking: 'Major, fast-moving news a New York-based US markets trader would want an immediate phone alert for: a market crash or circuit breaker, a Fed or US Treasury decision, major US economic data, war or attack involving the US, NATO, Israel, Iran, Russia/Ukraine or China/Taiwan, US head of state news, a landmark US ruling, or an event moving US stocks, Treasury yields, the dollar or oil right now.',
+      urgent: 'Significant, time-sensitive news a US markets trader should read today, but not worth interrupting for: notable US corporate or policy news, or foreign news with a clear channel into US markets.',
+      normal: 'Routine coverage, analysis, features, or incremental updates. Also local or regional incidents abroad (a ship fire, accident, crime, local politics, disaster or outage in a small country) with no clear channel into US markets, however dramatic.',
     },
-    instructions: 'How urgent is this news story? Reserve breaking for rare, major events.',
+    instructions: 'How urgent is this story for a New York-based US markets trader? Judge relevance to US markets and US interests, not how dramatic the event is. Reserve breaking for rare, major events; local foreign incidents are normal.',
   },
   significance: {
     criteria: {

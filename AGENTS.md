@@ -25,7 +25,7 @@ ios/scripts/screenshot.sh ../screenshots/ios/x.png <launch args>
 
 It runs xcodegen, builds for the Simulator, launches the app, and grabs `xcrun simctl io ... screenshot`. Extra arguments are passed to the app as launch arguments. The script only captures the launch screen; to reach a deeper screen (for example Settings > Brokerage Sync), drive the Simulator yourself and run `xcrun simctl io booted screenshot screenshots/ios/name.png`, or add a small `#if DEBUG` launch argument that opens the screen you changed.
 
-**Linux/cloud agents cannot build or run the iOS app.** If you change SwiftUI there, say plainly in your summary that the change is uncompiled and unseen, and rely on the PR's iOS CI job (which also uploads a launch screenshot artifact). Do not claim iOS UI "works" without a screenshot or a passing CI build.
+**Linux/cloud agents cannot build or run the iOS app.** If you change SwiftUI there, say plainly in your summary that the change is uncompiled and unseen, and rely on the PR's iOS CI job, which only checks that the app compiles. Do not claim iOS UI "works" without a screenshot.
 
 ### What to report
 

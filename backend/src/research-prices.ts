@@ -1,5 +1,7 @@
+export const researchSymbols = ['SPY', 'QQQ', 'IWM', 'DIA'] as const;
+
 export async function researchPrices(symbol: string, now = Date.now()) {
-  if (!['SPY', 'QQQ'].includes(symbol)) throw new Error('Unsupported research symbol');
+  if (!(researchSymbols as readonly string[]).includes(symbol)) throw new Error('Unsupported research symbol');
   const url = new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${symbol}`);
   for (const [key, value] of Object.entries({ period1: Math.floor((now - 7 * 86400000) / 1000), period2: Math.floor(now / 1000), interval: '5m', includePrePost: 'true' })) url.searchParams.set(key, String(value));
   const response = await fetch(url, { headers: { 'User-Agent': 'NewswireResearch/1.0', Accept: 'application/json' }, signal: AbortSignal.timeout(10000) });

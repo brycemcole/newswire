@@ -4,7 +4,8 @@ import { quotes, resolve, type Mention } from './quotes';
 import { impactChannels, loadPulse, loadPulseSnapshot, pulseModel, pulseTime } from './market-pulse';
 import { captureForecast, captureWindow, evaluateForecastCandidate, ForecastError, getResearch, listForecastTrainingRows, registerForecastCandidate, settleForecast } from './forecast';
 import type { Horizon } from './forecast-model';
-import { researchPrices, targetPrices } from './research-prices';
+import { researchPrices, researchSymbols, targetPrices } from './research-prices';
+import { AgentResearchError, getAgentResearch, pendingPredictionSymbols, recordAnswers, recordPredictions, settlePredictions } from './agent-research';
 import { discoverQuestions, getDiscovery, recordDiscovery } from './research-discovery';
 import { inputsAt, loadBars } from './market-inputs';
 import { extract, ExtractError } from './extract';
@@ -558,8 +559,25 @@ async function route(request: Request, env: Env, ctx?: ExecutionContext): Promis
     if (request.method !== 'GET') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
     const q = query(url.searchParams, ['symbol']);
     const symbol = choice((q.symbol ?? 'SPY').toUpperCase(), 'symbol', ['SPY', 'QQQ']);
-    const [research, discovery, current] = await Promise.all([getResearch(env.DB, symbol), getDiscovery(env.DB), liveResearchPulse(env, symbol).catch(() => null)]);
-    return json({ ...research, discovery, current });
+    const [research, discovery, current, agent] = await Promise.all([getResearch(env.DB, symbol), getDiscovery(env.DB), liveResearchPulse(env, symbol).catch(() => null), getAgentResearch(env.DB, symbol).catch(() => null)]);
+    return json({ ...research, discovery, current, agent });
+  }
+  if (path === '/v1/research/agent') {
+    if (request.method !== 'GET') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
+    const q = query(url.searchParams, ['symbol']);
+    return json(await getAgentResearch(env.DB, choice((q.symbol ?? 'SPY').toUpperCase(), 'symbol', [...researchSymbols])));
+  }
+  if (path === '/v1/research/answers') {
+    if (request.method !== 'POST') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
+    query(url.searchParams, []);
+    return json(await recordAnswers(env.DB, await readBody(request)));
+  }
+  if (path === '/v1/research/predictions') {
+    if (request.method !== 'POST') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
+    query(url.searchParams, []);
+    const input = await readBody(request) as Record<string, unknown>;
+    const symbol = choice(String(input?.symbol ?? '').toUpperCase(), 'symbol', [...researchSymbols]);
+    return json(await recordPredictions(env.DB, input, await researchPrices(symbol)));
   }
   if (path === '/v1/research/discovery') {
     query(url.searchParams, []);
@@ -606,12 +624,14 @@ async function route(request: Request, env: Env, ctx?: ExecutionContext): Promis
     if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(k => k !== 'symbol')) invalid('Expected optional symbol');
     const symbol = input.symbol === undefined ? undefined : choice(input.symbol, 'symbol', ['SPY', 'QQQ']);
     const due = await env.DB.prepare('SELECT count(*) AS n FROM forecasts f LEFT JOIN forecast_outcomes o ON o.forecast_id=f.id WHERE o.forecast_id IS NULL AND f.target_end_at<=? AND (? IS NULL OR f.symbol=?)').bind(new Date().toISOString(), symbol ?? null, symbol ?? null).first<{ n: number }>();
-    if (!due?.n) return json({ settled: 0, outcomes: [], failures: [] });
-    const targets = symbol ? [symbol] : ['SPY', 'QQQ'];
+    const agentDue = (await pendingPredictionSymbols(env.DB)).filter(s => !symbol || s === symbol);
+    if (!due?.n && !agentDue.length) return json({ settled: 0, outcomes: [], failures: [], agent: { settled: 0, outcomes: [] } });
+    const targets = [...new Set([...(due?.n ? symbol ? [symbol] : ['SPY', 'QQQ'] : []), ...agentDue])];
     const archives = await Promise.allSettled(targets.map(async s => [s, await researchPrices(s)] as const));
     const prices = Object.fromEntries(archives.flatMap(result => result.status === 'fulfilled' ? [result.value] : []));
     const failures = archives.flatMap((result, i) => result.status === 'rejected' ? [`${targets[i]} price data unavailable`] : []);
-    return json({ ...await settleForecast(env.DB, { symbol, prices }), failures });
+    const forecasts = due?.n ? await settleForecast(env.DB, { symbol, prices: Object.fromEntries(Object.entries(prices).filter(([s]) => s === 'SPY' || s === 'QQQ')) }) : { settled: 0, outcomes: [] };
+    return json({ ...forecasts, failures, agent: await settlePredictions(env.DB, Object.fromEntries(Object.entries(prices).filter(([s]) => agentDue.includes(s)))) });
   }
   if (path === '/v1/research/training') {
     if (request.method !== 'GET') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
@@ -691,6 +711,7 @@ export default {
     try { response = await route(request, env, ctx); } catch (error) {
       response = error instanceof ApiError ? json({ error: { code: error.code, message: error.message } }, error.status)
         : error instanceof ForecastError ? json({ error: { code: 'invalid_forecast', message: error.message } }, error.status)
+        : error instanceof AgentResearchError ? json({ error: { code: error.status === 400 ? 'invalid_request' : 'unavailable', message: error.message } }, error.status)
         : error instanceof ExtractError ? json({ error: { code: error.status === 400 ? 'invalid_request' : error.status === 415 ? 'unsupported_media_type' : 'upstream_unavailable', message: error.message } }, error.status)
         : error instanceof DataError ? json({ error: { code: error.status === 400 ? 'invalid_request' : error.status === 404 ? 'not_found' : 'upstream_unavailable', message: error.message } }, error.status) : json({ error: { code: 'internal_error', message: 'Internal server error' } }, 500);
     }

@@ -40,6 +40,16 @@ Findings enter the raw evidence archive before classification. The existing head
 
 Article content versions, original arrival times, classification decisions and delivery attempts are durable. The seven-day JSON archive is only a hot cache. Existing raw records are migrated before expiration. Backend impact availability uses server receipt of the classification, with the classifier's own timestamp stored separately; late delivery cannot alter an earlier forecast.
 
+## Research agent
+
+`scripts/research-service/agent.mjs` runs on the Mini every five minutes. It calls DeepSeek through OpenCode Go (`deepseek-v4.1-flash` for questions, `deepseek-v4-pro` for predictions) with tools for the Newswire data catalog, the Mini's seven-day raw headline archive, open-web news and web search, article reading through `/v1/extract`, and a Jev second opinion. `NEWSWIRE_AGENT_PROVIDER=zen` switches to pay-as-you-go OpenCode Zen. The key is read from `NEWSWIRE_OPENCODE_KEY`, `~/.config/newswire/opencode-key`, or the existing `zen-key`.
+
+Open research questions are answered per event: the confirm and contradict halves share one verdict (`confirmed`, `contradicted`, `unresolved`), a likely market effect and cited sources, stored by `POST /v1/research/answers`. Unresolved events are retried after six hours while under two days old.
+
+Predictions cover SPY, QQQ, IWM and DIA. They are accepted only in two windows: 8:40–9:25 a.m. Eastern (to the open, to the close) and the last 30 to 5 minutes of the session (to the next open, to the next close). `POST /v1/research/predictions` freezes the server's own completed five-minute price as the baseline and keeps one call per symbol, session, window and horizon. Settlement uses the opening bar's open or the closing bar's close. `GET /v1/research/agent?symbol=SPY` and the `agent` field of `GET /v1/research` report calls, outcomes, hit rate against always-up, Brier score against a coin flip and signal return. These are measurements, not evidence of an edge until many calls have settled.
+
+`node scripts/research-service/agent.mjs --dry-run` runs both tasks without recording anything; outside the windows it rehearses late-session calls. `--only=answer` or `--only=predict` limits a run.
+
 ## Operations
 
 The systemd units in `scripts/research-service/` run on the Mini:
@@ -47,6 +57,7 @@ The systemd units in `scripts/research-service/` run on the Mini:
 - `newswire-research.timer`: captures and settles every five minutes.
 - `newswire-crawler.timer`: bounded discovery every ten minutes.
 - `newswire-learning.timer`: candidate training and evaluation daily at 21:30 New York time.
+- `newswire-agent.timer`: the research agent every five minutes.
 
 These are separate from the minute-by-minute headline monitor. They use the existing protected writer-token mechanism. No token belongs in a unit, command argument, log or repository file. Browser dependencies are isolated under `scripts/crawler/`.
 

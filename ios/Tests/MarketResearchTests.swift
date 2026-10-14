@@ -40,6 +40,27 @@ struct MarketResearchTests {
         #expect(result.at != nil)
     }
 
+    @Test func decodesAgentPredictionsBoardAndAnsweredQuestions() throws {
+        let result = try NewswireAPI.decoder().decode(MarketResearchResponse.self, from: Data(MarketResearchFixture.settledJSON.utf8))
+        let agent = try #require(result.agent)
+        #expect(agent.board.map(\.symbol) == ["SPY", "QQQ", "IWM"])
+        #expect(agent.board.first?.predictions.first?.direction == -1)
+        #expect(agent.board.first?.predictions.first?.sources.first?.link?.host() == "www.bls.gov")
+        #expect(agent.board.last?.predictions.first?.outcome?.returnPct == -0.37)
+        #expect(agent.performance.overall.brier == 0.231)
+        #expect(agent.questions.first?.answer?.verdict == "contradicted")
+        #expect(agent.questions.last?.answer == nil)
+        #expect(agent.questions.last?.event?.source == "Seeking Alpha")
+    }
+
+    @Test func malformedAgentBlockDoesNotHideSavedForecasts() throws {
+        var payload = try #require(JSONSerialization.jsonObject(with: Data(MarketResearchFixture.settledJSON.utf8)) as? [String: Any])
+        payload["agent"] = ["board": "unexpected"]
+        let result = try NewswireAPI.decoder().decode(MarketResearchResponse.self, from: JSONSerialization.data(withJSONObject: payload))
+        #expect(result.agent == nil)
+        #expect(result.latest?.score == 54.1)
+    }
+
     @Test func decodesActualCollectingResearchResponseFixture() throws {
         let result = try NewswireAPI.decoder().decode(MarketResearchResponse.self, from: Data(MarketResearchFixture.collectingJSON.utf8))
 
