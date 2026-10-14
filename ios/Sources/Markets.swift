@@ -280,7 +280,7 @@ extension TickerMatch {
 
     /// "Netherlands · Amsterdam" style label for a listing.
     var marketLabel: String {
-        [country, exchDisp].filter { !$0.isEmpty }.joined(separator: " · ")
+        [country, exchDisp ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")
     }
 }
 
