@@ -29,10 +29,6 @@ function nyAt(date: string, hour: number, minute: number) {
   const represented = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second);
   return guess + Date.UTC(+date.slice(0, 4), +date.slice(5, 7) - 1, +date.slice(8, 10), hour, minute) - represented;
 }
-function observed(date: string) {
-  const d = new Date(`${date}T12:00:00Z`), w = d.getUTCDay();
-  return new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
-}
 function easterSunday(year: number) {
   const a = year % 19, b = Math.floor(year / 100), c = year % 100, d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25), g = Math.floor((b - f + 1) / 3);
   const h = (19 * a + b - d - g + 15) % 30, i = Math.floor(c / 4), k = c % 4, l = (32 + 2 * e + 2 * i - h - k) % 7, m = Math.floor((a + 11 * h + 22 * l) / 451);
@@ -345,7 +341,7 @@ function directionalScore(rows: any[]) {
   const ordered = [...rows].sort((a, b) => a.session_date.localeCompare(b.session_date));
   for (const row of covered) {
     if (Number.isFinite(row.price_only_direction)) { priceN++; priceHits += hit(row.price_only_direction, row.direction); }
-    const prior = ordered.filter(p => p.horizon === row.horizon && p.session_date < row.session_date && p.direction !== 0);
+    const prior = ordered.filter(p => p.horizon === row.horizon && p.session_date < row.session_date && p.direction !== 0).slice(-20);
     if (prior.length >= 20) {
       const up = prior.filter(p => p.direction > 0).length / prior.length;
       majorityN++; majorityHits += hit(up >= 0.5 ? 1 : -1, row.direction);
@@ -365,7 +361,7 @@ function compactForecast(row: any, evidence: { evidence: any[]; contradictions: 
     target_start_at: row.target_start_at, target_end_at: row.target_end_at, model_version: row.model_version, input_version: row.input_version,
     score: row.score, tilt: row.tilt, probability_up: null,
     outcome: hasOutcome ? { baseline_price: row.baseline_price, baseline_at: row.baseline_at, endpoint_price: row.endpoint_price,
-      endpoint_at: row.endpoint_at, return_pct: row.return_pct, direction: row.direction, source: row.outcome_source, source_retrieved_at: row.source_retrieved_at } : null,
+      endpoint_at: row.endpoint_at, return_pct: row.return_pct, direction: row.direction, source: row.outcome_source, source_retrieved_at: row.outcome_source_retrieved_at } : null,
     evidence: evidence.evidence, contradictions: evidence.contradictions, created_at: row.created_at };
 }
 

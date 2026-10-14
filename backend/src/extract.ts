@@ -37,13 +37,15 @@ export function target(raw: string | null): URL {
   return url;
 }
 
-async function download(url: URL, agent: string): Promise<{ html: string; url: string }> {
+export async function download(url: URL, agent: string): Promise<{ html: string; url: string }> {
   const response = await fetch(url, {
     headers: { 'User-Agent': agent, Accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.5', 'Accept-Language': 'en-US,en;q=0.9' },
     redirect: 'follow',
     signal: AbortSignal.timeout(10000),
   });
   if (!response.ok) throw new ExtractError(502, `Publisher returned ${response.status}`);
+  // A public article URL can still answer with a redirect to an internal address; the final URL must pass the same public-URL rules.
+  const final = target(response.url || url.href);
   const type = response.headers.get('content-type') ?? '';
   if (type && !/html|xml|text\/plain/i.test(type)) throw new ExtractError(415, `Unsupported content type ${type.split(';')[0]}`);
   const reader = response.body?.getReader();
@@ -60,7 +62,7 @@ async function download(url: URL, agent: string): Promise<{ html: string; url: s
   const bytes = new Uint8Array(size);
   let offset = 0;
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-  return { html: new TextDecoder().decode(bytes), url: response.url || url.href };
+  return { html: new TextDecoder().decode(bytes), url: final.href };
 }
 
 export function paragraphs(content: string): string[] {

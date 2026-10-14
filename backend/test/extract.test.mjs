@@ -3,7 +3,16 @@ import assert from 'node:assert/strict';
 import { build } from 'esbuild';
 
 const source = (await build({ entryPoints: ['src/extract.ts'], bundle: true, format: 'esm', platform: 'neutral', mainFields: ['module', 'main'], write: false })).outputFiles[0].text;
-const { parse, target } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+const { download, parse, target } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+
+const htmlResponse = (url, html = '<p>ok</p>') => {
+  const bytes = new TextEncoder().encode(html);
+  return {
+    ok: true, status: 200, url,
+    headers: { get: () => 'text/html' },
+    body: { getReader: () => { let done = false; return { read: async () => done ? { done: true, value: undefined } : (done = true, { done: false, value: bytes }), cancel: async () => undefined }; } },
+  };
+};
 
 test('extraction keeps the article and drops page chrome', () => {
   const body = Array.from({ length: 6 }, (_, i) => `<p>Paragraph ${i + 1} explains how the central bank weighed inflation, hiring and trade data before its decision this week.</p>`).join('');
@@ -25,4 +34,26 @@ test('only public web URLs are fetched', () => {
   for (const url of [null, 'notaurl', 'ftp://example.com/a', 'https://localhost/a', 'https://10.0.0.1/a', 'https://[::1]/a', 'https://user:pw@example.com/a', 'https://example.com:8443/a', 'https://printer.local/a', 'https://bryce-newswire.bryce-e19.workers.dev/v1/stories'])
     assert.throws(() => target(url), { status: 400 }, String(url));
   assert.equal(target('https://www.example.com/story#top').href, 'https://www.example.com/story');
+});
+
+test('a redirect to a non-public address is rejected', async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => htmlResponse('http://169.254.169.254/latest/meta-data');
+  try {
+    await assert.rejects(() => download(new URL('https://www.example.com/story'), 'agent'), { status: 400 });
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test('a redirect to another public URL is followed and reported', async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => htmlResponse('https://cdn.www.example.com/story?ref=amp');
+  try {
+    const page = await download(new URL('https://www.example.com/story'), 'agent');
+    assert.equal(page.url, 'https://cdn.www.example.com/story?ref=amp');
+    assert.match(page.html, /<p>ok<\/p>/);
+  } finally {
+    globalThis.fetch = original;
+  }
 });
