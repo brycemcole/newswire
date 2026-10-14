@@ -6,10 +6,7 @@ struct StoryQuoteStats: View {
 
     var body: some View {
         GlassEffectContainer(spacing: 6) {
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 6) { ForEach(symbols, id: \.self) { pill($0) } }
-                VStack(alignment: .leading, spacing: 6) { ForEach(symbols, id: \.self) { pill($0) } }
-            }
+            FlowLayout(spacing: 6) { ForEach(symbols, id: \.self) { pill($0) } }
         }
         .padding(.top, 4)
     }
