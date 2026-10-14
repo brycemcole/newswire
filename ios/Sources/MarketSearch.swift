@@ -210,7 +210,7 @@ nonisolated struct MarketQuote: Sendable, Hashable, Identifiable {
     }
 }
 
-struct MarketSearchSheet: View {
+struct MarketSearchSheet: View, Equatable {
     private static let financeSymbols: [(String, String)] = [("^KS11", "KOSPI"), ("^N225", "NIKKEI"), ("^HSI", "HANG SENG"), ("^GDAXI", "DAX"), ("^FTSE", "FTSE"),
                                                               ("^TNX", "US 10Y"), ("DX-Y.NYB", "DOLLAR"), ("JPY=X", "USD/JPY"), ("CL=F", "WTI"), ("GC=F", "GOLD")]
     @Binding var detent: DockDetent
@@ -230,6 +230,9 @@ struct MarketSearchSheet: View {
     @Environment(\.scenePhase) private var phase
 
     private var trimmed: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    /// The dock re-renders on every frame of a drag; its closures never compare equal, so without this the whole overview rebuilt each frame.
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.detent == rhs.detent }
 
     var body: some View {
         VStack(spacing: 0) {
