@@ -349,6 +349,8 @@ struct MarketSearchSheet: View {
         }
         .padding(.horizontal, 16)
         .frame(minHeight: 48)
+        .contentShape(.capsule)
+        .onTapGesture { searching = true }
         .glassEffect(.regular.interactive(), in: .capsule)
     }
 
@@ -359,7 +361,7 @@ struct MarketSearchSheet: View {
             detent = .peek
             onAsk(trimmed)
         } label: {
-            Image(systemName: "sparkles")
+            Image(systemName: "message")
                 .font(.body.weight(.semibold))
                 .foregroundStyle(Color.wireAccent)
                 .frame(width: 48, height: 48)

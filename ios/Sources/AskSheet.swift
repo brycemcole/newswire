@@ -56,6 +56,7 @@ struct AskSheet: View {
     @State private var thread: ChatThread
     @State private var chat = StockChat()
     @State private var history = ChatHistory.shared
+    @State private var generator = AskSuggestions.shared
     @State private var question = ""
     @State private var showingSettings = false
     @State private var showingHistory = false
@@ -75,7 +76,7 @@ struct AskSheet: View {
     private var market: Bool { thread.symbol.isEmpty }
     private var price: String? { thread.symbol == context.symbol ? context.price : nil }
     private var suggestions: [String] {
-        market ? ["What moved markets overnight?", "Is inflation getting better or worse?", "Will the Fed cut or hike at the next meeting?", "Show me QQQ calls and a bull call spread"]
+        market ? generator.questions
             : ["Why is \(thread.symbol) moving today?", "What does \(thread.name) do, in plain terms?", "Compare bullish earnings trades with a $1,000 budget"]
     }
 
@@ -90,7 +91,7 @@ struct AskSheet: View {
                         }
                         if let activity = chat.activity {
                             HStack(spacing: 8) {
-                                Image(systemName: "sparkles").symbolEffect(.pulse)
+                                Image(systemName: "ellipsis.bubble").symbolEffect(.pulse)
                                 Text(activity)
                             }
                             .font(.subheadline).foregroundStyle(.secondary)
@@ -164,6 +165,7 @@ struct AskSheet: View {
                 ChatHistoryList(current: thread.id) { open($0) }
             }
             .scrollEdgeEffectStyle(.soft, for: .all)
+            .task { if market { await generator.refresh() } }
             .task {
                 guard let initialQuestion, !initialQuestion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
                 question = initialQuestion
@@ -238,6 +240,7 @@ struct AskSheet: View {
                 }
             }
             .background(.fill.quaternary, in: .rect(cornerRadius: 20, style: .continuous))
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: generator.questions)
         }
     }
 
@@ -291,6 +294,13 @@ struct AskSheet: View {
                 .lineLimit(1...5).focused($focused)
                 .submitLabel(.send).onSubmit(send)
                 .padding(.vertical, 14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                // A vertical-axis field types a newline for Return instead of submitting, so treat a typed trailing newline as Send.
+                .onChange(of: question) { old, new in
+                    guard let text = ComposerReturn.stripped(old: old, new: new) else { return }
+                    question = text
+                    send()
+                }
             Group {
                 if chat.busy {
                     Button { chat.cancel() } label: {
@@ -317,6 +327,8 @@ struct AskSheet: View {
             }
         }
         .padding(.leading, 14).padding(.trailing, 4)
+        .contentShape(.rect(cornerRadius: 24, style: .continuous))
+        .onTapGesture { focused = true }
         .animation(.spring(duration: 0.25, bounce: 0.2), value: canSend)
         .animation(.spring(duration: 0.25, bounce: 0.2), value: chat.busy)
         .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 24, style: .continuous))
@@ -329,6 +341,14 @@ struct AskSheet: View {
         focused = false
         chat.send(String(text.prefix(4000)), symbol: thread.symbol, name: thread.name, price: price)
         question = ""
+    }
+}
+
+nonisolated enum ComposerReturn {
+    /// The text without its trailing newline when one newline was just typed at the end; nil for any other edit, such as pasting several lines.
+    static func stripped(old: String, new: String) -> String? {
+        guard new.count == old.count + 1, new.hasSuffix("\n") else { return nil }
+        return String(new.dropLast())
     }
 }
 
