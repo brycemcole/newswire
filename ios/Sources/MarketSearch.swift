@@ -384,7 +384,7 @@ struct MarketSearchSheet: View {
                 ForEach(TickerMatch.grouped(matches), id: \.first.id) { group in
                     Button { choose(group.first.symbol) } label: {
                         MarketRow(symbol: group.first.symbol, title: group.first.title,
-                                  tag: [group.first.kind, group.first.exchDisp].compactMap { $0 }.joined(separator: " · "),
+                                  tag: [group.first.kind, group.first.marketLabel].filter { !$0.isEmpty }.joined(separator: " · "),
                                   quote: board.quotes[group.first.symbol], spark: board.sparks[group.first.symbol])
                     }
                     .buttonStyle(.plain)
@@ -395,7 +395,7 @@ struct MarketSearchSheet: View {
                                     Button { choose(listing.symbol) } label: {
                                         HStack(spacing: 4) {
                                             Text(listing.symbol).font(.caption.weight(.semibold).monospaced())
-                                            if let exchange = listing.exchDisp { Text(exchange).font(.caption2).foregroundStyle(.secondary) }
+                                            if !listing.marketLabel.isEmpty { Text(listing.marketLabel).font(.caption2).foregroundStyle(.secondary) }
                                             if let quote = board.quotes[listing.symbol] {
                                                 Text(QuoteFormat.percent(quote.changePercent)).font(.caption2.weight(.semibold)).foregroundStyle(QuoteFormat.color(quote.changePercent))
                                             }
@@ -404,7 +404,7 @@ struct MarketSearchSheet: View {
                                         .background(.fill.tertiary, in: .capsule)
                                     }
                                     .buttonStyle(.plain)
-                                    .accessibilityLabel("\(listing.symbol), \(listing.exchDisp ?? "")")
+                                    .accessibilityLabel("\(listing.symbol), \(listing.marketLabel)")
                                 }
                             }
                             .padding(.horizontal, 20)
