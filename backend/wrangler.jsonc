@@ -10,6 +10,8 @@
     { "binding": "BRAIN", "database_name": "brain", "database_id": "4d26dd8c-892f-49c9-8f42-6b897a7ec668", "migrations_dir": "brain" }
   ],
   "ai": { "binding": "AI" },
+  "durable_objects": { "bindings": [{ "name": "COMPUTE", "class_name": "Compute" }] },
+  "migrations": [{ "tag": "v1-compute", "new_sqlite_classes": ["Compute"] }],
   "triggers": { "crons": ["*/15 * * * *"] },
   "observability": { "enabled": false, "logs": { "enabled": false, "invocation_logs": false } }
 }

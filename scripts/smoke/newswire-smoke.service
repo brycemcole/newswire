@@ -1,0 +1,10 @@
+[Unit]
+Description=Newswire production check: the app's real requests
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/newswire
+ExecStart=/usr/bin/node %h/newswire/scripts/smoke/check.mjs
+TimeoutStartSec=180
+UMask=0077

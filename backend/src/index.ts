@@ -20,6 +20,7 @@ interface Env {
   AI?: { run(model: string, input: unknown): Promise<Record<string, unknown>> };
   BRAIN_AI_MODEL?: string;
   FRED_API_KEY?: string;
+  COMPUTE?: DurableObjectNamespace;
 }
 
 const categories = ['general', 'markets', 'technology', 'economy', 'politics', 'world', 'science'];
@@ -705,28 +706,47 @@ async function route(request: Request, env: Env, ctx?: ExecutionContext): Promis
   if (match || path === '/v1/stories' || path === '/v1/ingest') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
   throw new ApiError(404, 'not_found', 'Route not found');
 }
+// Free-plan Worker requests get 10 ms of CPU; Durable Objects get 30 s. Only cheap routes run in the Worker itself.
+const lightRoutes = /^\/(health|\.well-known\/|plaid\/)|^\/v1\/(stories|devices|ingest|attest|brain\/)/;
+const isLight = (path: string) => !path.startsWith('/v1/') || lightRoutes.test(path);
+
+export class Compute {
+  constructor(private readonly state: DurableObjectState, private readonly env: Env) {}
+  async fetch(request: Request): Promise<Response> {
+    if (new URL(request.url).pathname === '/__cron') { await refreshEarnings(this.env); return new Response('ok'); }
+    return handle(request, this.env, { waitUntil: (promise: Promise<unknown>) => this.state.waitUntil(promise) } as ExecutionContext);
+  }
+}
+
+function compute(env: Env) { return env.COMPUTE!.get(env.COMPUTE!.idFromName('compute')); }
+
+async function handle(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
+  let response: Response;
+  try { response = await route(request, env, ctx); } catch (error) {
+    response = error instanceof ApiError ? json({ error: { code: error.code, message: error.message } }, error.status)
+      : error instanceof ForecastError ? json({ error: { code: 'invalid_forecast', message: error.message } }, error.status)
+      : error instanceof AgentResearchError ? json({ error: { code: error.status === 400 ? 'invalid_request' : 'unavailable', message: error.message } }, error.status)
+      : error instanceof ExtractError ? json({ error: { code: error.status === 400 ? 'invalid_request' : error.status === 415 ? 'unsupported_media_type' : 'upstream_unavailable', message: error.message } }, error.status)
+      : error instanceof DataError ? json({ error: { code: error.status === 400 ? 'invalid_request' : error.status === 404 ? 'not_found' : 'upstream_unavailable', message: error.message } }, error.status) : json({ error: { code: 'internal_error', message: 'Internal server error' } }, 500);
+  }
+  const secured = new Response(response.body, response);
+  secured.headers.set('Cache-Control', 'no-store');
+  secured.headers.set('X-Content-Type-Options', 'nosniff');
+  secured.headers.set('Referrer-Policy', 'no-referrer');
+  secured.headers.set('X-Frame-Options', 'DENY');
+  secured.headers.set('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
+  secured.headers.set('Strict-Transport-Security', 'max-age=31536000');
+  secured.headers.set('Vary', 'Authorization');
+  if (response.status === 401) secured.headers.set('WWW-Authenticate', 'Bearer');
+  return secured;
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
-    let response: Response;
-    try { response = await route(request, env, ctx); } catch (error) {
-      response = error instanceof ApiError ? json({ error: { code: error.code, message: error.message } }, error.status)
-        : error instanceof ForecastError ? json({ error: { code: 'invalid_forecast', message: error.message } }, error.status)
-        : error instanceof AgentResearchError ? json({ error: { code: error.status === 400 ? 'invalid_request' : 'unavailable', message: error.message } }, error.status)
-        : error instanceof ExtractError ? json({ error: { code: error.status === 400 ? 'invalid_request' : error.status === 415 ? 'unsupported_media_type' : 'upstream_unavailable', message: error.message } }, error.status)
-        : error instanceof DataError ? json({ error: { code: error.status === 400 ? 'invalid_request' : error.status === 404 ? 'not_found' : 'upstream_unavailable', message: error.message } }, error.status) : json({ error: { code: 'internal_error', message: 'Internal server error' } }, 500);
-    }
-    const secured = new Response(response.body, response);
-    secured.headers.set('Cache-Control', 'no-store');
-    secured.headers.set('X-Content-Type-Options', 'nosniff');
-    secured.headers.set('Referrer-Policy', 'no-referrer');
-    secured.headers.set('X-Frame-Options', 'DENY');
-    secured.headers.set('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
-    secured.headers.set('Strict-Transport-Security', 'max-age=31536000');
-    secured.headers.set('Vary', 'Authorization');
-    if (response.status === 401) secured.headers.set('WWW-Authenticate', 'Bearer');
-    return secured;
+    if (env.COMPUTE && !isLight(new URL(request.url).pathname)) return compute(env).fetch(request);
+    return handle(request, env, ctx);
   },
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(refreshEarnings(env).then(() => undefined));
+    ctx.waitUntil(env.COMPUTE ? compute(env).fetch('https://compute/__cron').then(() => undefined) : refreshEarnings(env).then(() => undefined));
   },
 };

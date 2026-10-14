@@ -30,3 +30,9 @@ It runs xcodegen, builds for the Simulator, launches the app, and grabs `xcrun s
 ### What to report
 
 In your final message, state which screenshots you looked at and what they showed, or explicitly that you could not produce one and why.
+
+## Production
+
+The Worker is on Cloudflare's free plan: 10 ms of CPU per request. Everything except `/v1/stories`, `/v1/devices`, `/v1/ingest`, `/v1/attest` and `/v1/brain/` is forwarded to the `Compute` Durable Object, which allows 30 s. A new heavy route needs no change; a new route added to the light list must stay well under 10 ms.
+
+Unit tests cannot see production limits. After every deploy run `node scripts/smoke/check.mjs --no-alert` on the Mini; it makes the app's real requests and exits non-zero on any failure. `newswire-smoke.timer` runs it every five minutes and pushes to registered devices when the set of failing requests changes.
