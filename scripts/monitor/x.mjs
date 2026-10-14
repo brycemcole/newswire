@@ -35,9 +35,20 @@ export function items(tweets) {
     const media = tweet.media?.find(item => /^https:\/\//.test(item.url ?? ''));
     return [{
       title, summary, url: `https://x.com/${tweet.author?.username ?? 'i'}/status/${tweet.id}`, guid: `x:${tweet.id}`, stamp,
+      link: String(tweet.text ?? '').match(/https:\/\/t\.co\/\w+/)?.[0] ?? '',
       publisher: `@${tweet.author?.username ?? 'unknown'}`, image: media?.url ?? '', x: true,
     }];
   });
+}
+
+// A post that links an article is published with that article's URL, so it matches the publisher's own feed entry and is dropped as a copy.
+async function articleLink(link) {
+  if (!link) return '';
+  try {
+    const response = await fetch(link, { method: 'HEAD', signal: AbortSignal.timeout(8000) });
+    const target = new URL(response.url);
+    return /^https:$/.test(target.protocol) && !/(^|\.)(x|twitter)\.com$/i.test(target.hostname) ? target.href : '';
+  } catch { return ''; }
 }
 
 // The Following timeline, fetched at most once per interval; the monitor runs every minute.
@@ -48,7 +59,11 @@ export async function timeline() {
     env: { ...process.env, ...await login() }, timeout: 45000, maxBuffer: 16 * 1024 * 1024,
   });
   const parsed = JSON.parse(stdout);
-  const fresh = items(Array.isArray(parsed) ? parsed : parsed.tweets ?? []);
+  const known = new Map((cached.items ?? []).map(item => [item.guid, item.url]));
+  const fresh = await Promise.all(items(Array.isArray(parsed) ? parsed : parsed.tweets ?? []).map(async ({ link, ...item }) => {
+    const url = known.get(item.guid)?.startsWith('https://x.com/') === false ? known.get(item.guid) : await articleLink(link);
+    return url ? { ...item, url } : item;
+  }));
   await mkdir(dirname(cacheFile), { recursive: true, mode: 0o700 });
   await writeFile(cacheFile, `${JSON.stringify({ at: new Date().toISOString(), items: fresh })}\n`, { mode: 0o600 });
   return fresh;
