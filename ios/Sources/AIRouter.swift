@@ -15,23 +15,22 @@ enum AIFeature: String, CaseIterable, Identifiable {
 }
 
 enum AIBackend: Equatable {
-    case deepSeek, privateCloud, onDevice
+    case deepSeek, onDevice
     var label: String {
         switch self {
         case .deepSeek: "DeepSeek"
-        case .privateCloud: "Private Cloud Compute"
         case .onDevice: "Apple Intelligence"
         }
     }
 }
 
 enum AIRouter {
-    static let appleKey = "ai.appleBackend"
     static let providerKey = "ai.provider"
 
-    /// The provider picked in settings: "deepSeek", "privateCloud" or "onDevice". Before the picker existed a saved key meant DeepSeek.
+    /// The provider picked in settings: "deepSeek" or "onDevice". Before the picker existed a saved key meant DeepSeek.
     static var provider: String {
-        UserDefaults.standard.string(forKey: providerKey) ?? (hasDeepSeekKey ? "deepSeek" : UserDefaults.standard.string(forKey: appleKey) ?? "onDevice")
+        if let saved = UserDefaults.standard.string(forKey: providerKey), saved == "deepSeek" || saved == "onDevice" { return saved }
+        return hasDeepSeekKey ? "deepSeek" : "onDevice"
     }
 
     static var hasDeepSeekKey: Bool { !StockAIKeychain.read().isEmpty }
@@ -40,27 +39,16 @@ enum AIRouter {
         UserDefaults.standard.object(forKey: feature.defaultsKey) as? Bool ?? true
     }
 
-    static var prefersPrivateCloud: Bool { UserDefaults.standard.string(forKey: appleKey) == "privateCloud" }
-
-    static var privateCloudAvailable: Bool {
-        if #available(iOS 27.0, *) { return PrivateCloudComputeLanguageModel().isAvailable }
-        return false
-    }
-
     static var onDeviceAvailable: Bool { SystemLanguageModel.default.availability == .available }
 
     static func backend(for feature: AIFeature) -> AIBackend? {
         if provider == "deepSeek", hasDeepSeekKey, deepSeekEnabled(feature) { return .deepSeek }
-        if prefersPrivateCloud, privateCloudAvailable { return .privateCloud }
         return onDeviceAvailable ? .onDevice : nil
     }
 
     static func isAvailable(_ feature: AIFeature) -> Bool { backend(for: feature) != nil }
 
     static func session(_ backend: AIBackend, instructions: String, tools: [any Tool] = [], permissive: Bool = false) -> LanguageModelSession {
-        if backend == .privateCloud, #available(iOS 27.0, *) {
-            return LanguageModelSession(model: PrivateCloudComputeLanguageModel(), tools: tools, instructions: instructions)
-        }
         let model = permissive ? SystemLanguageModel(guardrails: .permissiveContentTransformations) : SystemLanguageModel.default
         return LanguageModelSession(model: model, tools: tools, instructions: instructions)
     }

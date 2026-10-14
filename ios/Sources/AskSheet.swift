@@ -431,7 +431,6 @@ struct MarkdownText: View {
 }
 
 struct StockAISettings: View {
-    @AppStorage(AIRouter.appleKey) private var apple = "onDevice"
     @AppStorage(AIFeature.stockChat.defaultsKey) private var stock = true
     @AppStorage(AIFeature.articleSummaries.defaultsKey) private var summaries = true
     @AppStorage(AIFeature.moveExplanations.defaultsKey) private var moves = true
@@ -441,14 +440,11 @@ struct StockAISettings: View {
     @State private var saved = false
     @State private var error: String?
 
-    private var showsPrivateCloud: Bool { true }
-
     var body: some View {
         Form {
             Section {
                 Picker("Answering with", selection: $provider) {
                     Label("Apple on device", systemImage: "apple.intelligence").tag("onDevice")
-                    if showsPrivateCloud { Label("Private Cloud Compute", systemImage: "lock.icloud").tag("privateCloud") }
                     Label("DeepSeek", systemImage: "sparkles").tag("deepSeek")
                 }
                 .pickerStyle(.inline)
@@ -493,14 +489,6 @@ struct StockAISettings: View {
                     Text("Features turned off here use Apple's models instead.")
                 }
                 .disabled(!hasKey)
-                Section {
-                    Picker("Apple model", selection: $apple) {
-                        Text("On device").tag("onDevice")
-                        if showsPrivateCloud { Text("Private Cloud Compute").tag("privateCloud") }
-                    }
-                } header: {
-                    Text("Apple model for everything else")
-                }
             }
             if let error { Text(error).foregroundStyle(.red) }
         }
@@ -510,14 +498,12 @@ struct StockAISettings: View {
         .onAppear { hasKey = !StockAIKeychain.read().isEmpty }
         .onChange(of: provider) { _, value in
             UserDefaults.standard.set(value, forKey: AIRouter.providerKey)
-            if value != "deepSeek" { apple = value }
         }
     }
 
     private var footer: String {
         switch provider {
         case "deepSeek": hasKey ? "Questions, article text and fetched market context go directly to DeepSeek, billed to your account. Your brokerage holdings are never included." : "Add an API key below to use DeepSeek. Until then Apple's models answer."
-        case "privateCloud": AIRouter.privateCloudAvailable ? "Larger Apple models run on Apple's servers without storing your requests." : "Private Cloud Compute isn't available on this device or OS version, so answers stay on device."
         default: "Answers are generated on this device. Market research still needs an internet connection."
         }
     }

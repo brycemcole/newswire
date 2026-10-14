@@ -68,7 +68,7 @@ extension EnvironmentValues {
 }
 
 nonisolated enum Accent: String, CaseIterable, Identifiable {
-    case amber, yellow, lime, green, mint, cyan, blue, indigo, violet, purple, pink, rose, brown, graphite, white
+    case amber, yellow, lime, green, mint, cyan, blue, indigo, violet, purple, pink, rose, brown, graphite, white, phthalo, navy, olive
 
     var id: String { rawValue }
 
@@ -93,6 +93,9 @@ nonisolated enum Accent: String, CaseIterable, Identifiable {
             case .brown: return dark ? UIColor(red: 0.85, green: 0.68, blue: 0.50, alpha: 1) : UIColor(red: 0.45, green: 0.28, blue: 0.14, alpha: 1)
             case .graphite: return dark ? UIColor(red: 0.74, green: 0.77, blue: 0.80, alpha: 1) : UIColor(red: 0.34, green: 0.36, blue: 0.40, alpha: 1)
             case .white: return dark ? UIColor(white: 0.96, alpha: 1) : UIColor(white: 0.1, alpha: 1)
+            case .phthalo: return dark ? UIColor(red: 0.42, green: 0.80, blue: 0.64, alpha: 1) : UIColor(red: 0.03, green: 0.30, blue: 0.22, alpha: 1)
+            case .navy: return dark ? UIColor(red: 0.60, green: 0.70, blue: 1.0, alpha: 1) : UIColor(red: 0.07, green: 0.16, blue: 0.47, alpha: 1)
+            case .olive: return dark ? UIColor(red: 0.82, green: 0.85, blue: 0.45, alpha: 1) : UIColor(red: 0.38, green: 0.40, blue: 0.08, alpha: 1)
             }
         })
     }
@@ -476,7 +479,7 @@ struct FeedView: View {
         .environment(\.feedStore, store)
         .environment(\.openURL, OpenURLAction { InAppWeb.handle($0) })
         .onOpenURL { url in
-            guard url.scheme == "newswire" else { return }
+            guard url.scheme == "newswire" || url.scheme == "newswire-beta" else { return }
             settings = false
             dock = .peek
             switch url.host() {

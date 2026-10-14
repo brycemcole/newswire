@@ -29,3 +29,7 @@ Live pipeline, visual acceptance, signing, and physical-device deployment are se
 `scripts/release.sh` builds Release, signs with the team wildcard development profile (no push entitlement), installs on the iPhone when it is reachable, and publishes to https://apps.brmkhe.com/newswire. The build number is tracked in `scripts/.build-number`.
 
 Rows show an on-device Apple Intelligence summary for publisher stories when the model is available: the article page is fetched, its paragraphs are extracted, and Foundation Models writes one sentence of at most 25 words, shown in up to three lines and cached in `newswire-summaries-v2.json`. Paywalled or script-rendered pages fall back to the feed summary.
+
+## Separate device Beta build
+
+Run `xcodegen generate --spec project-beta.yml` before a development install to use **Newswire Beta** (`com.brycecole.newswire.beta`). Its widget, app group, Keychain access, and URL scheme (`newswire-beta`) are separate from the TestFlight app. Run `xcodegen generate` for the original release identity. The `ChartCatalysts` scheme validates the stock chart hold interaction using live AAPL data.

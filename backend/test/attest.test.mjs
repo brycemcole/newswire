@@ -126,3 +126,14 @@ test('challenges expire and are bound to the server secret', async () => {
   assert.equal((await call('/v1/attest/other')).status, 404);
   assert.equal((await call('/v1/attest/challenge', { method: 'POST' })).status, 405);
 });
+
+
+test('separate Beta identity enrolls and renews while foreign identities remain rejected', async () => {
+  const dev = device();
+  const enrolled = await enroll(dev, { app: `${appId}.beta` });
+  assert.equal(enrolled.status, 201);
+  assert.equal((await stories((await enrolled.json()).token)).status, 200);
+  assert.equal((await renew(dev, 1, { app: `${appId}.beta` })).status, 201);
+  assert.equal((await renew(dev, 2, { app: `${appId}.other` })).status, 401);
+  assert.equal((await enroll(device(), { app: `${appId}.other` })).status, 401);
+});

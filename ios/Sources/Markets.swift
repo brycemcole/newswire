@@ -104,6 +104,7 @@ nonisolated struct MarketChart: Sendable {
     let pre: MarketSession?
     let regular: MarketSession?
     let post: MarketSession?
+    var events: [ChartCatalyst] = []
 
     var high: Double? { points.map(\.close).max() }
     var low: Double? { points.map(\.close).min() }
@@ -370,7 +371,7 @@ actor YahooAuth {
 nonisolated enum MarketClient {
     private struct ChartEnvelope: Decodable {
         struct Chart: Decodable { let result: [Result]? }
-        struct Result: Decodable { let meta: Meta; let timestamp: [Double]?; let indicators: Indicators }
+        struct Result: Decodable { let meta: Meta; let timestamp: [Double]?; let indicators: Indicators; let events: YValue? }
         struct Indicators: Decodable { let quote: [Bars] }
         struct Bars: Decodable { let open: [Double?]?; let close: [Double?]? }
         struct Period: Decodable { let start: Double; let end: Double }
@@ -532,6 +533,7 @@ nonisolated enum MarketClient {
             data = try await get("/v8/finance/chart/\(symbol)", [
                 URLQueryItem(name: "range", value: query.range), URLQueryItem(name: "interval", value: query.interval),
                 URLQueryItem(name: "includePrePost", value: query.prePost ? "true" : "false"),
+                URLQueryItem(name: "events", value: "div,splits"),
             ])
         } catch MarketError.notFound { throw MarketError.notFound(symbol) }
         guard let result = try JSONDecoder().decode(ChartEnvelope.self, from: data).chart.result?.first,
@@ -584,7 +586,8 @@ nonisolated enum MarketClient {
             slots: max(slots, 2),
             pre: session(current?.pre),
             regular: session(current?.regular),
-            post: session(current?.post)
+            post: session(current?.post),
+            events: ChartCatalyst.corporateActions(result.events)
         )
     }
 }

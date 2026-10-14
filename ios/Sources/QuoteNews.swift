@@ -258,12 +258,12 @@ struct QuoteNewsSection: View {
     @State private var reading: Story?
     @State private var expanded = false
 
-    init(symbol: String, name: String, instrument: String?, move: Double?, price: String?) {
+    init(symbol: String, name: String, instrument: String?, move: Double?, price: String?, model: QuoteNewsModel? = nil) {
         self.name = name
         self.instrument = instrument
         self.move = move
         self.price = price
-        _model = State(initialValue: QuoteNewsModel(symbol: symbol))
+        _model = State(initialValue: model ?? QuoteNewsModel(symbol: symbol))
     }
 
     private var big: Bool {

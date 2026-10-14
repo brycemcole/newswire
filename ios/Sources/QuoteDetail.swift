@@ -130,6 +130,7 @@ nonisolated struct WatchEntry: Codable, Hashable, Sendable {
 struct QuoteDetail: View {
     @State private var model: QuoteModel
     @State private var scrub = Scrub()
+    @State private var news: QuoteNewsModel
     @State private var holding: MarketSymbol?
     @State private var showingOptions = false
     @State private var showingFilings = false
@@ -143,6 +144,7 @@ struct QuoteDetail: View {
 
     init(symbol: String) {
         _model = State(initialValue: QuoteModel(symbol: symbol.uppercased()))
+        _news = State(initialValue: QuoteNewsModel(symbol: symbol.uppercased()))
     }
 
     private var summary: QuoteSummary? { model.summary }
@@ -177,11 +179,12 @@ struct QuoteDetail: View {
                 }
                 hero
                 rangePicker
+                catalystReadout
                 HoldingSection(symbol: symbol, chart: model.live)
                 optionsLink
                 Divider()
                 QuoteNewsSection(symbol: symbol, name: name, instrument: summary?.text("price", "quoteType") ?? model.live?.instrument,
-                                 move: dayMove, price: model.live.map { $0.money($0.price) })
+                                 move: dayMove, price: model.live.map { $0.money($0.price) }, model: news)
                 sections
                 SimulatorSection(symbol: symbol, price: model.live?.price, currency: model.live?.currency ?? "USD")
                 Link(destination: yahooURL) {
@@ -227,6 +230,7 @@ struct QuoteDetail: View {
         .onAppear { MarketRecents.add(symbol) }
         #if DEBUG
         .task {
+            if let index = CommandLine.arguments.firstIndex(of: "-chartRange"), let raw = CommandLine.arguments.dropFirst(index + 1).first, let range = ChartRange(rawValue: raw) { model.range = range }
             if let index = CommandLine.arguments.firstIndex(of: "-filing"), let raw = CommandLine.arguments.dropFirst(index + 1).first {
                 try? await Task.sleep(for: .seconds(1))
                 previewFiling = URL(string: raw)
@@ -266,10 +270,51 @@ struct QuoteDetail: View {
         }
     }
 
+    @ViewBuilder private var catalystReadout: some View {
+        if let chart = model.chart {
+            let events = ChartCatalyst.earnings(summary) + chart.events + (news.stories ?? []).map(ChartCatalyst.init)
+            let mapped = ChartCatalyst.mapped(events, chart: chart, range: model.range)
+            if let index = scrub.index {
+                let calendar: Calendar = {
+                    var calendar = Calendar(identifier: .gregorian)
+                    calendar.timeZone = chart.timeZone
+                    return calendar
+                }()
+                let selected = mapped.filter {
+                    $0.index == index || ($0.event.dateOnly && chart.points.indices.contains(index) && calendar.isDate(chart.points[$0.index].date, inSameDayAs: chart.points[index].date))
+                }.map(\.event)
+                VStack(alignment: .leading, spacing: 8) {
+                    if selected.isEmpty {
+                        Text("No dated events available at this point")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    ForEach(selected) { event in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Label(event.title, systemImage: event.kind.icon)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(event.kind == .earnings ? Color.orange : Color.primary)
+                            if let detail = event.detail { Text(detail).font(.caption) }
+                            Text(event.date.formatted(event.dateOnly ? Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: .gmt) : Date.FormatStyle(date: .abbreviated, time: .shortened, timeZone: chart.timeZone)) + " · " + event.source)
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                    Text("Events provide context; they do not establish what caused a price move.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+                .background(.quaternary, in: .rect(cornerRadius: 14))
+            } else {
+                Text(mapped.isEmpty ? "Hold and slide to inspect prices. Dated events appear when available." : "Hold and slide for events · E earnings · D dividend · S split · • news")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+    }
+
     private var hero: some View {
         Group {
             if let chart = model.chart {
-                PriceChart(chart: chart, range: model.range, live: model.streaming && model.range == .day, scrub: scrub)
+                PriceChart(chart: chart, range: model.range, live: model.streaming && model.range == .day, scrub: scrub, catalysts: ChartCatalyst.earnings(summary) + chart.events + (news.stories ?? []).map(ChartCatalyst.init))
                     .id(model.range)
                     .transition(.opacity)
             } else if let error = model.error {
@@ -1153,9 +1198,11 @@ private struct PriceChart: View {
     let range: ChartRange
     let live: Bool
     let scrub: Scrub
+    let catalysts: [ChartCatalyst]
 
     var body: some View {
         let points = chart.points
+        let markers = ChartCatalyst.mapped(catalysts, chart: chart, range: range)
         let reference = chart.reference(for: range)
         let up = (points.last?.close ?? 0) >= (reference ?? points.first?.close ?? 0)
         let tint = up ? Color.green : Color.red
@@ -1181,6 +1228,16 @@ private struct PriceChart: View {
                         .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                 }
             }
+            ForEach(markers) { marker in
+                PointMark(x: .value("Event", marker.index), y: .value("Price", points[marker.index].close))
+                    .symbolSize(scrub.index == marker.index ? 90 : 40)
+                    .foregroundStyle(marker.event.kind == .earnings ? Color.orange : Color.secondary)
+                    .annotation(position: .bottom, spacing: 4) {
+                        Text(marker.event.kind.badge)
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(marker.event.kind == .earnings ? Color.orange : Color.secondary)
+                    }
+            }
             if live, scrub.index == nil, let last = points.last {
                 PointMark(x: .value("Time", last.id), y: .value("Price", last.close))
                     .symbolSize(40)
@@ -1201,6 +1258,7 @@ private struct PriceChart: View {
             ScrubOverlay(proxy: proxy, chart: chart, range: range, tint: tint, scrub: scrub)
         }
         .accessibilityLabel("\(chart.symbol) price chart, \(range.caption)")
+        .accessibilityIdentifier("stock-price-chart")
     }
 }
 
@@ -1262,6 +1320,9 @@ private struct ScrubOverlay: View {
     }
 
     private func update(_ location: CGFloat?, plot: CGRect) {
+        #if DEBUG
+        if location == nil, CommandLine.arguments.contains("-chartKeepSelection") { return }
+        #endif
         guard let location, !chart.points.isEmpty else {
             scrub.index = nil
             return

@@ -51,7 +51,10 @@ targets:
   NewswireWidgets:
     type: app-extension
     platform: iOS
-    sources: [Widget, Shared]
+    sources:
+      - path: Widget
+        excludes: ["Info*.plist", "*.entitlements"]
+      - Shared
     entitlements:
       path: Widget/NewswireWidgets.entitlements
       properties:

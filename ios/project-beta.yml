@@ -1,0 +1,49 @@
+include: project.yml
+targets:
+  Newswire:
+    entitlements:
+      path: NewswireBeta.entitlements
+      properties:
+        com.apple.security.application-groups:REPLACE: [group.com.brycecole.newswire.beta]
+    info:
+      path: InfoBeta.plist
+      properties:
+        NewswireAppGroup: group.com.brycecole.newswire.beta
+        CFBundleURLTypes:REPLACE:
+          - CFBundleURLName: com.brycecole.newswire.beta
+            CFBundleURLSchemes: [newswire-beta]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.brycecole.newswire.beta
+        INFOPLIST_KEY_CFBundleDisplayName: Newswire Beta
+  NewswireWidgets:
+    entitlements:
+      path: Widget/NewswireWidgetsBeta.entitlements
+      properties:
+        com.apple.security.application-groups:REPLACE: [group.com.brycecole.newswire.beta]
+    info:
+      path: Widget/InfoBeta.plist
+      properties:
+        CFBundleDisplayName: Newswire Beta
+        NewswireAppGroup: group.com.brycecole.newswire.beta
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.brycecole.newswire.beta.widgets
+  NewswireChartUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [ChartUITests]
+    dependencies:
+      - target: Newswire
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Newswire
+        SWIFT_DEFAULT_ACTOR_ISOLATION: nonisolated
+schemes:
+  ChartCatalysts:
+    build:
+      targets:
+        Newswire: all
+    test:
+      targets: [NewswireChartUITests]

@@ -45,7 +45,7 @@ nonisolated struct WidgetChart: Sendable {
 }
 
 nonisolated struct WidgetPortfolio: Codable, Sendable {
-    static let group = "group.com.brycecole.newswire"
+    static let group = Bundle.main.object(forInfoDictionaryKey: "NewswireAppGroup") as? String ?? "group.com.brycecole.newswire"
     static let kind = "Portfolio"
 
     var holdings: [WidgetHolding]
