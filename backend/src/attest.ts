@@ -164,6 +164,12 @@ function bytesField(map: Cbor, name: string): Uint8Array {
   return value instanceof Uint8Array ? value : fail(`Missing ${name}`);
 }
 
+async function matchesApp(hash: Uint8Array, appId: string) {
+  const ids = appId === 'A792L5W262.com.brycecole.newswire' ? [appId, `${appId}.beta`] : [appId];
+  const hashes = await Promise.all(ids.map(id => sha256(encoder.encode(id))));
+  return hashes.some(expected => equal(hash, expected));
+}
+
 export async function verifyAttestation(attestation: Uint8Array, challenge: string, keyId: Uint8Array, appId: string, rootPem = appleRoot, now = Date.now()) {
   const object = cbor(attestation);
   const statement = object.attStmt;
@@ -179,7 +185,7 @@ export async function verifyAttestation(attestation: Uint8Array, challenge: stri
   if (!leaf.nonce || !equal(leaf.nonce, await sha256(authData, clientDataHash))) fail('Attestation nonce mismatch');
   if (leaf.curve !== '1.2.840.10045.3.1.7' || leaf.point.length !== 65 || !equal(await sha256(leaf.point), keyId)) fail('Key id mismatch');
   if (authData.length < 55) fail('Malformed authenticator data');
-  if (!equal(authData.subarray(0, 32), await sha256(encoder.encode(appId)))) fail('Wrong app');
+  if (!await matchesApp(authData.subarray(0, 32), appId)) fail('Wrong app');
   if (new DataView(authData.buffer, authData.byteOffset).getUint32(33) !== 0) fail('Attestation counter must be zero');
   if (!aaguids.includes(new TextDecoder().decode(authData.subarray(37, 53)))) fail('Unsupported authenticator');
   const idLength = new DataView(authData.buffer, authData.byteOffset).getUint16(53);
@@ -191,7 +197,7 @@ export async function verifyAssertion(assertion: Uint8Array, challenge: string, 
   const object = cbor(assertion);
   const authData = bytesField(object, 'authenticatorData');
   const signature = bytesField(object, 'signature');
-  if (authData.length < 37 || !equal(authData.subarray(0, 32), await sha256(encoder.encode(appId)))) fail('Wrong app');
+  if (authData.length < 37 || !await matchesApp(authData.subarray(0, 32), appId)) fail('Wrong app');
   const next = new DataView(authData.buffer, authData.byteOffset).getUint32(33);
   if (next <= counter) fail('Assertion replayed');
   const key = await crypto.subtle.importKey('raw', publicKey, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
