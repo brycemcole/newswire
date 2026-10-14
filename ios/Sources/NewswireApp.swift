@@ -230,7 +230,7 @@ struct FeedView: View {
     @State private var showingSaved = false
     @State private var portfolio = false
     @State private var dock = DockDetent.peek
-    @State private var dockFrame = CGRect.zero
+    @State private var dockFrame = DockFrame()
     @State private var quoteRoute: MarketSymbol?
     @State private var dataRoute: DataRoute?
     @State private var marketDepth: Int?
@@ -473,7 +473,7 @@ struct FeedView: View {
                 }, onSuggestionSelect: { symbol in
                     withAnimation(selectionAnimation) { dock = .peek }
                     open(quote: symbol)
-                }, suggestedSymbols: storyMarketSymbols, onFrameChange: { dockFrame = $0 })
+                }, suggestedSymbols: storyMarketSymbols, onFrameChange: { [dockFrame] in dockFrame.value = $0 })
             }
         }
         .environment(\.feedStore, store)

@@ -3,8 +3,14 @@ import UIKit
 
 enum DockDetent { case peek, medium, large }
 
+/// The dock's on-screen frame, read only when a touch lands. It is deliberately not observable: the frame changes on every
+/// frame of a drag or detent animation, and publishing that as view state re-rendered the whole feed underneath each frame.
+final class DockFrame {
+    var value = CGRect.zero
+}
+
 struct DockBackgroundInteraction: UIGestureRecognizerRepresentable {
-    var excludedFrame: CGRect
+    var excludedFrame: DockFrame
     var onInteraction: () -> Void
 
     func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator {
@@ -27,12 +33,12 @@ struct DockBackgroundInteraction: UIGestureRecognizerRepresentable {
     }
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
-        var excludedFrame: CGRect
+        var excludedFrame: DockFrame
 
-        init(excludedFrame: CGRect) { self.excludedFrame = excludedFrame }
+        init(excludedFrame: DockFrame) { self.excludedFrame = excludedFrame }
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-            !excludedFrame.contains(touch.location(in: touch.view?.window))
+            !excludedFrame.value.contains(touch.location(in: touch.view?.window))
         }
     }
 }
@@ -89,6 +95,7 @@ struct MarketDock: View {
             VStack(spacing: suggestedSymbols.isEmpty ? 0 : 8) {
                 if !suggestedSymbols.isEmpty { storySuggestions.padding(.horizontal, 22) }
                 MarketSearchSheet(detent: $detent, onSelect: onSelect, onAsk: onAsk)
+                    .equatable()
                     .padding(.top, Self.barInset + 8 * docked)
                     .overlay(alignment: .top) { handle(stops) }
                     .padding(.bottom, max(inset, keyboard))
