@@ -12,6 +12,19 @@ nonisolated struct MarketResearchResponse: Decodable, Sendable {
     let model: Model
     let discovery: Discovery?
     let current: MarketPulse?
+    private let agentPayload: Lenient<Agent>?
+    var agent: Agent? { agentPayload?.value }
+
+    enum CodingKeys: String, CodingKey {
+        case symbol, status, summary, latest, performance, recent, questions, model, discovery, current
+        case agentPayload = "agent"
+    }
+
+    /// The agent block is newer than the rest of the response; a malformed field there shouldn't hide saved forecasts.
+    nonisolated struct Lenient<Value: Decodable & Sendable>: Decodable, Sendable {
+        let value: Value?
+        nonisolated init(from decoder: Decoder) throws { value = try? Value(from: decoder) }
+    }
 
     enum Status: String, Decodable, Sendable {
         case collecting, limited, available
@@ -166,6 +179,87 @@ nonisolated struct MarketResearchResponse: Decodable, Sendable {
         let attemptedAt: Date
     }
 
+    nonisolated struct Agent: Decodable, Sendable {
+        let performance: AgentPerformance
+        let predictions: [Prediction]
+        let board: [BoardRow]
+        let questions: [QuestionGroup]
+    }
+
+    nonisolated struct AgentPerformance: Decodable, Sendable {
+        let overall: AgentScore
+        let horizons: [String: AgentScore]
+    }
+
+    nonisolated struct AgentScore: Decodable, Sendable {
+        let count: Int
+        let settled: Int
+        let scored: Int
+        let hitRate: Double?
+        let alwaysUpHitRate: Double?
+        let brier: Double?
+        let signalReturnPct: Double?
+    }
+
+    nonisolated struct Prediction: Decodable, Sendable, Identifiable {
+        let id: String
+        let symbol: String
+        let window: String
+        let horizon: String
+        let madeAt: Date
+        let targetEndAt: Date
+        let probabilityUp: Double
+        let direction: Int
+        let expectedMovePct: Double
+        let rationale: String
+        let drivers: [String]
+        let sources: [Source]
+        let outcome: PredictionOutcome?
+    }
+
+    nonisolated struct PredictionOutcome: Decodable, Sendable {
+        let returnPct: Double
+        let direction: Int
+    }
+
+    nonisolated struct Source: Decodable, Sendable, Identifiable {
+        var id: String { url }
+        let title: String
+        let url: String
+        let publisher: String?
+        var link: URL? { URL(string: url) }
+    }
+
+    nonisolated struct BoardRow: Decodable, Sendable, Identifiable {
+        var id: String { symbol }
+        let symbol: String
+        let predictions: [Prediction]
+    }
+
+    nonisolated struct QuestionGroup: Decodable, Sendable, Identifiable {
+        let id: String
+        let query: String
+        let reason: String
+        let status: String
+        let createdAt: Date
+        let event: Event?
+        let answer: Answer?
+    }
+
+    nonisolated struct Event: Decodable, Sendable {
+        let title: String
+        let source: String?
+    }
+
+    nonisolated struct Answer: Decodable, Sendable {
+        let question: String
+        let verdict: String
+        let answer: String
+        let marketEffect: String
+        let sources: [Source]
+        let answeredAt: Date
+    }
+
     nonisolated struct Model: Decodable, Sendable {
         let version: String
         let horizons: [String]
@@ -233,7 +327,9 @@ enum MarketResearchFixture: String {
         try? NewswireAPI.decoder().decode(MarketResearchResponse.self, from: Data(json.utf8))
     }
     static let collectingJSON = #"{"symbol":"SPY","status":"collecting","summary":"Collecting frozen forecasts; no probability estimate is validated.","latest":null,"performance":{"settled":0,"horizons":{"opening_gap":{"count":0,"scored":0,"hit_rate":null,"mean_return_pct":null,"tilt_return_pct":null,"base_rate_up":null,"majority_baseline_hit_rate":null,"price_only_baseline":"majority historical direction"},"cutoff_to_open":{"count":0,"scored":0,"hit_rate":null,"mean_return_pct":null,"tilt_return_pct":null,"base_rate_up":null,"majority_baseline_hit_rate":null,"price_only_baseline":"majority historical direction"},"open_to_close":{"count":0,"scored":0,"hit_rate":null,"mean_return_pct":null,"tilt_return_pct":null,"base_rate_up":null,"majority_baseline_hit_rate":null,"price_only_baseline":"majority historical direction"}},"probability_metrics":null,"candidate_status":"shadow only","candidate":null},"recent":[],"questions":[{"id":"q-1","query":"Does overnight energy strength add useful information to the opening gap forecast?","reason":"There are no settled forecasts yet.","status":"open","created_at":"2026-10-12T14:00:00Z","event_id":null}],"model":{"version":"forecast-tilt-v1","horizons":["opening_gap","cutoff_to_open","open_to_close"],"symbols":["SPY","QQQ"],"probabilities":null,"candidate":{"version":"ridge-logit-shadow-v1","minimumTrainSessions":180},"active_candidate":null}}"#
-    static let settledJSON = #"{"symbol":"QQQ","status":"available","summary":"neutral research tilt; experimental and uncalibrated","latest":{"id":"QQQ_2026-10-12_opening_gap","symbol":"QQQ","session_date":"2026-10-12","horizon":"opening_gap","forecast_at":"2026-10-12T13:00:00Z","target_start_at":"2026-10-12T13:00:00Z","target_end_at":"2026-10-12T14:00:00Z","model_version":"forecast-tilt-v1","input_version":"market-pulse-v2.1","score":54.1,"tilt":"neutral","probability_up":null,"evidence":[{"title":"Overnight futures rise ahead of the open","source":"Newswire","url":"https://example.com/evidence","reason":"A market input supported the recorded index.","received_at":"2026-10-12T12:30:00Z"}],"contradictions":[{"title":"Trading volume remains below average","source":"Newswire","url":"https://example.com/contradiction","reason":"A conflicting input is retained alongside supporting evidence.","received_at":"2026-10-12T12:35:00Z"}],"outcome":{"baseline_price":500,"baseline_at":"2026-10-12T13:00:00Z","endpoint_price":502.1,"endpoint_at":"2026-10-12T14:00:00Z","return_pct":0.42,"direction":1,"source":"Yahoo Finance","source_retrieved_at":"2026-10-12T14:05:00Z"},"created_at":"2026-10-12T13:00:00Z"},"performance":{"settled":1,"horizons":{"opening_gap":{"count":1,"scored":1,"hit_rate":1,"mean_return_pct":0.42,"tilt_return_pct":0,"base_rate_up":1,"majority_baseline_hit_rate":1,"price_only_baseline":"frozen sign of market-only pulse points at capture","price_only_baseline_hit_rate":null,"majority_baseline":"prior-session majority direction; at least 20 earlier outcomes; evaluated only on the same covered outcomes"},"cutoff_to_open":{"count":0,"scored":0,"hit_rate":null,"mean_return_pct":null,"tilt_return_pct":null,"base_rate_up":null,"majority_baseline_hit_rate":null,"price_only_baseline":"frozen sign of market-only pulse points at capture","price_only_baseline_hit_rate":null,"majority_baseline":"prior-session majority direction; at least 20 earlier outcomes; evaluated only on the same covered outcomes"},"open_to_close":{"count":0,"scored":0,"hit_rate":null,"mean_return_pct":null,"tilt_return_pct":null,"base_rate_up":null,"majority_baseline_hit_rate":null,"price_only_baseline":"frozen sign of market-only pulse points at capture","price_only_baseline_hit_rate":null,"majority_baseline":"prior-session majority direction; at least 20 earlier outcomes; evaluated only on the same covered outcomes"}},"probability_metrics":null,"candidate_status":"promoted","candidate":{"forward":{"predictions":12,"sessions":8,"brier":0.21,"baseline_brier":0.24,"bins":[]}}},"recent":[{"id":"QQQ_2026-10-12_opening_gap","symbol":"QQQ","session_date":"2026-10-12","horizon":"opening_gap","forecast_at":"2026-10-12T13:00:00Z","target_start_at":"2026-10-12T13:00:00Z","target_end_at":"2026-10-12T14:00:00Z","model_version":"forecast-tilt-v1","input_version":"market-pulse-v2.1","score":54.1,"tilt":"neutral","probability_up":null,"evidence":[],"contradictions":[],"outcome":{"baseline_price":500,"baseline_at":"2026-10-12T13:00:00Z","endpoint_price":502.1,"endpoint_at":"2026-10-12T14:00:00Z","return_pct":0.42,"direction":1,"source":"Yahoo Finance","source_retrieved_at":"2026-10-12T14:05:00Z"},"created_at":"2026-10-12T13:00:00Z"}],"questions":[],"model":{"version":"forecast-tilt-v1","horizons":["opening_gap","cutoff_to_open","open_to_close"],"symbols":["SPY","QQQ"],"probabilities":null,"candidate":{"version":"ridge-logit-shadow-v1"},"active_candidate":{"version":"ridge-logit-shadow-v1","promoted_at":"2026-10-12T14:00:00Z"}},"discovery":{"status":{"health":"partial","status":"completed","recorded_at":"2026-10-12T14:10:00Z","processed":4,"findings":2,"questions_attempted":3,"failures":["One source timed out"]},"findings":[{"id":"finding-1","original_url":"https://example.com/research","title":"A follow-up market report","first_discovered_at":"2026-10-12T14:08:00Z","question_ids":["q-1"]}],"attempts":[{"question_id":"q-1","status":"completed","attempted_at":"2026-10-12T14:07:00Z","attempts":1,"search_role":"confirm"}],"questions":[]}}"#
+    private static let settledBaseJSON = #"{"symbol":"QQQ","status":"available","summary":"neutral research tilt; experimental and uncalibrated","latest":{"id":"QQQ_2026-10-12_opening_gap","symbol":"QQQ","session_date":"2026-10-12","horizon":"opening_gap","forecast_at":"2026-10-12T13:00:00Z","target_start_at":"2026-10-12T13:00:00Z","target_end_at":"2026-10-12T14:00:00Z","model_version":"forecast-tilt-v1","input_version":"market-pulse-v2.1","score":54.1,"tilt":"neutral","probability_up":null,"evidence":[{"title":"Overnight futures rise ahead of the open","source":"Newswire","url":"https://example.com/evidence","reason":"A market input supported the recorded index.","received_at":"2026-10-12T12:30:00Z"}],"contradictions":[{"title":"Trading volume remains below average","source":"Newswire","url":"https://example.com/contradiction","reason":"A conflicting input is retained alongside supporting evidence.","received_at":"2026-10-12T12:35:00Z"}],"outcome":{"baseline_price":500,"baseline_at":"2026-10-12T13:00:00Z","endpoint_price":502.1,"endpoint_at":"2026-10-12T14:00:00Z","return_pct":0.42,"direction":1,"source":"Yahoo Finance","source_retrieved_at":"2026-10-12T14:05:00Z"},"created_at":"2026-10-12T13:00:00Z"},"performance":{"settled":1,"horizons":{"opening_gap":{"count":1,"scored":1,"hit_rate":1,"mean_return_pct":0.42,"tilt_return_pct":0,"base_rate_up":1,"majority_baseline_hit_rate":1,"price_only_baseline":"frozen sign of market-only pulse points at capture","price_only_baseline_hit_rate":null,"majority_baseline":"prior-session majority direction; at least 20 earlier outcomes; evaluated only on the same covered outcomes"},"cutoff_to_open":{"count":0,"scored":0,"hit_rate":null,"mean_return_pct":null,"tilt_return_pct":null,"base_rate_up":null,"majority_baseline_hit_rate":null,"price_only_baseline":"frozen sign of market-only pulse points at capture","price_only_baseline_hit_rate":null,"majority_baseline":"prior-session majority direction; at least 20 earlier outcomes; evaluated only on the same covered outcomes"},"open_to_close":{"count":0,"scored":0,"hit_rate":null,"mean_return_pct":null,"tilt_return_pct":null,"base_rate_up":null,"majority_baseline_hit_rate":null,"price_only_baseline":"frozen sign of market-only pulse points at capture","price_only_baseline_hit_rate":null,"majority_baseline":"prior-session majority direction; at least 20 earlier outcomes; evaluated only on the same covered outcomes"}},"probability_metrics":null,"candidate_status":"promoted","candidate":{"forward":{"predictions":12,"sessions":8,"brier":0.21,"baseline_brier":0.24,"bins":[]}}},"recent":[{"id":"QQQ_2026-10-12_opening_gap","symbol":"QQQ","session_date":"2026-10-12","horizon":"opening_gap","forecast_at":"2026-10-12T13:00:00Z","target_start_at":"2026-10-12T13:00:00Z","target_end_at":"2026-10-12T14:00:00Z","model_version":"forecast-tilt-v1","input_version":"market-pulse-v2.1","score":54.1,"tilt":"neutral","probability_up":null,"evidence":[],"contradictions":[],"outcome":{"baseline_price":500,"baseline_at":"2026-10-12T13:00:00Z","endpoint_price":502.1,"endpoint_at":"2026-10-12T14:00:00Z","return_pct":0.42,"direction":1,"source":"Yahoo Finance","source_retrieved_at":"2026-10-12T14:05:00Z"},"created_at":"2026-10-12T13:00:00Z"}],"questions":[],"model":{"version":"forecast-tilt-v1","horizons":["opening_gap","cutoff_to_open","open_to_close"],"symbols":["SPY","QQQ"],"probabilities":null,"candidate":{"version":"ridge-logit-shadow-v1"},"active_candidate":{"version":"ridge-logit-shadow-v1","promoted_at":"2026-10-12T14:00:00Z"}},"discovery":{"status":{"health":"partial","status":"completed","recorded_at":"2026-10-12T14:10:00Z","processed":4,"findings":2,"questions_attempted":3,"failures":["One source timed out"]},"findings":[{"id":"finding-1","original_url":"https://example.com/research","title":"A follow-up market report","first_discovered_at":"2026-10-12T14:08:00Z","question_ids":["q-1"]}],"attempts":[{"question_id":"q-1","status":"completed","attempted_at":"2026-10-12T14:07:00Z","attempts":1,"search_role":"confirm"}],"questions":[]}}"#
+    static let settledJSON = String(settledBaseJSON.dropLast()) + #","agent":"# + agentJSON + "}"
+    private static let agentJSON = #"{"performance":{"overall":{"count":14,"settled":12,"scored":11,"hit_rate":0.64,"always_up_hit_rate":0.45,"brier":0.231,"coin_flip_brier":0.25,"signal_return_pct":0.12,"move_error_pct":0.41},"horizons":{"to_open":{"count":6,"settled":5,"scored":5,"hit_rate":0.8,"always_up_hit_rate":0.4,"brier":0.205,"coin_flip_brier":0.25,"signal_return_pct":0.21,"move_error_pct":0.3},"to_close":{"count":4,"settled":4,"scored":3,"hit_rate":0.33,"always_up_hit_rate":0.5,"brier":0.262,"coin_flip_brier":0.25,"signal_return_pct":-0.05,"move_error_pct":0.6},"next_close":{"count":4,"settled":3,"scored":3,"hit_rate":0.67,"always_up_hit_rate":0.33,"brier":0.24,"coin_flip_brier":0.25,"signal_return_pct":0.2,"move_error_pct":0.5}}},"predictions":[],"board":[{"symbol":"SPY","predictions":[{"id":"SPY_2026-10-14_late_to_open","symbol":"SPY","window":"late","horizon":"to_open","made_at":"2026-10-14T19:41:00.000Z","target_session":"2026-10-15","target_end_at":"2026-10-15T13:30:00.000Z","baseline_price":769.6,"baseline_at":"2026-10-14T19:40:00.000Z","probability_up":0.38,"direction":-1,"expected_move_pct":-0.25,"rationale":"[TEST] Futures are slipping after a hotter core CPI print and Fed speakers pushed back on a December cut. Bank earnings before the open are the main upside risk.","drivers":["Core CPI above consensus","Fed odds of a December cut fell","10-year yield up 6 bp"],"sources":[{"title":"Consumer Price Index summary","url":"https://www.bls.gov/news.release/cpi.nr0.htm","publisher":"BLS"},{"title":"Fed funds futures","url":"https://www.cmegroup.com/markets/interest-rates.html","publisher":"CME"}],"model":"deepseek-v4-pro","outcome":null},{"id":"SPY_2026-10-14_late_next_close","symbol":"SPY","window":"late","horizon":"next_close","made_at":"2026-10-14T19:41:00.000Z","target_session":"2026-10-15","target_end_at":"2026-10-15T20:00:00.000Z","baseline_price":769.6,"baseline_at":"2026-10-14T19:40:00.000Z","probability_up":0.46,"direction":-1,"expected_move_pct":-0.15,"rationale":"[TEST] Rates pressure likely persists into Thursday, but strong bank results could offset it by the close.","drivers":["Rates pressure","Bank earnings"],"sources":[],"model":"deepseek-v4-pro","outcome":null}]},{"symbol":"QQQ","predictions":[{"id":"QQQ_2026-10-14_late_to_open","symbol":"QQQ","window":"late","horizon":"to_open","made_at":"2026-10-14T19:41:00.000Z","target_session":"2026-10-15","target_end_at":"2026-10-15T13:30:00.000Z","baseline_price":610.2,"baseline_at":"2026-10-14T19:40:00.000Z","probability_up":0.36,"direction":-1,"expected_move_pct":-0.35,"rationale":"[TEST] Long-duration tech is most exposed to higher yields.","drivers":["Higher yields"],"sources":[],"model":"deepseek-v4-pro","outcome":null},{"id":"QQQ_2026-10-14_late_next_close","symbol":"QQQ","window":"late","horizon":"next_close","made_at":"2026-10-14T19:41:00.000Z","target_session":"2026-10-15","target_end_at":"2026-10-15T20:00:00.000Z","baseline_price":610.2,"baseline_at":"2026-10-14T19:40:00.000Z","probability_up":0.52,"direction":1,"expected_move_pct":0.1,"rationale":"[TEST] TSMC results after the open could lift semiconductors.","drivers":["TSMC earnings"],"sources":[],"model":"deepseek-v4-pro","outcome":null}]},{"symbol":"IWM","predictions":[{"id":"IWM_2026-10-14_premarket_to_open","symbol":"IWM","window":"premarket","horizon":"to_open","made_at":"2026-10-14T12:50:00.000Z","target_session":"2026-10-14","target_end_at":"2026-10-14T13:30:00.000Z","baseline_price":241.1,"baseline_at":"2026-10-14T12:45:00.000Z","probability_up":0.41,"direction":-1,"expected_move_pct":-0.3,"rationale":"[TEST] Small caps are most rate-sensitive.","drivers":[],"sources":[],"model":"deepseek-v4-pro","outcome":{"endpoint_price":240.2,"endpoint_at":"2026-10-14T13:30:00.000Z","return_pct":-0.37,"direction":-1,"source":"https://query1.finance.yahoo.com/v8/finance/chart/IWM"}}]}],"questions":[{"id":"rd_1","question_ids":["rd_1","rd_2"],"query":"riyadh explosion missile oil facilities (official OR statement)","reason":"Pending independent confirmation of the energy report; search results do not establish truth.","status":"answered","created_at":"2026-10-14T16:00:00.000Z","event_id":"abc","event":{"title":"IRNA: An explosion in Riyadh after a missile attack and reports of damage to oil facilities","url":"https://example.com/irna","source":"IRNA"},"answer":{"question":"Did a missile attack damage Saudi oil facilities near Riyadh?","verdict":"contradicted","answer":"[TEST] Saudi state media said air defenses intercepted the missile and no oil facilities were damaged; Aramco reported normal operations. Only Iranian state media carried the damage claim.","market_effect":"none","channel":"energy","confidence":0.7,"sources":[{"title":"Saudi Press Agency statement","url":"https://www.spa.gov.sa/en","publisher":"SPA"}],"answered_at":"2026-10-14T16:20:00.000Z","model":"deepseek-v4.1-flash"}},{"id":"rd_3","question_ids":["rd_3","rd_4"],"query":"sa analyst stagflationary recession risk growing (official OR statement)","reason":"Pending independent confirmation of the growth report; search results do not establish truth.","status":"open","created_at":"2026-10-14T21:00:00.000Z","event_id":"def","event":{"title":"Analyst: stagflationary recession risk is growing","url":"https://example.com/sa","source":"Seeking Alpha"},"answer":null}]}"#
 }
 #endif
 
@@ -272,6 +368,7 @@ struct MarketResearchView: View {
 
     var body: some View {
         NavigationStack {
+            ScrollViewReader { proxy in
             List {
                 Section {
                     Picker("Market", selection: $symbol) {
@@ -292,11 +389,17 @@ struct MarketResearchView: View {
                     if failed { Section { Label("Refresh failed · showing the last saved research", systemImage: "exclamationmark.arrow.triangle.2.circlepath").font(.subheadline).foregroundStyle(.secondary) } }
                     if isStale { Section { Label("Latest forecast is over a day old.", systemImage: "clock.arrow.circlepath").font(.subheadline).foregroundStyle(.secondary) } }
                     if let current = response.current { liveOverview(current) }
+                    if let agent = response.agent {
+                        agentForecast(agent)
+                        if let row = agent.board.first(where: { $0.symbol == response.symbol }) { agentReasoning(row).id("why") }
+                        agentTrackRecord(agent.performance, symbol: response.symbol).id("track")
+                    }
                     overview(response)
                     performanceSection(response.performance)
                     discoverySection(response.discovery)
                     if !response.recent.isEmpty { recentSection(response.recent) }
-                    if !response.questions.isEmpty { questionsSection(response.questions) }
+                    if let questions = response.agent?.questions, !questions.isEmpty { agentQuestionsSection(questions).id("questions") }
+                    else if !response.questions.isEmpty { questionsSection(response.questions) }
                 } else if failed {
                     ContentUnavailableView {
                         Label("Research unavailable", systemImage: "exclamationmark.triangle")
@@ -315,6 +418,14 @@ struct MarketResearchView: View {
                         .frame(minHeight: 56)
                     }
                 }
+            }
+            #if DEBUG
+            .task {
+                guard let argument = CommandLine.arguments.first(where: { $0.hasPrefix("--research-scroll=") }) else { return }
+                try? await Task.sleep(for: .seconds(1))
+                proxy.scrollTo(String(argument.dropFirst("--research-scroll=".count)), anchor: .top)
+            }
+            #endif
             }
             .navigationTitle("Research")
             .navigationBarTitleDisplayMode(.inline)
@@ -354,6 +465,189 @@ struct MarketResearchView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             .padding(.vertical, 4)
+        }
+    }
+
+    private func agentForecast(_ agent: MarketResearchResponse.Agent) -> some View {
+        Section {
+            if agent.board.isEmpty {
+                Label("The first AI forecast is made 8:40–9:25 AM or 3:30–3:55 PM Eastern on a trading day.", systemImage: "clock")
+                    .font(.subheadline).foregroundStyle(.secondary)
+            }
+            ForEach(agent.board) { row in
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(row.symbol).font(.headline)
+                        Text(indexName(row.symbol)).font(.caption).foregroundStyle(.secondary)
+                    }
+                    ForEach(row.predictions) { predictionLine($0) }
+                }
+                .padding(.vertical, 4)
+            }
+        } header: {
+            if let made = agent.board.flatMap(\.predictions).map(\.madeAt).max() {
+                Text("AI forecast · \(made.formatted(.dateTime.weekday(.abbreviated).hour().minute()))")
+            } else {
+                Text("AI forecast")
+            }
+        } footer: {
+            Text("DeepSeek researches headlines, market data and the web, then commits to each call before its target time. Every call is scored against actual prices. Not investment advice.")
+        }
+    }
+
+    private func predictionLine(_ prediction: MarketResearchResponse.Prediction) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: prediction.direction > 0 ? "arrow.up.right" : prediction.direction < 0 ? "arrow.down.right" : "arrow.right")
+                .font(.subheadline.weight(.semibold)).foregroundStyle(tint(prediction.direction)).frame(width: 18)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(target(prediction)).font(.subheadline)
+                if let outcome = prediction.outcome {
+                    let hit = prediction.direction != 0 && outcome.direction == prediction.direction
+                    inline("Actual \(signedPercent(outcome.returnPct))", systemImage: hit ? "checkmark.circle.fill" : "xmark.circle")
+                        .font(.caption.monospacedDigit()).foregroundStyle(hit ? Color.green : Color.secondary)
+                        .accessibilityLabel("Actual \(signedPercent(outcome.returnPct)), \(hit ? "correct" : "missed")")
+                }
+            }
+            Spacer(minLength: 4)
+            Text(odds(prediction)).font(.subheadline.monospacedDigit().weight(.medium))
+            Text(signedPercent(prediction.expectedMovePct)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                .frame(minWidth: 50, alignment: .trailing)
+        }
+    }
+
+    private func agentReasoning(_ row: MarketResearchResponse.BoardRow) -> some View {
+        Section("Why · \(row.symbol)") {
+            ForEach(row.predictions) { prediction in
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("\(target(prediction)) · \(odds(prediction))").font(.subheadline.weight(.semibold))
+                    Text(prediction.rationale).font(.subheadline).fixedSize(horizontal: false, vertical: true)
+                    if !prediction.drivers.isEmpty {
+                        Text(prediction.drivers.map { "• \($0)" }.joined(separator: "\n"))
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                    sourceLinks(prediction.sources)
+                }
+                .padding(.vertical, 4)
+            }
+        }
+    }
+
+    private func agentTrackRecord(_ performance: MarketResearchResponse.AgentPerformance, symbol: String) -> some View {
+        Section {
+            let overall = performance.overall
+            if overall.settled == 0 {
+                Text(overall.count == 0 ? "No AI calls yet." : "\(overall.count) call\(overall.count == 1 ? "" : "s") waiting for prices to settle.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+            } else {
+                Text("\(overall.settled) settled call\(overall.settled == 1 ? "" : "s")").font(.subheadline).foregroundStyle(.secondary)
+                scoreRow(overall)
+                ForEach(["to_open", "to_close", "next_close"], id: \.self) { horizon in
+                    if let score = performance.horizons[horizon], score.settled > 0 {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(agentHorizon(horizon)).font(.subheadline.weight(.medium))
+                            scoreRow(score)
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+            }
+        } header: { Text("AI track record · \(symbol)") }
+        footer: { Text("Brier score: lower is better and 0.25 is a coin flip. A real edge needs dozens of settled calls before it means much.") }
+    }
+
+    private func scoreRow(_ score: MarketResearchResponse.AgentScore) -> some View {
+        HStack(spacing: 14) {
+            if let rate = score.hitRate { metric("Hits", rate.formatted(.percent.precision(.fractionLength(0)))) }
+            if let up = score.alwaysUpHitRate { metric("Always-up", up.formatted(.percent.precision(.fractionLength(0)))) }
+            if let brier = score.brier { metric("Brier", brier.formatted(.number.precision(.fractionLength(3)))) }
+            if let signal = score.signalReturnPct { metric("Signal return", signedPercent(signal)) }
+        }
+    }
+
+    private func sourceLinks(_ sources: [MarketResearchResponse.Source]) -> some View {
+        ForEach(sources.prefix(3)) { source in
+            if let url = source.link {
+                Link(destination: url) {
+                    inline(source.publisher.map { "\($0): \(source.title)" } ?? source.title, systemImage: "link")
+                        .font(.caption).lineLimit(1)
+                }
+            }
+        }
+    }
+
+    private func agentQuestionsSection(_ items: [MarketResearchResponse.QuestionGroup]) -> some View {
+        Section("Research questions") {
+            ForEach(items) { item in
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(item.answer?.question ?? item.event?.title ?? item.query).font(.subheadline.weight(.medium))
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let answer = item.answer {
+                        inline("\(verdict(answer.verdict)) · \(effect(answer.marketEffect))", systemImage: answer.verdict == "confirmed" ? "checkmark.seal" : answer.verdict == "contradicted" ? "xmark.seal" : "questionmark.circle")
+                            .font(.caption.weight(.medium)).foregroundStyle(answer.verdict == "unresolved" ? Color.secondary : Color.primary)
+                        Text(answer.answer).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        sourceLinks(answer.sources)
+                        Text("Answered \(answer.answeredAt.formatted(.relative(presentation: .named)))").font(.caption2).foregroundStyle(.tertiary)
+                    } else {
+                        Text(item.event?.source.map { "Reported by \($0)" } ?? item.reason).font(.caption).foregroundStyle(.secondary)
+                        Text("Researching · \(item.createdAt.formatted(.relative(presentation: .named)))").font(.caption2).foregroundStyle(.tertiary)
+                    }
+                }
+                .padding(.vertical, 3)
+            }
+        }
+    }
+
+    private func inline(_ title: String, systemImage: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            Image(systemName: systemImage)
+            Text(title)
+        }
+    }
+
+    private func target(_ prediction: MarketResearchResponse.Prediction) -> String {
+        let day = prediction.targetEndAt.formatted(.dateTime.weekday(.abbreviated))
+        return prediction.horizon == "to_open" ? "\(day) open" : "\(day) close"
+    }
+
+    private func odds(_ prediction: MarketResearchResponse.Prediction) -> String {
+        let up = Int((prediction.probabilityUp * 100).rounded())
+        return prediction.direction > 0 ? "\(up)% higher" : prediction.direction < 0 ? "\(100 - up)% lower" : "50/50"
+    }
+
+    private func tint(_ direction: Int) -> Color { direction > 0 ? .green : direction < 0 ? .red : .secondary }
+
+    private func indexName(_ symbol: String) -> String {
+        switch symbol {
+        case "SPY": "S&P 500"
+        case "QQQ": "Nasdaq 100"
+        case "IWM": "Russell 2000"
+        case "DIA": "Dow"
+        default: ""
+        }
+    }
+
+    private func agentHorizon(_ value: String) -> String {
+        switch value {
+        case "to_open": "To the open"
+        case "to_close": "To the close"
+        default: "One day out"
+        }
+    }
+
+    private func verdict(_ value: String) -> String {
+        switch value {
+        case "confirmed": "Confirmed"
+        case "contradicted": "Contradicted"
+        default: "Unresolved"
+        }
+    }
+
+    private func effect(_ value: String) -> String {
+        switch value {
+        case "lower": "points lower"
+        case "higher": "points higher"
+        case "none": "no market effect"
+        default: "effect unclear"
         }
     }
 

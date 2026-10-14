@@ -223,14 +223,14 @@ export async function captureForecast(db: DB, input: { symbol: string; snapshot:
   return { inserted: insertion.meta.changes > 0 ? 1 : 0, forecasts: result ? [result] : [] };
 }
 
-function chartBars(value: any): PriceBar[] {
+export function chartBars(value: any): PriceBar[] {
   const chart = value?.payload?.chart?.result?.[0];
   if (!chart || !Array.isArray(chart.timestamp)) return [];
   const q = chart.indicators?.quote?.[0] ?? {};
   return chart.timestamp.map((stamp: number, i: number) => ({ start: stamp * 1000, end: (stamp + 300) * 1000, open: q.open?.[i], close: q.close?.[i] }))
     .filter((b: PriceBar) => Number.isFinite(b.start) && Number.isFinite(b.close) && Number(b.close) > 0).sort((a: PriceBar,b: PriceBar) => a.start - b.start);
 }
-function findBar(bars: PriceBar[], at: number) { return bars.find(b => b.start === at); }
+export function findBar(bars: PriceBar[], at: number) { return bars.find(b => b.start === at); }
 function resultPrice(row: ForecastRow, bars: PriceBar[], retrieved: number) {
   const end = Date.parse(row.target_end_at);
   if (retrieved < end) return null;

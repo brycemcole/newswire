@@ -14,8 +14,12 @@ function iso(value: string | number | Date): string {
   return new Date(ms).toISOString();
 }
 
+export function decodeEntities(value: string): string {
+  return value.replace(/&(amp|quot|apos|#39|lt|gt|nbsp);/g, (_, name: string) => ({ amp: '&', quot: '"', apos: "'", '#39': "'", lt: '<', gt: '>', nbsp: ' ' })[name] ?? ' ');
+}
+
 function cleanText(value: unknown, max: number): string {
-  return typeof value === 'string' ? value.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max) : '';
+  return typeof value === 'string' ? decodeEntities(value.replace(/<[^>]*>/g, ' ')).replace(/\s+/g, ' ').trim().slice(0, max) : '';
 }
 
 async function hash(value: string): Promise<string> {

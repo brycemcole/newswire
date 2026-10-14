@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the Newswire research agent every five minutes
+
+[Timer]
+OnBootSec=120
+OnUnitInactiveSec=300
+AccuracySec=10
+
+[Install]
+WantedBy=timers.target
