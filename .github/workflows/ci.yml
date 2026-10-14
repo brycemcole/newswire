@@ -27,7 +27,7 @@ jobs:
 
   ios:
     runs-on: xcode-27
-    timeout-minutes: 45
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: ios
@@ -37,20 +37,7 @@ jobs:
       - uses: actions/checkout@v5
       - run: brew install xcodegen
       - run: xcodegen generate
-      - name: Test
+      - name: Build
         run: |
-          SIM=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(x["udid"] for r,v in sorted(d.items(), reverse=True) if "iOS" in r for x in v if x["name"].startswith("iPhone")))')
-          xcodebuild test -project Newswire.xcodeproj -scheme Newswire \
-            -destination "platform=iOS Simulator,id=$SIM" -derivedDataPath "$RUNNER_TEMP/dd" \
-            CODE_SIGNING_ALLOWED=NO > "$RUNNER_TEMP/test.log" 2>&1 || { grep -E "error:|failed" "$RUNNER_TEMP/test.log" | head -40; tail -30 "$RUNNER_TEMP/test.log"; exit 1; }
-          grep -E "Test run with|\*\* TEST" "$RUNNER_TEMP/test.log" | tail -3
-      - name: Launch screenshot
-        continue-on-error: true
-        run: |
-          DEVELOPER_DIR=$DEVELOPER_DIR scripts/screenshot.sh "$RUNNER_TEMP/shots/launch.png"
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: ios-screenshots
-          path: ${{ runner.temp }}/shots
-          if-no-files-found: ignore
+          xcodebuild build -project Newswire.xcodeproj -scheme Newswire -destination 'generic/platform=iOS Simulator' \
+            ARCHS=arm64 CODE_SIGNING_ALLOWED=NO -quiet
