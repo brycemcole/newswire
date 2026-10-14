@@ -259,6 +259,32 @@ nonisolated struct TickerMatch: Identifiable, Hashable, Sendable, Decodable {
 }
 
 extension TickerMatch {
+    private static let suffixCountries: [String: String] = [
+        "T": "🇯🇵 Japan", "AS": "🇳🇱 Netherlands", "L": "🇬🇧 UK", "IL": "🇬🇧 UK", "DE": "🇩🇪 Germany", "F": "🇩🇪 Germany", "PA": "🇫🇷 France",
+        "MI": "🇮🇹 Italy", "MC": "🇪🇸 Spain", "SW": "🇨🇭 Switzerland", "ST": "🇸🇪 Sweden", "CO": "🇩🇰 Denmark", "HE": "🇫🇮 Finland",
+        "OL": "🇳🇴 Norway", "BR": "🇧🇪 Belgium", "LS": "🇵🇹 Portugal", "VI": "🇦🇹 Austria", "IR": "🇮🇪 Ireland", "WA": "🇵🇱 Poland",
+        "HK": "🇭🇰 Hong Kong", "SS": "🇨🇳 China", "SZ": "🇨🇳 China", "TW": "🇹🇼 Taiwan", "TWO": "🇹🇼 Taiwan", "KS": "🇰🇷 South Korea",
+        "KQ": "🇰🇷 South Korea", "SI": "🇸🇬 Singapore", "AX": "🇦🇺 Australia", "NZ": "🇳🇿 New Zealand", "NS": "🇮🇳 India", "BO": "🇮🇳 India",
+        "TO": "🇨🇦 Canada", "V": "🇨🇦 Canada", "CN": "🇨🇦 Canada", "SA": "🇧🇷 Brazil", "MX": "🇲🇽 Mexico", "BA": "🇦🇷 Argentina",
+        "JO": "🇿🇦 South Africa", "TA": "🇮🇱 Israel", "IS": "🇹🇷 Turkey", "BK": "🇹🇭 Thailand", "JK": "🇮🇩 Indonesia", "KL": "🇲🇾 Malaysia",
+    ]
+
+    /// Country of the listing, from the Yahoo symbol suffix (7203.T is Japan, ASML.AS is the Netherlands); bare tickers are US.
+    var country: String {
+        guard quoteType == "EQUITY" || quoteType == "ETF" || quoteType == "INDEX" || quoteType == nil else { return "" }
+        guard let dot = symbol.lastIndex(of: "."), symbol[symbol.startIndex..<dot].count > 0 else {
+            return symbol.hasPrefix("^") ? "" : "🇺🇸 US"
+        }
+        return Self.suffixCountries[String(symbol[symbol.index(after: dot)...]).uppercased()] ?? ""
+    }
+
+    /// "Netherlands · Amsterdam" style label for a listing.
+    var marketLabel: String {
+        [country, exchDisp].filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+}
+
+extension TickerMatch {
     nonisolated struct Group: Sendable {
         let first: TickerMatch
         var others: [TickerMatch]
@@ -491,8 +517,9 @@ nonisolated enum MarketClient {
 
     @concurrent static func search(_ query: String) async throws -> [TickerMatch] {
         let data = try await get("/v1/finance/search", [
-            URLQueryItem(name: "q", value: query), URLQueryItem(name: "quotesCount", value: "20"),
+            URLQueryItem(name: "q", value: query), URLQueryItem(name: "quotesCount", value: "30"),
             URLQueryItem(name: "newsCount", value: "0"), URLQueryItem(name: "listsCount", value: "0"),
+            URLQueryItem(name: "enableFuzzyQuery", value: "false"),
         ])
         return try JSONDecoder().decode(SearchEnvelope.self, from: data).quotes
     }
