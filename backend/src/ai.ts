@@ -1,4 +1,5 @@
 export const freeModel = 'deepseek-v4.1-flash-free';
+export const goModel = 'deepseek-v4.1-flash';
 
 export class AIError extends Error {
   constructor(public status: number, message: string) { super(message); }
@@ -64,8 +65,10 @@ export class AIBroker {
     if (!job?.claimed) throw new AIError(404, 'AI request expired');
     if (body.error) job.finish(Response.json({ error: { message: 'Free DeepSeek could not finish this request. Try again.' } }, { status: 502 }));
     else {
-      const result = body.result as { model?: string; choices?: unknown[]; cost?: number } | undefined;
-      if (result?.model !== freeModel || !Array.isArray(result.choices) || result.choices.length !== 1 || result.cost !== 0) throw new AIError(400, 'Invalid free AI result');
+      const result = body.result as { model?: string; provider?: string; billing?: string; choices?: unknown[]; cost?: number } | undefined;
+      const free = result?.model === freeModel && result.cost === 0;
+      const go = result?.model === goModel && result.provider === 'opencode-go' && result.billing === 'subscription' && result.cost === undefined;
+      if ((!free && !go) || !Array.isArray(result?.choices) || result.choices.length !== 1) throw new AIError(400, 'Invalid AI result');
       job.finish(Response.json(result));
     }
     return { accepted: true };

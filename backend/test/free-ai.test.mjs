@@ -63,3 +63,39 @@ test('structured answers remain valid when the model returns the requested JSON 
     assert.throws(() => decodeCompletion(invalid, { tools: [] }), /no answer/);
   }
 });
+
+test('Go fallback only accepts the configured subscription model', async () => {
+  const claim = request('worker/claim', {});
+  const completion = request('chat/completions', { messages: [{ role: 'user', content: 'hello' }] });
+  const { job } = await (await claim).json();
+  const result = { model: 'deepseek-v4.1-flash', provider: 'opencode-go', billing: 'subscription', choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'Hello from Go' } }] };
+  for (const invalid of [{ ...result, provider: 'zen' }, { ...result, model: 'deepseek-v4-pro' }, { ...result, cost: 1 }]) {
+    assert.equal((await request('worker/result', { id: job.id, result: invalid })).status, 400);
+  }
+  assert.equal((await request('worker/result', { id: job.id, result })).status, 200);
+  assert.deepEqual(await (await completion).json(), result);
+});
+
+test('free success skips Go; failures fall back with the same request; cancellation stops fallback', async () => {
+  const { complete, goComplete } = await import('../../scripts/ai/completion.mjs');
+  const body = { model, messages: [{ role: 'user', content: 'Story lenses' }], max_tokens: 1200 };
+  const freeResult = { model, cost: 0 };
+  assert.equal(await complete(body, { free: async () => freeResult, go: () => assert.fail('unexpected Go') }), freeResult);
+  const controller = new AbortController(); controller.abort();
+  await assert.rejects(complete(body, { signal: controller.signal, free: async () => { throw new Error('cancelled'); }, go: () => assert.fail('cancelled fallback') }), { name: 'AbortError' });
+  const result = await complete(body, {
+    free: async (_, options) => { assert.equal(options.timeout, 12000); throw new Error('rate limited'); },
+    go: (requestBody, options) => goComplete(requestBody, { ...options, key: async () => 'test-key', fetchImpl: async (url, init) => {
+      assert.equal(url, 'https://opencode.ai/inference/go/v1/chat/completions');
+      assert.ok(init.headers['x-opencode-session']);
+      const sent = JSON.parse(init.body);
+      assert.equal(sent.model, 'deepseek-v4.1-flash');
+      assert.deepEqual(sent.messages, body.messages);
+      assert.equal(sent.max_tokens, 1200);
+      return Response.json({ model: sent.model, choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: '{"market":"Conditional"}' } }], usage: { prompt_tokens: 10, completion_tokens: 4 } });
+    } }),
+  });
+  assert.equal(result.provider, 'opencode-go');
+  assert.equal(result.billing, 'subscription');
+  assert.equal(result.cost, undefined);
+});
