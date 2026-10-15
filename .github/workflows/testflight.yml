@@ -14,7 +14,7 @@ on:
         type: string
 
 concurrency:
-  group: testflight
+  group: testflight-${{ inputs.verify_build || 'upload' }}
   cancel-in-progress: true
 
 permissions:

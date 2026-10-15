@@ -22,8 +22,7 @@ def api(method, path, body = nil)
   req['Authorization'] = "Bearer #{token}"
   req['Content-Type'] = 'application/json'
   req.body = body.to_json if body
-  res = Net::HTTP.start(uri.host, 443, use_ssl: true) { |http| http.request(req) }
+  res = Net::HTTP.start(uri.host, 443, use_ssl: true, open_timeout: 15, read_timeout: 30) { |http| http.request(req) }
   abort "#{method.upcase} #{path} -> #{res.code}: #{res.body}" unless res.is_a?(Net::HTTPSuccess)
   JSON.parse(res.body)
 end
-

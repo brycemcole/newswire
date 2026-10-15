@@ -140,6 +140,9 @@ nonisolated enum StoryLensFailure {
 
     static func message(_ error: any Error) -> String {
         if let error = error as? URLError {
+            if [.secureConnectionFailed, .serverCertificateUntrusted, .serverCertificateHasBadDate, .serverCertificateHasUnknownRoot].contains(error.code) {
+                return "A secure connection to the news server couldn’t be established. Try again later."
+            }
             return error.code == .notConnectedToInternet ? "Connect to the internet to load story lenses."
                 : "The connection was interrupted. Retry lenses when your connection is stable."
         }
@@ -198,7 +201,7 @@ actor StoryLensCache {
     init(cache: StoryLensCache = .shared,
          completion: @escaping @Sendable (StoryChatContext) async throws -> String = { context in
              try await AIRouter.generate(.storyLenses, instructions: StoryLensReport.instructions,
-                prompt: String(context.prompt.prefix(await AIRouter.inputLimit(for: .storyLenses))), temperature: 0.2, maxTokens: 2000)
+                prompt: String(context.prompt.prefix(AIRouter.inputLimit(for: .storyLenses))), temperature: 0.2, maxTokens: 2000)
          }) {
         self.cache = cache
         self.completion = completion
