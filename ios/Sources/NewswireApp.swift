@@ -29,6 +29,8 @@ import SwiftUI
                 MarketStatsPreview()
             } else if CommandLine.arguments.contains("-storyDesignPreview") {
                 StoryDesignPreview()
+            } else if CommandLine.arguments.contains("-portfolioTickerPreview") {
+                PortfolioTickerPreview()
             } else if CommandLine.arguments.contains("-portfolioPreview") {
                 PortfolioPreview()
             } else if CommandLine.arguments.contains("-portfolioAudit") {
@@ -274,17 +276,7 @@ struct FeedView: View {
         NavigationStack(path: $store.path) {
             Group {
                 List {
-                    if search.isEmpty && store.filters.isEmpty && homeOrder == "marketsFirst" {
-                        dashboard
-                            .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 14, trailing: 16))
-                            .listRowSeparator(.hidden)
-                            .listRowBackground(Color.clear)
-                        PulseCard()
-                            .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 14, trailing: 16))
-                            .listRowSeparator(.hidden)
-                            .listRowBackground(Color.clear)
-                    }
-                    if search.isEmpty && store.filters.isEmpty && homeOrder == "newsFirst" {
+                    if search.isEmpty && store.filters.isEmpty {
                         dashboard
                             .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 14, trailing: 16))
                             .listRowSeparator(.hidden)
@@ -336,8 +328,6 @@ struct FeedView: View {
                             HStack { Spacer(); Text(store.loadingOlder ? "FETCHING OLDER STORIES" : "LOAD OLDER"); Spacer() }.frame(minHeight: 44)
                         }.disabled(store.loadingOlder)
                             .task(id: store.cursor) { await store.loadOlder() }
-                    }
-                    if search.isEmpty && store.filters.isEmpty && homeOrder == "newsFirst" {
                     }
                 }
                 .listStyle(.plain)
@@ -635,23 +625,9 @@ struct FeedView: View {
     }
 
     private var compactDashboard: some View {
-        HStack(spacing: 12) {
-            HStack(spacing: 8) {
-                Image(systemName: "star.fill").foregroundStyle(Color.wireAccent)
-                Text("Watchlist").font(.subheadline.weight(.semibold))
-                Text(watchlist.symbols.isEmpty ? "Add symbols" : watchlist.symbols.prefix(3).map(OptionSymbol.display).joined(separator: " · "))
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(.rect)
-            .onTapGesture { dock = .large }
-            Button { portfolio = true } label: {
-                Label("Portfolio", systemImage: "briefcase").font(.caption.weight(.semibold))
-            }.buttonStyle(.plain)
-        }
-        .padding(14)
-        .homeCard()
-        .fixedSize(horizontal: false, vertical: true)
+        CompactPortfolioTicker(openPortfolio: { portfolio = true },
+                               openWatchlist: { dock = .large },
+                               openQuote: { open(quote: $0) })
     }
 
     /// Tap opens the quote; press and hold shows the remove action.
