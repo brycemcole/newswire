@@ -1,4 +1,5 @@
 import CryptoKit
+import OSLog
 import SwiftUI
 
 nonisolated struct StoryChatContext: Codable, Hashable, Sendable {
@@ -99,6 +100,17 @@ nonisolated struct StoryLensReport: Codable, Sendable {
                     questions: questions.count == 3 ? questions : fallbackQuestions)
     }
 
+    static func generate(context: StoryChatContext, retryDelay: Duration = .seconds(1),
+                         completion: @Sendable (StoryChatContext) async throws -> String) async throws -> Self {
+        do {
+            return try decode(await completion(context), context: context)
+        } catch {
+            guard StoryLensFailure.canRetry(error) else { throw error }
+            try await Task.sleep(for: retryDelay)
+            return try decode(await completion(context), context: context)
+        }
+    }
+
     static func matches(_ stock: Stock, quote: Quote) -> Bool {
         guard quote.symbol == stock.symbol else { return false }
         let expected = StoryChatContext.normalized(stock.company)
@@ -111,6 +123,36 @@ nonisolated struct StoryLensReport: Codable, Sendable {
         let company = StoryChatContext.normalized(stock.company)
         return source.range(of: "\\b" + NSRegularExpression.escapedPattern(for: company) + "\\b", options: .regularExpression) != nil
             || source.range(of: "\\b" + NSRegularExpression.escapedPattern(for: stock.symbol.lowercased()) + "\\b", options: .regularExpression) != nil
+    }
+}
+
+nonisolated enum StoryLensFailure {
+    static func canRetry(_ error: any Error) -> Bool {
+        if error is CancellationError { return false }
+        if error is DecodingError { return true }
+        if let error = error as? URLError { return [.timedOut, .networkConnectionLost, .cannotConnectToHost].contains(error.code) }
+        if let error = error as? APIError { return error.error.code == "ai_unavailable" }
+        if case WireError.status(let status) = error { return status == 429 || (500...599).contains(status) }
+        if case StockAIError.status(let status) = error { return status == 429 || (500...599).contains(status) }
+        if case StockAIError.incomplete = error { return true }
+        return false
+    }
+
+    static func message(_ error: any Error) -> String {
+        if let error = error as? URLError {
+            if [.secureConnectionFailed, .serverCertificateUntrusted, .serverCertificateHasBadDate, .serverCertificateHasUnknownRoot].contains(error.code) {
+                return "A secure connection to the news server couldn’t be established. Try again later."
+            }
+            return error.code == .notConnectedToInternet ? "Connect to the internet to load story lenses."
+                : "The connection was interrupted. Retry lenses when your connection is stable."
+        }
+        if error is DecodingError { return "The AI returned an unreadable lens. Retry to generate it again." }
+        if case StockAIError.incomplete = error { return "The AI didn’t finish this lens. Retry to generate it again." }
+        if let error = error as? APIError { return error.error.message }
+        if let error = error as? StockAIError { return error.localizedDescription }
+        if let error = error as? AttestError { return error.localizedDescription }
+        if let error = error as? WireError { return error.localizedDescription }
+        return "This lens couldn’t be loaded. You can retry or ask about the story."
     }
 }
 
@@ -152,12 +194,24 @@ actor StoryLensCache {
     private(set) var verificationFailed = false
     private var key: String?
     private var requestID = UUID()
+    private let cache: StoryLensCache
+    private let completion: @Sendable (StoryChatContext) async throws -> String
+    private static let logger = Logger(subsystem: "com.brycecole.newswire", category: "StoryLenses")
+
+    init(cache: StoryLensCache = .shared,
+         completion: @escaping @Sendable (StoryChatContext) async throws -> String = { context in
+             try await AIRouter.generate(.storyLenses, instructions: StoryLensReport.instructions,
+                prompt: String(context.prompt.prefix(AIRouter.inputLimit(for: .storyLenses))), temperature: 0.2, maxTokens: 2000)
+         }) {
+        self.cache = cache
+        self.completion = completion
+    }
 
     var questions: [String] { report?.questions ?? StoryLensReport.fallbackQuestions }
 
     func load(_ context: StoryChatContext, retry: Bool = false) async {
         let cacheKey = context.cacheKey + AIRouter.provider
-        guard retry || key != cacheKey else { return }
+        guard key != cacheKey || (retry && !loading) else { return }
         let id = UUID()
         requestID = id
         key = cacheKey
@@ -166,10 +220,9 @@ actor StoryLensCache {
         loading = true
         defer { if requestID == id { loading = false } }
         do {
-            let result = try await StoryLensCache.shared.report(key: cacheKey) {
-                let text = try await AIRouter.generate(.storyLenses, instructions: StoryLensReport.instructions,
-                    prompt: String(context.prompt.prefix(await AIRouter.inputLimit(for: .storyLenses))), temperature: 0.2, maxTokens: 1200)
-                return try StoryLensReport.decode(text, context: context)
+            let completion = completion
+            let result = try await cache.report(key: cacheKey) {
+                try await StoryLensReport.generate(context: context, completion: completion)
             }
             try Task.checkCancellation()
             guard requestID == id else { return }
@@ -180,7 +233,10 @@ actor StoryLensCache {
             verificationFailed = !result.stocks.isEmpty && verified == nil
             stocks = result.stocks.filter { stock in verified?.contains { StoryLensReport.matches(stock, quote: $0) } == true }
         } catch is CancellationError { if requestID == id { key = nil } }
-        catch { if requestID == id { self.error = "Lenses are unavailable. You can still ask about this story." } }
+        catch {
+            Self.logger.error("Lens failed: \(String(reflecting: type(of: error)), privacy: .public), \((error as NSError).code)")
+            if requestID == id { self.error = StoryLensFailure.message(error) }
+        }
     }
 }
 
@@ -200,7 +256,12 @@ enum StoryLensFixture {
 }
 
 struct StoryLensPreview: View {
-    var body: some View { NavigationStack { StoryDetail(story: StoryLensFixture.story) } }
+    private var story: Story {
+        if let data = ProcessInfo.processInfo.environment["NEWSWIRE_TEST_STORY"]?.data(using: .utf8),
+           let story = try? NewswireAPI.decoder().decode(Story.self, from: data) { return story }
+        return StoryLensFixture.story
+    }
+    var body: some View { NavigationStack { StoryDetail(story: story) } }
 }
 #endif
 
@@ -210,6 +271,7 @@ struct StoryLensView: View {
     let ask: (String) -> Void
     let openStock: (String) -> Void
     let retry: () -> Void
+    @Environment(\.scenePhase) private var scenePhase
     @State private var expanded = false
     @State private var selected = 0
 
@@ -286,6 +348,9 @@ struct StoryLensView: View {
             }
         }
         .fixedSize(horizontal: false, vertical: true)
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active, lenses.error != nil, !lenses.loading { retry() }
+        }
         #if DEBUG
         .onAppear {
             if CommandLine.arguments.contains("-storyLensesExpanded") { expanded = true }
