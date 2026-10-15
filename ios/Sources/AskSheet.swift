@@ -145,7 +145,7 @@ struct AskSheet: View {
                 }
                 .safeAreaInset(edge: .bottom, spacing: 0) { composer }
             }
-            .navigationTitle(thread.story != nil ? "Ask about this story" : market ? "Ask" : "Ask about \(thread.symbol)")
+            .navigationTitle(thread.story != nil || market ? "Ask" : "Ask about \(thread.symbol)")
             .navigationDestination(item: $filing) { FilingReaderView(url: $0.url, title: $0.title) }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
