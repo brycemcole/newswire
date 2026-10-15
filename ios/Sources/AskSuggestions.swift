@@ -7,8 +7,6 @@ nonisolated struct SuggestedQuestions: Sendable {
     var questions: [String]
 }
 
-/// The four starter questions in a market-wide Ask chat. Apple Intelligence writes them from today's index moves and headlines;
-/// until it has (or when it is unavailable) a fixed set is shown.
 @Observable final class AskSuggestions {
     static let shared = AskSuggestions()
 
@@ -62,16 +60,23 @@ nonisolated struct SuggestedQuestions: Sendable {
         #if DEBUG
         if CommandLine.arguments.contains("-askStaticSuggestions") { return }
         #endif
-        guard !refreshing, AIRouter.onDeviceAvailable, refreshedAt.map({ -$0.timeIntervalSinceNow > Self.freshFor }) ?? true else { return }
+        guard !refreshing, AIRouter.isAvailable(.stockChat), refreshedAt.map({ -$0.timeIntervalSinceNow > Self.freshFor }) ?? true else { return }
         refreshing = true
         defer { refreshing = false }
         let context = await Self.snapshot()
         guard !context.isEmpty, !Task.isCancelled else { return }
         do {
-            let session = AIRouter.session(.onDevice, instructions: Self.instructions, permissive: true)
-            let result = try await session.respond(to: context, generating: SuggestedQuestions.self,
-                                                   options: GenerationOptions(temperature: 0.9, maximumResponseTokens: 220))
-            let cleaned = result.content.questions.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            let suggestions: [String]
+            if AIRouter.backend(for: .stockChat) == .onDevice {
+                let session = AIRouter.session(.onDevice, instructions: Self.instructions, permissive: true)
+                suggestions = try await session.respond(to: context, generating: SuggestedQuestions.self,
+                    options: GenerationOptions(temperature: 0.9, maximumResponseTokens: 220)).content.questions
+            } else {
+                let text = try await AIRouter.generate(.stockChat, instructions: Self.instructions + " Return only a JSON object with a questions array of four strings.", prompt: context, temperature: 0.4, maxTokens: 300)
+                let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "```json", with: "").replacingOccurrences(of: "```", with: "")
+                suggestions = try JSONDecoder().decode(RemoteQuestions.self, from: Data(cleaned.utf8)).questions
+            }
+            let cleaned = suggestions.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             guard Self.valid(cleaned), !Task.isCancelled else { return }
             questions = cleaned
             refreshedAt = .now
@@ -80,6 +85,8 @@ nonisolated struct SuggestedQuestions: Sendable {
             // Keep whatever is showing; the next open tries again.
         }
     }
+
+    private struct RemoteQuestions: Decodable { let questions: [String] }
 
     /// Today's moves in the main indices, rates and commodities, plus the newest headlines in the feed.
     private static func snapshot() async -> String {

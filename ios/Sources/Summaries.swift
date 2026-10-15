@@ -348,7 +348,7 @@ nonisolated struct ArticlePage: Sendable {
         - the key numbers, dates or details
         - why it matters or what happens next
         Each point is under 20 words.
-        """, prompt: "Headline: \(story.title)\n\nArticle:\n\(article.prefix(6000))", temperature: 0.2, maxTokens: 220)
+        """, prompt: "Headline: \(story.title)\n\nArticle:\n\(article.prefix(AIRouter.inputLimit(for: .articleSummaries)))", temperature: 0.2, maxTokens: 220)
         guard texts[key] == article else { return }
         let lines = (response ?? "").split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
         let summary = lines.first { $0.uppercased().hasPrefix("SUMMARY:") }.map { String($0.dropFirst(8)).trimmingCharacters(in: .whitespaces) } ?? ""
@@ -373,7 +373,7 @@ nonisolated struct ArticlePage: Sendable {
         guard available, briefs[key] == nil || staleBriefs.contains(key), let article = texts[key], article.count >= 800,
               writing.insert("brief " + key).inserted else { return }
         defer { writing.remove("brief " + key) }
-        guard let response = try? await AIRouter.generate(.articleSummaries, instructions: "You explain news stories for a news wire reader in two short paragraphs, 90 to 140 words in total. First paragraph: what happened, with the key names and numbers. Second paragraph: the background and what it means or what happens next. Use only facts from the article. Plain prose, no markdown, no preamble.", prompt: "Headline: \(story.title)\n\nArticle:\n\(article.prefix(6000))", temperature: 0.3, maxTokens: 280) else { return }
+        guard let response = try? await AIRouter.generate(.articleSummaries, instructions: "You explain news stories for a news wire reader in two short paragraphs, 90 to 140 words in total. First paragraph: what happened, with the key names and numbers. Second paragraph: the background and what it means or what happens next. Use only facts from the article. Plain prose, no markdown, no preamble.", prompt: "Headline: \(story.title)\n\nArticle:\n\(article.prefix(AIRouter.inputLimit(for: .articleSummaries)))", temperature: 0.3, maxTokens: 280) else { return }
         guard texts[key] == article else { return }
         let text = response.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }

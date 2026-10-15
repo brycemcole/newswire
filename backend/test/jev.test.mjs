@@ -6,6 +6,7 @@ import { join } from 'node:path';
 
 // The client keeps its cooldown under the home directory; tests must neither read nor write the real one.
 process.env.HOME = mkdtempSync(join(tmpdir(), 'newswire-jev-'));
+process.env.NEWSWIRE_CLASSIFIER_PROVIDER = 'jev';
 const { ask, classifierIdentity, classifierUsage, retryTime } = await import('../../scripts/monitor/jev.mjs');
 
 const questions = { topic: { criteria: { energy: 'Oil', other: 'Other' }, instructions: 'Choose' } };
