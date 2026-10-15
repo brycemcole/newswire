@@ -312,8 +312,12 @@ struct QuoteNewsSection: View {
             model.explain(name: name, move: move, price: price)
         }
         .fullScreenCover(item: $reading) { story in
-            NavigationStack { StoryDetail(story: story).navigationDestination(for: Story.self) { StoryDetail(story: $0) } }
-                .environment(\.feedStore, FeedStore.shared)
+            NavigationStack {
+                StoryDetail(story: story)
+                    .navigationDestination(for: Story.self) { StoryDetail(story: $0) }
+                    .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Close", systemImage: "xmark") { reading = nil } } }
+            }
+            .environment(\.feedStore, FeedStore.shared)
         }
     }
 

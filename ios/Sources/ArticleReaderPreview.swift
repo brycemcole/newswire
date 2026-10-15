@@ -11,6 +11,30 @@ struct ArticleReaderPreview: View {
     }
 }
 
+struct TweetPreview: View {
+    var body: some View {
+        NavigationStack {
+            StoryDetail(story: Story(id: "tweet-preview", externalId: "x:1", title: "US Considering Using 'Mother Of All Bombs' Against Iran, Sources Say - CNN", summary: "US Considering Using 'Mother Of All Bombs' Against Iran, Sources Say - CNN. Officials are weighing the option as talks stall, according to the report.\n\nQuoting @CNN: Exclusive: The US is considering using the GBU-43 against Iranian underground sites.", body: "Matched watchlist: geopolitical and security developments. Post by @LiveSquawk on X at 2026-10-15 04:03 UTC; topic classification establishes coverage of a topic, not the accuracy of the claim.", source: "@FT", url: URL(string: "https://x.com/FT/status/2110658629573759132")!, publishedAt: .now.addingTimeInterval(-3600), receivedAt: .now, category: "world", priority: "breaking", tickers: [], tags: ["deterministic", "x", "geopolitical-security"], agent: "preview", imageUrl: nil))
+        }
+    }
+}
+
+struct TweetFeedPreview: View {
+    private func tweet(_ id: String, _ handle: String, _ title: String) -> Story {
+        Story(id: id, externalId: "x:\(id)", title: title, summary: "", body: "Post by \(handle) on X", source: handle, url: URL(string: "https://x.com/\(handle.dropFirst())/status/\(id)")!, publishedAt: .now.addingTimeInterval(-1500), receivedAt: .now, category: "world", priority: "normal", tickers: [], tags: ["x"], agent: "preview", imageUrl: nil)
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            StoryRow(story: tweet("2110662839631331723", "@FT", "Healey promises to 'stay the path' on reducing UK deficit"))
+            Divider()
+            StoryRow(story: tweet("2110658629573759132", "@x", "Whilst I'm also getting DMs asking me to review profiles"))
+            Divider()
+            StoryRow(story: Story(id: "n", externalId: "n", title: "Fed holds rates steady", summary: "", body: "", source: "Reuters", url: URL(string: "https://example.com/n")!, publishedAt: .now.addingTimeInterval(-3000), receivedAt: .now, category: "economy", priority: "normal", tickers: [], tags: ["headlines"], agent: "preview", imageUrl: nil))
+        }
+        .padding(20).frame(maxHeight: .infinity, alignment: .top)
+    }
+}
+
 struct StoryLayoutPreview: View {
     private static let paragraphs = (1...10).map { "<p>Paragraph \($0). Apple sued OpenAI in July, accusing it of misusing confidential Apple material. The judge ordered OpenAI to hand over hiring records, and the case continues while both sides collect more documents and testimony.</p>" }.joined()
     var body: some View {
