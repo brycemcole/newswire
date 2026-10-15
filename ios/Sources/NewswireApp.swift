@@ -15,6 +15,10 @@ import SwiftUI
                 SavedStoriesPreview()
             } else if CommandLine.arguments.contains("-institutionalPreview") {
                 InstitutionalPreview()
+            } else if CommandLine.arguments.contains("-tweetFeedPreview") {
+                TweetFeedPreview()
+            } else if CommandLine.arguments.contains("-tweetPreview") {
+                TweetPreview()
             } else if CommandLine.arguments.contains("-storyLayoutPreview") {
                 StoryLayoutPreview()
             } else if let index = CommandLine.arguments.firstIndex(of: "-articlePreview"),
@@ -860,7 +864,11 @@ struct StoryRow: View {
                         .foregroundStyle(Color.wireAccent)
                         .accessibilityLabel("Brain pick")
                 }
-                Text(story.source).font(.footnote.weight(.bold)).foregroundStyle(.secondary).lineLimit(1)
+                if story.isTweet {
+                    TweetByline(story: story)
+                } else {
+                    Text(story.source).font(.footnote.weight(.bold)).foregroundStyle(.secondary).lineLimit(1)
+                }
                 Text("·").foregroundStyle(.tertiary)
                 Text(story.publishedAt.wireAge).font(.footnote).foregroundStyle(.secondary).monospacedDigit()
             }
@@ -940,8 +948,14 @@ struct StoryDetail: View {
         let _ = Summarizer.shared.revision
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                Text(story.title).font(.largeTitle.weight(.bold)).fixedSize(horizontal: false, vertical: true)
-                if let video = Summarizer.shared.videos[key] {
+                if story.isTweet {
+                    categoryRow
+                    TweetCard(story: story, poster: Summarizer.shared.poster(for: story))
+                } else {
+                    Text(story.title).font(.largeTitle.weight(.bold)).fixedSize(horizontal: false, vertical: true)
+                }
+                if story.isTweet {
+                } else if let video = Summarizer.shared.videos[key] {
                     StoryVideoView(url: video, poster: Summarizer.shared.poster(for: story), page: story.url, title: story.title, source: story.source)
                 } else if let hero = Summarizer.shared.poster(for: story) {
                     // Starts from the feed's already-decoded thumbnail, so the header is never blank during the push.
@@ -950,19 +964,8 @@ struct StoryDetail: View {
                     .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                     .accessibilityHidden(true)
                 }
-                HStack(spacing: 6) {
-                    filterButton(.category(story.category)) { Text(story.category.uppercased()) }
-                    if story.priority != "normal" {
-                        Text("/").foregroundStyle(.tertiary)
-                        filterButton(.priority(story.priority)) {
-                            Text(story.priority.uppercased())
-                                .foregroundStyle(story.priority == "breaking" ? Color.red : Color.secondary)
-                        }
-                    }
-                }
-                .font(.system(.caption, design: .monospaced).weight(.semibold))
-                .foregroundStyle(.secondary)
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                if !story.isTweet { categoryRow }
+                if !story.isTweet { HStack(alignment: .firstTextBaseline, spacing: 6) {
                     filterButton(.source(story.source)) {
                         Text(story.source).fontWeight(.bold).foregroundStyle(.secondary).lineLimit(1)
                     }
@@ -970,7 +973,7 @@ struct StoryDetail: View {
                     Text(story.publishedAt, format: .dateTime.weekday(.abbreviated).month(.abbreviated).day().hour().minute())
                         .foregroundStyle(.secondary).lineLimit(1)
                 }
-                .font(.footnote)
+                .font(.footnote) }
                 if !quotes.isEmpty {
                     QuoteStrip(quotes: quotes, selected: $selectedQuote)
                         .transition(.opacity)
@@ -979,18 +982,20 @@ struct StoryDetail: View {
                         .font(.system(.subheadline, design: .monospaced).weight(.semibold)).foregroundStyle(.secondary)
                 }
                 Divider()
-                if glance != nil || preparingGlance {
+                if !story.isTweet, glance != nil || preparingGlance {
                     glanceCard.transition(.opacity)
                     Divider()
                 }
-                if story.isBrain && story.opensInReader && story.hasDistinctSummary, let lead {
+                if story.isTweet {
+                } else if story.isBrain && story.opensInReader && story.hasDistinctSummary, let lead {
                     Text(annotated(lead, at: 0))
                         .font(.body.weight(.medium)).fixedSize(horizontal: false, vertical: true)
                 } else if let lead {
                     Text("\(Text(Image(systemName: "text.line.3.summary")).foregroundStyle(.tertiary)) \(Text(annotated(lead, at: 0)))")
                         .font(.body.weight(.medium)).fixedSize(horizontal: false, vertical: true)
                 }
-                if story.opensInReader {
+                if story.isTweet {
+                } else if story.opensInReader {
                     if !excerpt.isEmpty {
                         VStack(alignment: .leading, spacing: 14) {
                             ForEach(Array(excerpt.enumerated()), id: \.element) { index, paragraph in
@@ -1011,7 +1016,7 @@ struct StoryDetail: View {
                 } else {
                     StoryBodyView(html: story.body.isEmpty ? story.summary : story.body, quotes: quotes)
                 }
-                if !story.tags.isEmpty, !story.opensInReader {
+                if !story.tags.isEmpty, !story.opensInReader, !story.isTweet {
                     filterLinks(story.tags.map(WireFilter.tag), separator: "  ")
                         .font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
                 }
@@ -1143,6 +1148,21 @@ struct StoryDetail: View {
             }
         }
     }
+    private var categoryRow: some View {
+        HStack(spacing: 6) {
+            filterButton(.category(story.category)) { Text(story.category.uppercased()) }
+            if story.priority != "normal" {
+                Text("/").foregroundStyle(.tertiary)
+                filterButton(.priority(story.priority)) {
+                    Text(story.priority.uppercased())
+                        .foregroundStyle(story.priority == "breaking" ? Color.red : Color.secondary)
+                }
+            }
+        }
+        .font(.system(.caption, design: .monospaced).weight(.semibold))
+        .foregroundStyle(.secondary)
+    }
+
 
     private var glanceCard: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1238,7 +1258,17 @@ struct StoryDetail: View {
     }
 
     @ViewBuilder private var sourceActions: some View {
-        if ["http", "https"].contains(story.url.scheme?.lowercased() ?? "") {
+        if story.isTweet {
+            Link(destination: story.url) {
+                HStack {
+                    Text("View on X").font(.subheadline.weight(.semibold)).foregroundStyle(Color.wireAccent)
+                    Spacer(minLength: 0)
+                    Image(systemName: "arrow.up.right").font(.subheadline.weight(.semibold)).foregroundStyle(.tertiary)
+                }
+                .padding(.horizontal, 16).padding(.vertical, 12)
+                .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 14, style: .continuous))
+            }
+        } else if ["http", "https"].contains(story.url.scheme?.lowercased() ?? "") {
             Button {
                 rerender = true
                 attempt += 1
@@ -1425,9 +1455,203 @@ struct SafariView: UIViewControllerRepresentable {
     }
     func updateUIViewController(_ controller: SFSafariViewController, context: Context) {}
 }
+nonisolated struct TweetData: Decodable, Sendable {
+    struct User: Decodable, Sendable { let name: String?; let screen_name: String?; let is_blue_verified: Bool?; let verified: Bool?; let profile_image_url_https: String? }
+    struct Photo: Decodable, Sendable { let url: String? }
+    struct Video: Decodable, Sendable { let poster: String? }
+    struct Quoted: Decodable, Sendable { let id_str: String?; let text: String?; let user: User?; let favorite_count: Int?; let reply_count: Int?; let created_at: String?; let photos: [Photo]? }
+    struct Binding: Decodable, Sendable {
+        struct Image: Decodable, Sendable { let url: String? }
+        let string_value: String?; let image_value: Image?
+    }
+    struct Card: Decodable, Sendable { let binding_values: [String: Binding]? }
+    let favorite_count: Int?, conversation_count: Int?, created_at: String?, text: String?, display_text_range: [Int]?
+    let user: User?, photos: [Photo]?, video: Video?, quoted_tweet: Quoted?, card: Card?
+
+    var fullText: String? {
+        guard var text else { return nil }
+        if let range = display_text_range, range.count == 2 {
+            let scalars = Array(text.unicodeScalars)
+            if range[0] <= range[1], range[1] <= scalars.count { text = String(String.UnicodeScalarView(scalars[range[0]..<range[1]])) }
+        }
+        let cleaned = text.replacing(/https:\/\/t\.co\/\w+/, with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? nil : cleaned
+    }
+}
+
+@MainActor @Observable final class TweetLoader {
+    static let shared = TweetLoader()
+    private(set) var tweets: [String: TweetData] = [:]
+    private var requested: Set<String> = []
+
+    func load(id: String) async {
+        guard tweets[id] == nil, requested.insert(id).inserted,
+              let url = URL(string: "https://cdn.syndication.twimg.com/tweet-result?id=\(id)&token=a"),
+              let (data, response) = try? await URLSession.shared.data(from: url),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let tweet = try? JSONDecoder().decode(TweetData.self, from: data) else { requested.remove(id); return }
+        tweets[id] = tweet
+    }
+}
+
+struct TweetByline: View {
+    let story: Story
+    @State private var loader = TweetLoader.shared
+    private var live: TweetData? { loader.tweets[story.url.lastPathComponent] }
+
+    var body: some View {
+        HStack(spacing: 5) {
+            if let raw = live?.user?.profile_image_url_https, let url = URL(string: raw.replacingOccurrences(of: "_normal", with: "_bigger")), url.scheme == "https" {
+                AsyncImage(url: url) { image in image.resizable().scaledToFill() } placeholder: { Color.clear }
+                    .frame(width: 18, height: 18).background(.fill.tertiary).clipShape(.circle)
+            }
+            Text(live?.user?.name ?? story.source).font(.footnote.weight(.bold)).foregroundStyle(.secondary).lineLimit(1)
+            if live?.user?.is_blue_verified == true || live?.user?.verified == true {
+                Image(systemName: "checkmark.seal.fill").font(.caption2).foregroundStyle(.blue)
+            }
+            if live?.user?.name != nil { Text(live?.user?.screen_name.map { "@\($0)" } ?? story.source).font(.footnote).foregroundStyle(.tertiary).lineLimit(1) }
+        }
+        .task(id: story.id) { await loader.load(id: story.url.lastPathComponent) }
+    }
+}
+
+struct TweetCard: View {
+    let story: Story
+    let poster: URL?
+    @State private var loader = TweetLoader.shared
+    @Environment(\.openURL) private var openURL
+
+    private var tweetID: String { story.url.lastPathComponent }
+    private var live: TweetData? { loader.tweets[tweetID] }
+
+    private var parts: (text: String, quote: String?) {
+        let blocks = StoryHTML.plainText(story.summary).components(separatedBy: "\n\n").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        let quote = blocks.first { $0.hasPrefix("Quoting @") }
+        let text = blocks.filter { !$0.hasPrefix("Quoting @") }.joined(separator: "\n\n")
+        return (live?.fullText ?? (text.isEmpty ? story.title : text), quote)
+    }
+
+    private func count(_ value: Int?) -> String? {
+        guard let value, value > 0 else { return nil }
+        return value.formatted(.number.notation(.compactName))
+    }
+
+    private func remote(_ raw: String?) -> URL? { raw.flatMap(URL.init(string:)).flatMap { $0.scheme == "https" ? $0 : nil } }
+
+    private var avatar: URL? { remote(live?.user?.profile_image_url_https?.replacingOccurrences(of: "_normal", with: "_bigger")) }
+    private var photos: [URL] { (live?.photos ?? []).compactMap { remote($0.url) } }
+    private var cardBindings: [String: TweetData.Binding] { live?.card?.binding_values ?? [:] }
+
+    @ViewBuilder private func media(_ url: URL, height: CGFloat, play: Bool = false) -> some View {
+        Color.clear.frame(height: height).frame(maxWidth: .infinity)
+            .overlay { ThumbnailImage(url: url, size: ThumbnailLoader.large) }
+            .overlay { if play { Image(systemName: "play.fill").font(.title2).padding(18).glassEffect(.regular, in: .circle) } }
+            .clipShape(.rect(cornerRadius: 14, style: .continuous))
+            .accessibilityHidden(true)
+    }
+
+    @ViewBuilder private func quotedCard(_ quoted: TweetData.Quoted, text: String) -> some View {
+        let link = quoted.id_str.flatMap { id in URL(string: "https://x.com/\(quoted.user?.screen_name ?? "i")/status/\(id)") }
+        let photo = quoted.photos?.first?.url.flatMap(remote)
+        let body = VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                AsyncImage(url: remote(quoted.user?.profile_image_url_https?.replacingOccurrences(of: "_normal", with: "_bigger"))) { image in image.resizable().scaledToFill() } placeholder: { Color.clear }
+                    .frame(width: 24, height: 24).background(.fill.tertiary).clipShape(.circle)
+                Text(quoted.user?.name ?? "").font(.subheadline.weight(.semibold)).lineLimit(1)
+                if quoted.user?.is_blue_verified == true || quoted.user?.verified == true {
+                    Image(systemName: "checkmark.seal.fill").font(.caption).foregroundStyle(.blue)
+                }
+                Text("@\(quoted.user?.screen_name ?? "")").font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Text(text.replacing(/https:\/\/t\.co\/\w+/, with: "").trimmingCharacters(in: .whitespacesAndNewlines)).font(.subheadline)
+            if let photo { media(photo, height: 150) }
+            if let likes = count(quoted.favorite_count) {
+                Label(likes, systemImage: "heart").font(.footnote).foregroundStyle(.secondary)
+            }
+        }
+        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(.quaternary))
+        if let link { Link(destination: link) { body }.buttonStyle(.plain) } else { body }
+    }
+
+    var body: some View {
+        let parts = parts
+        let name = live?.user?.name
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Group {
+                    if let avatar {
+                        AsyncImage(url: avatar) { image in image.resizable().scaledToFill() } placeholder: { Color.clear }
+                    } else {
+                        Text(String(story.source.drop { $0 == "@" }.prefix(1)).uppercased()).font(.headline).foregroundStyle(.secondary)
+                    }
+                }
+                .frame(width: 44, height: 44).background(.fill.tertiary).clipShape(.circle)
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 4) {
+                        Text(name ?? story.source).font(.headline).lineLimit(1)
+                        if live?.user?.is_blue_verified == true || live?.user?.verified == true {
+                            Image(systemName: "checkmark.seal.fill").font(.subheadline).foregroundStyle(.blue)
+                        }
+                    }
+                    if name != nil { Text(live?.user?.screen_name.map { "@\($0)" } ?? story.source).font(.subheadline).foregroundStyle(.secondary).lineLimit(1) }
+                }
+                Spacer(minLength: 0)
+                Text("𝕏").font(.title3.weight(.bold)).foregroundStyle(.secondary)
+            }
+            Text(parts.text).font(.title3).lineSpacing(3).fixedSize(horizontal: false, vertical: true)
+            if let first = photos.first {
+                VStack(spacing: 6) {
+                    media(first, height: photos.count > 1 ? 180 : 240)
+                    if photos.count > 1 {
+                        HStack(spacing: 6) { ForEach(Array(photos.dropFirst().prefix(3)), id: \.self) { media($0, height: 110) } }
+                    }
+                }
+            } else if let poster = live?.video?.poster.flatMap(remote) ?? poster {
+                media(poster, height: 240, play: live?.video != nil)
+            }
+            if let quoted = live?.quoted_tweet, let text = quoted.text {
+                quotedCard(quoted, text: text)
+            } else if live == nil, let quote = parts.quote {
+                let handle = quote.prefix { $0 != ":" }.replacingOccurrences(of: "Quoting ", with: "")
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(handle).font(.subheadline.weight(.semibold))
+                    Text(quote.drop { $0 != ":" }.dropFirst().trimmingCharacters(in: .whitespaces)).font(.subheadline).foregroundStyle(.secondary)
+                }
+                .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(.quaternary))
+            }
+            if photos.isEmpty, live?.video == nil, let domain = cardBindings["domain"]?.string_value {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(domain).font(.footnote).foregroundStyle(.secondary)
+                    if let detail = cardBindings["description"]?.string_value { Text(detail).font(.subheadline).lineLimit(3) }
+                }
+                .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(.quaternary))
+            }
+            HStack(spacing: 18) {
+                Text(story.publishedAt, format: .dateTime.hour().minute().month(.abbreviated).day().year())
+                Spacer(minLength: 0)
+                if let replies = count(live?.conversation_count) { Label(replies, systemImage: "bubble.left") }
+                if let likes = count(live?.favorite_count) { Label(likes, systemImage: "heart") }
+            }
+            .font(.footnote).foregroundStyle(.secondary).labelStyle(.titleAndIcon)
+        }
+        .padding(16)
+        .glassEffect(.regular, in: .rect(cornerRadius: 24, style: .continuous))
+        .contentShape(.rect(cornerRadius: 24, style: .continuous))
+        .onTapGesture { openURL(story.url) }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isLink)
+        .accessibilityHint("Opens the post on X")
+        .task(id: tweetID) { await loader.load(id: tweetID) }
+    }
+}
+
 
 extension Story {
-    var opensInReader: Bool { (tags.contains("headlines") || (isBrain && body.isEmpty)) && ["http", "https"].contains(url.scheme?.lowercased() ?? "") }
+    var isTweet: Bool { tags.contains("x") && ["x.com", "twitter.com"].contains(url.host?.lowercased() ?? "") && url.path.contains("/status/") }
+    var opensInReader: Bool { !isTweet && (tags.contains("headlines") || (isBrain && body.isEmpty)) && ["http", "https"].contains(url.scheme?.lowercased() ?? "") }
     var matchedTopics: [String] {
         guard let match = body.firstMatch(of: /Matched watchlist: ([^.]+)\./)?.1 else { return [] }
         return match.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
