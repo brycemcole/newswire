@@ -744,7 +744,7 @@ export class Compute {
   }
 }
 
-function compute(env: Env) { return env.COMPUTE!.get(env.COMPUTE!.idFromName('compute')); }
+function compute(env: Env, name = 'compute') { return env.COMPUTE!.get(env.COMPUTE!.idFromName(name)); }
 
 async function handle(request: Request, env: Env, ctx?: ExecutionContext, ai?: AIBroker): Promise<Response> {
   let response: Response;
@@ -770,7 +770,7 @@ async function handle(request: Request, env: Env, ctx?: ExecutionContext, ai?: A
 
 export default {
   async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
-    if (env.COMPUTE && !isLight(new URL(request.url).pathname)) return compute(env).fetch(request);
+    if (env.COMPUTE && !isLight(new URL(request.url).pathname)) return compute(env, new URL(request.url).pathname.startsWith('/v1/ai/') ? 'ai-v2' : 'compute').fetch(request);
     return handle(request, env, ctx);
   },
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
