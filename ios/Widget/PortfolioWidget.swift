@@ -6,6 +6,7 @@ import WidgetKit
     var body: some Widget {
         PortfolioWidget()
         NewsWidget()
+        PriceWatchActivityWidget()
     }
 }
 

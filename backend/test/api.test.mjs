@@ -310,3 +310,21 @@ test('collector snapshots require writer auth and remain attributed through sour
   assert.equal((await request('/v1/econ/series', 'writer', init({ id: 'UNRATE', observations: [{ date: '2026-09-01', value: 4.2 }] }))).status, 201);
   assert.equal((await request('/v1/econ/series', 'writer', init({ id: 'UNRATE', observations: [{ date: '2026-02-31', value: 4.2 }] }))).status, 400);
 });
+
+test('price watches and live activity tokens validate, persist and preserve older registrations', async () => {
+  const token = 'c'.repeat(64);
+  const watch = { id: 'watch-one', symbol: 'AAPL261218C00250000', direction: 'above', target: 5 };
+  const activity = { watch_id: watch.id, token: 'd'.repeat(64), expires_at: Math.floor(Date.now() / 1000) + 3600 };
+  const register = fields => request('/v1/devices', 'reader', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token, environment: 'sandbox', ...fields }) });
+  assert.equal((await register({ price_watches: [watch], live_activities: [activity] })).status, 201);
+  assert.equal((await register({ stock_symbols: ['MSFT'] })).status, 201);
+  const result = await (await request('/v1/devices', 'writer')).json();
+  const device = result.devices.find(d => d.token === token);
+  assert.deepEqual(JSON.parse(device.price_watches), [watch]);
+  assert.deepEqual(JSON.parse(device.live_activities), [activity]);
+  for (const price_watches of [[{ ...watch, target: -1 }], [{ ...watch, direction: 'sideways' }], [watch, watch], [{ ...watch, symbol: 'bad symbol' }]]) {
+    assert.equal((await register({ price_watches })).status, 400);
+  }
+  assert.equal((await register({ price_watches: [watch], live_activities: [{ ...activity, watch_id: 'missing' }] })).status, 400);
+  assert.equal((await register({ price_watches: [], live_activities: [] })).status, 201);
+});

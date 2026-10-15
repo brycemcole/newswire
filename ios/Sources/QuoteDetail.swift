@@ -219,6 +219,7 @@ struct QuoteDetail: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button("Ask about \(symbol)", systemImage: "bubble.left.and.text.bubble.right") { showingQuestions = true }
+                    NavigationLink { PriceWatchView(initialSymbol: symbol) } label: { Label("Live price and target", systemImage: "waveform.path") }
                     ShareLink(item: yahooURL)
                 } label: { Image(systemName: "ellipsis") }
                 .accessibilityLabel("Stock actions")

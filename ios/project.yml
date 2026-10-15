@@ -35,6 +35,7 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         ITSAppUsesNonExemptEncryption: false
+        NSSupportsLiveActivities: true
         UIBackgroundModes: [audio, fetch, processing, remote-notification]
         BGTaskSchedulerPermittedIdentifiers: [com.brycecole.newswire.refresh, com.brycecole.newswire.process]
     settings:

@@ -7,7 +7,11 @@ import SwiftUI
     var body: some Scene {
         WindowGroup {
             #if DEBUG
-            if MarketResearchFixture.launch != nil || CommandLine.arguments.contains("-openResearch") {
+            if CommandLine.arguments.contains("-priceWatch") {
+                NavigationStack { PriceWatchView() }
+            } else if CommandLine.arguments.contains("-priceWatchPreview") {
+                NavigationStack { PriceWatchView(preview: true) }
+            } else if MarketResearchFixture.launch != nil || CommandLine.arguments.contains("-openResearch") {
                 MarketResearchView()
             } else if CommandLine.arguments.contains("-notificationSetupPreview") {
                 NavigationStack { PushSettingsView(preview: PushStatusPreview.fromArguments) }
@@ -408,23 +412,25 @@ struct FeedView: View {
             }
             .task(id: phase) {
                 if phase == .background {
+                    store.refreshAfterBackgrounding()
                     FeedStore.scheduleRefresh()
                     FeedStore.scheduleProcessing()
                 }
                 guard phase == .active else { return }
                 await store.ready()
+                // Skipped when background refresh just brought the feed up to date; at launch the feed-key task
+                // above usually wins and this returns at once because a load is already in flight. After an hour
+                // away the list is re-ranked as it opens rather than gaining a block of new stories over stale ones.
+                let age = store.lastUpdated.map { -$0.timeIntervalSinceNow } ?? .infinity
+                if store.hasLoaded && age > 5 {
+                    await store.sync(age > 3600 ? .replace : .merge, quiet: true)
+                }
                 PortfolioStore.shared.reloadFromKeychain()
                 await PushDelegate.syncStockAlerts()
                 if (PortfolioStore.shared.snapshot.updated ?? .distantPast).timeIntervalSinceNow < -300 {
                     await PortfolioStore.shared.sync()
                 }
-                // Skipped when background refresh just brought the feed up to date; at launch the feed-key task
-                // above usually wins and this returns at once because a load is already in flight. After an hour
-                // away the list is re-ranked as it opens rather than gaining a block of new stories over stale ones.
-                let age = store.lastUpdated.map { -$0.timeIntervalSinceNow } ?? .infinity
-                if store.hasLoaded && age > 60 {
-                    await store.sync(age > 3600 ? .replace : .merge, quiet: true)
-                }
+                await PriceWatchStore.shared.restoreActivities()
                 while !Task.isCancelled {
                     do { try await Task.sleep(for: .seconds(60)) } catch { return }
                     await store.sync(.merge, quiet: true)
@@ -1711,6 +1717,9 @@ struct SettingsView: View {
                 }
                 Section("Brokerage Sync") {
                     NavigationLink { BrokerageSyncView() } label: { Label("Set up Plaid", systemImage: "building.columns") }
+                }
+                Section("Price watching") {
+                    NavigationLink { PriceWatchView() } label: { Label("Live prices and targets", systemImage: "chart.line.uptrend.xyaxis") }
                 }
                 Section("Notifications") {
                     NavigationLink { PushSettingsView() } label: { Label("Alerts and topics", systemImage: "bell.badge") }

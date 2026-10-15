@@ -32,9 +32,9 @@ export function send(client, jwt, device, payload, type = 'alert') {
       ':method': 'POST',
       ':path': `/3/device/${device.token}`,
       authorization: `bearer ${jwt}`,
-      'apns-topic': process.env.APNS_TOPIC ?? 'com.brycecole.newswire',
+      'apns-topic': (process.env.APNS_TOPIC ?? 'com.brycecole.newswire') + (type === 'liveactivity' ? '.push-type.liveactivity' : ''),
       'apns-push-type': type,
-      'apns-priority': type === 'background' ? '5' : '10',
+      'apns-priority': type === 'background' || type === 'liveactivity' ? '5' : '10',
     });
     let status = 0;
     let body = '';
