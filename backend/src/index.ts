@@ -466,7 +466,7 @@ async function route(request: Request, env: Env, ctx?: ExecutionContext): Promis
   if (path.startsWith('/v1/brain/')) return brainRoute(request, url, path, env);
   if (path === '/v1/devices') {
     query(url.searchParams, []);
-    if (request.method === 'GET') return json({ devices: (await env.DB.prepare('SELECT token, environment, stock_symbols, muted_topics FROM devices').all()).results });
+    if (request.method === 'GET') return json({ devices: (await env.DB.prepare('SELECT token, environment, stock_symbols, muted_topics, price_watches, live_activities FROM devices').all()).results });
     if (request.method === 'POST') {
       const data = await readBody(request) as Record<string, unknown>;
       const token = text(data?.token, 'token', 200).toLowerCase();
@@ -476,9 +476,20 @@ async function route(request: Request, env: Env, ctx?: ExecutionContext): Promis
       if (!Array.isArray(symbols) || symbols.length > 200 || symbols.some(s => typeof s !== 'string' || !/^[A-Z0-9.^=-]{1,30}$/.test(s))) invalid('Invalid stock_symbols');
       const muted = data.muted_topics === undefined ? null : data.muted_topics;
       if (muted !== null && (!Array.isArray(muted) || muted.length > 40 || muted.some(t => typeof t !== 'string' || !/^[a-z-]{1,30}$/.test(t)))) invalid('Invalid muted_topics');
+      const watches = data.price_watches;
+      const activities = data.live_activities;
+      if (watches !== undefined && (!Array.isArray(watches) || watches.length > 20 || watches.some(w =>
+        !w || typeof w !== 'object' || typeof w.id !== 'string' || !/^[a-zA-Z0-9-]{1,64}$/.test(w.id) ||
+        typeof w.symbol !== 'string' || !/^[A-Z0-9.^=-]{1,30}$/.test(w.symbol) || !['above', 'below'].includes(w.direction) ||
+        (w.target !== undefined && (typeof w.target !== 'number' || !Number.isFinite(w.target) || w.target <= 0))))) invalid('Invalid price_watches');
+      if (Array.isArray(watches) && new Set(watches.map(w => w.id)).size !== watches.length) invalid('Duplicate price watch');
+      if (activities !== undefined && (!Array.isArray(activities) || activities.length > 20 || activities.some(a =>
+        !a || typeof a !== 'object' || typeof a.watch_id !== 'string' || typeof a.token !== 'string' || !/^[0-9a-f]{64,200}$/.test(a.token) ||
+        typeof a.expires_at !== 'number' || !Number.isInteger(a.expires_at) || a.expires_at > Date.now() / 1000 + 8 * 3600 + 60 ||
+        !Array.isArray(watches) || !watches.some(w => w.id === a.watch_id)))) invalid('Invalid live_activities');
       const now = new Date().toISOString();
-      await env.DB.prepare('INSERT INTO devices (token, environment, created_at, updated_at, stock_symbols, muted_topics) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(token) DO UPDATE SET environment = excluded.environment, updated_at = excluded.updated_at, stock_symbols = excluded.stock_symbols, muted_topics = CASE WHEN ? THEN excluded.muted_topics ELSE devices.muted_topics END')
-        .bind(token, environment, now, now, JSON.stringify([...new Set(symbols)]), JSON.stringify([...new Set(muted ?? [])]), muted !== null ? 1 : 0).run();
+      await env.DB.prepare('INSERT INTO devices (token, environment, created_at, updated_at, stock_symbols, muted_topics, price_watches, live_activities) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(token) DO UPDATE SET environment = excluded.environment, updated_at = excluded.updated_at, stock_symbols = excluded.stock_symbols, muted_topics = CASE WHEN ? THEN excluded.muted_topics ELSE devices.muted_topics END, price_watches = CASE WHEN ? THEN excluded.price_watches ELSE devices.price_watches END, live_activities = CASE WHEN ? THEN excluded.live_activities ELSE devices.live_activities END')
+        .bind(token, environment, now, now, JSON.stringify([...new Set(symbols)]), JSON.stringify([...new Set(muted ?? [])]), JSON.stringify(watches ?? []), JSON.stringify(activities ?? []), muted !== null ? 1 : 0, watches !== undefined ? 1 : 0, activities !== undefined ? 1 : 0).run();
       return json({ registered: true }, 201);
     }
     throw new ApiError(405, 'method_not_allowed', 'Method not allowed');

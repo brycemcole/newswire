@@ -14,6 +14,7 @@ enum PushRegistrationDecision: Equatable {
 final class PushDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        Task { await PriceWatchStore.shared.restoreActivities() }
         FeedStore.registerProcessing()
         FeedStore.scheduleRefresh()
         FeedStore.scheduleProcessing()
@@ -61,14 +62,30 @@ final class PushDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCen
         let device = deviceToken.map { String(format: "%02x", $0) }.joined()
         UserDefaults.standard.set(device, forKey: "pushDevice")
         UserDefaults.standard.set("Registered with Apple", forKey: "pushRegistrationStatus")
-        Task { await Self.syncStockAlerts() }
+        Task {
+            await Self.syncStockAlerts()
+            await PriceWatchStore.shared.restoreActivities()
+        }
     }
 
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
         UserDefaults.standard.set("Apple registration failed: \(error.localizedDescription)", forKey: "pushRegistrationStatus")
     }
 
+    private static var syncing = false
+    private static var syncAgain = false
+
     static func syncStockAlerts() async {
+        if syncing { syncAgain = true; return }
+        syncing = true
+        defer { syncing = false }
+        repeat {
+            syncAgain = false
+            await registerPreferences()
+        } while syncAgain && !Task.isCancelled
+    }
+
+    private static func registerPreferences() async {
         guard UserDefaults.standard.bool(forKey: "pushEnabled") else { return }
         guard let device = UserDefaults.standard.string(forKey: "pushDevice") else {
             UserDefaults.standard.set("Waiting for Apple device registration", forKey: "pushRegistrationStatus")
@@ -88,7 +105,7 @@ final class PushDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCen
         let realItems = Set(store.items.filter { $0.environment == .production }.map(\.id))
         let symbols = Set(store.snapshot.positions.filter { realItems.contains($0.itemID) && $0.option == nil && $0.quantity != 0 }.map { $0.symbol.uppercased() }).sorted()
         do {
-            try await NewswireAPI(baseURL: url).register(device: device, environment: environment, symbols: symbols, muted: AlertTopic.muted.sorted())
+            try await NewswireAPI(baseURL: url).register(device: device, environment: environment, symbols: symbols, muted: AlertTopic.muted.sorted(), watches: PriceWatchStore.shared.registration, activities: PriceWatchStore.shared.activityRegistration)
             UserDefaults.standard.set("Synced: \(symbols.count) held stocks", forKey: "pushServerStatus")
         }
         catch {

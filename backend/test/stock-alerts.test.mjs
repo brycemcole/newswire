@@ -22,3 +22,20 @@ test('rapid movement uses recent samples and cooldown', () => {
   state[event.key] = { at: new Date(now).toISOString() };
   assert.equal(movements('AAPL', { ...quote(103), at: now + 60000 }, state, now + 60000).length, 0);
 });
+
+test('custom targets accept equality, both directions and reject stale or invalid prices', async () => {
+  const { targetReached, activityPayload } = await import('../../scripts/monitor/stock-alerts.mjs');
+  for (const direction of ['above', 'below']) {
+    const watch = { id: 'test', symbol: 'AAPL261218C00250000', target: 5, direction };
+    assert.equal(targetReached(watch, quote(5), now), true);
+    assert.equal(targetReached(watch, quote(direction === 'above' ? 6 : 4), now), true);
+    assert.equal(targetReached(watch, quote(direction === 'above' ? 4 : 6), now), false);
+    assert.equal(targetReached(watch, quote(5), now + 300001), false);
+    assert.equal(targetReached(watch, { ...quote(5), at: now + 60001 }, now), false);
+    assert.equal(targetReached(watch, quote(NaN), now), false);
+    const payload = activityPayload(watch, { ...quote(5), currency: 'USD' }, now);
+    assert.equal(payload.aps['content-state'].quotedAt + 978307200, now / 1000);
+    assert.equal(payload.aps['content-state'].reached, true);
+    assert.equal(payload.aps['stale-date'], now / 1000 + 300);
+  }
+});

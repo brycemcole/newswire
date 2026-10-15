@@ -31,6 +31,7 @@ import UIKit
     @ObservationIgnored var atTop = true {
         didSet { if atTop && !oldValue { Task { await applyPending() } } }
     }
+    @ObservationIgnored private var backgroundWork: Task<Void, Never>?
     @ObservationIgnored private var pending: [Story] = []
     @ObservationIgnored private var generation = UUID()
     @ObservationIgnored private var displayedKey = ""
@@ -139,6 +140,23 @@ import UIKit
     }
 
     // MARK: Background work
+
+    func refreshAfterBackgrounding() {
+        guard backgroundWork == nil, configured else { return }
+        let identifier = UIApplication.shared.beginBackgroundTask(withName: "Refresh stories") { [weak self] in
+            Task { @MainActor in self?.backgroundWork?.cancel() }
+        }
+        guard identifier != .invalid else { return }
+        backgroundWork = Task {
+            defer {
+                UIApplication.shared.endBackgroundTask(identifier)
+                backgroundWork = nil
+            }
+            await ready()
+            guard !Task.isCancelled, lastUpdated.map({ $0.timeIntervalSinceNow < -30 }) ?? true else { return }
+            if await sync(.replace, quiet: true) { await Self.persist().value }
+        }
+    }
 
     static func scheduleRefresh() {
         let request = BGAppRefreshTaskRequest(identifier: refreshTaskID)
