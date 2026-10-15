@@ -1,7 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
-import { ask } from './jev.mjs';
+import { ask, classifierIdentity } from './jev.mjs';
 import { token } from './publish.mjs';
 import { nearIdentical } from './headline-dedupe.mjs';
 import { prefiltered } from './rules/headlines.mjs';
@@ -52,7 +52,7 @@ export async function classifyImpacts(options = {}) {
 
 async function classifyBatch({ limit = 25, maxAge = 48, now = Date.now(), post = true, archiveFile: archivePath = archiveFile, verdictFile: verdictPath = verdictFile, headlineVerdictFile: headlinePath = headlineVerdictFile, evidenceFile = `${archivePath}.evidence.jsonl`, classify = ask, deliver = null } = {}) {
   const archive = JSON.parse(await readFile(archivePath, 'utf8').catch(() => '{}'));
-  const classifierVersion = createHash('sha256').update(JSON.stringify(impactQuestions)).digest('hex').slice(0, 12);
+  const classifierVersion = createHash('sha256').update(JSON.stringify({ classifierIdentity, questions: impactQuestions })).digest('hex').slice(0, 12);
   const durable = new Map();
   const verdicts = JSON.parse(await readFile(verdictPath, 'utf8').catch(() => '{}'));
   const headlineVerdicts = JSON.parse(await readFile(headlinePath, 'utf8').catch(() => '{}'));

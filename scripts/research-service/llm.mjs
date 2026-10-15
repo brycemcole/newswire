@@ -2,14 +2,16 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { complete as freeComplete, model as freeModel } from '../ai/opencode.mjs';
 
 // OpenCode Go is the subscription plan; Zen is pay-as-you-go on the same OpenCode account.
 const providers = {
   go: 'https://opencode.ai/inference/go/v1/chat/completions',
   zen: 'https://opencode.ai/inference/v1/chat/completions',
 };
-const provider = process.env.NEWSWIRE_AGENT_PROVIDER ?? 'go';
-if (!providers[provider]) throw new Error(`NEWSWIRE_AGENT_PROVIDER must be one of ${Object.keys(providers).join(', ')}`);
+const provider = process.env.NEWSWIRE_AGENT_PROVIDER ?? 'opencode';
+if (provider !== 'opencode' && !providers[provider]) throw new Error('Unknown NEWSWIRE_AGENT_PROVIDER');
+export { freeModel };
 export const userAgent = 'newswire-research-agent/1.0';
 const usage = { requests: 0, prompt_tokens: 0, completion_tokens: 0 };
 export const agentUsage = () => ({ provider, ...usage });
@@ -26,6 +28,13 @@ async function key() {
 }
 
 async function complete(body, session, attempt = 0) {
+  if (provider === 'opencode') {
+    const payload = await freeComplete(body);
+    usage.requests += 1;
+    usage.prompt_tokens += payload.usage.prompt_tokens;
+    usage.completion_tokens += payload.usage.completion_tokens;
+    return payload.choices[0];
+  }
   let response;
   try {
     response = await fetch(providers[provider], { method: 'POST', signal: AbortSignal.timeout(120000), body: JSON.stringify(body),

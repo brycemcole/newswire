@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
+process.env.NEWSWIRE_AGENT_PROVIDER = 'go';
 const { parseJSON, runAgent } = await import('../../scripts/research-service/llm.mjs');
 const { parseBingNews, parseDuckDuckGo, searchArchive } = await import('../../scripts/research-service/tools.mjs');
 const { answerQueue } = await import('../../scripts/research-service/agent.mjs');

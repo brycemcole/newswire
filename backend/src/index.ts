@@ -9,6 +9,7 @@ import { AgentResearchError, getAgentResearch, pendingPredictionSymbols, recordA
 import { discoverQuestions, getDiscovery, recordDiscovery } from './research-discovery';
 import { inputsAt, loadBars } from './market-inputs';
 import { extract, ExtractError } from './extract';
+import { AIBroker, AIError } from './ai';
 
 interface Env {
   DB: D1Database;
@@ -161,9 +162,9 @@ async function attestRoute(request: Request, path: string, env: Env) {
   }
 }
 function story(row: Record<string, unknown>) { return { ...row, tickers: JSON.parse(row.tickers as string), tags: JSON.parse(row.tags as string) }; }
-async function readBody(request: Request): Promise<unknown> {
+async function readBody(request: Request, limit = bodyLimit): Promise<unknown> {
   if (request.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'application/json') invalid('Content-Type must be application/json');
-  if (Number(request.headers.get('content-length')) > bodyLimit) throw new ApiError(413, 'too_large', 'Body exceeds 128 KiB');
+  if (Number(request.headers.get('content-length')) > limit) throw new ApiError(413, 'too_large', 'Request body is too large');
   const reader = request.body?.getReader();
   if (!reader) invalid('Missing body');
   const chunks: Uint8Array[] = [];
@@ -172,7 +173,7 @@ async function readBody(request: Request): Promise<unknown> {
     const { value, done } = await reader.read();
     if (done) break;
     size += value.length;
-    if (size > bodyLimit) { await reader.cancel(); throw new ApiError(413, 'too_large', 'Body exceeds 128 KiB'); }
+    if (size > limit) { await reader.cancel(); throw new ApiError(413, 'too_large', 'Request body is too large'); }
     chunks.push(value);
   }
   const bytes = new Uint8Array(size);
@@ -438,7 +439,7 @@ async function brainRoute(request: Request, url: URL, path: string, env: Env) {
   ]);
   return json({ story: brainStory(await load()) });
 }
-async function route(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
+async function route(request: Request, env: Env, ctx?: ExecutionContext, ai?: AIBroker): Promise<Response> {
   const url = new URL(request.url);
   if (encoder.encode(request.url).length > 8000) throw new ApiError(413, 'too_large', 'URL exceeds 8000 bytes');
   const path = url.pathname;
@@ -461,8 +462,21 @@ async function route(request: Request, env: Env, ctx?: ExecutionContext): Promis
   }
   const write = path === '/v1/ingest' || (path === '/v1/stories' && request.method === 'POST') || (/^\/v1\/stories\/([^/]+)$/.test(path) && request.method === 'DELETE')
     || (path === '/v1/devices' && request.method === 'GET') || (/^\/v1\/devices\/([^/]+)$/.test(path) && request.method === 'DELETE')
+    || path.startsWith('/v1/ai/worker/')
     || (path.startsWith('/v1/research/') && !(path === '/v1/research/discovery' && request.method === 'GET')) || path === '/v1/ships' || path === '/v1/econ/events' || path === '/v1/econ/history' || path === '/v1/econ/series' || path === '/v1/econ/sources' || path === '/v1/market-pulse/impacts' || ['/v1/brain/posts', '/v1/brain/known', '/v1/brain/ai', '/v1/brain/taste'].includes(path);
   await authenticate(request, env, write);
+  if (path.startsWith('/v1/ai/')) {
+    if (!ai) throw new AIError(503, 'AI compute is unavailable');
+    query(url.searchParams, []);
+    if (path === '/v1/ai/status' && request.method === 'GET') return json(ai.status());
+    if (request.method !== 'POST') throw new ApiError(405, 'method_not_allowed', 'Use POST');
+    const body = await readBody(request, 600000) as Record<string, unknown>;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) invalid('Expected an AI request');
+    if (path === '/v1/ai/chat/completions') return ai.complete(body, request.signal);
+    if (path === '/v1/ai/worker/claim') return json(await ai.claim());
+    if (path === '/v1/ai/worker/result') return json(ai.result(body));
+    throw new ApiError(404, 'not_found', 'AI route not found');
+  }
   if (path.startsWith('/v1/brain/')) return brainRoute(request, url, path, env);
   if (path === '/v1/devices') {
     query(url.searchParams, []);
@@ -722,19 +736,21 @@ const lightRoutes = /^\/(health|\.well-known\/|plaid\/)|^\/v1\/(stories|devices|
 const isLight = (path: string) => !path.startsWith('/v1/') || lightRoutes.test(path);
 
 export class Compute {
+  private readonly ai = new AIBroker();
   constructor(private readonly state: DurableObjectState, private readonly env: Env) {}
   async fetch(request: Request): Promise<Response> {
     if (new URL(request.url).pathname === '/__cron') { await refreshEarnings(this.env); return new Response('ok'); }
-    return handle(request, this.env, { waitUntil: (promise: Promise<unknown>) => this.state.waitUntil(promise) } as ExecutionContext);
+    return handle(request, this.env, { waitUntil: (promise: Promise<unknown>) => this.state.waitUntil(promise) } as ExecutionContext, this.ai);
   }
 }
 
 function compute(env: Env) { return env.COMPUTE!.get(env.COMPUTE!.idFromName('compute')); }
 
-async function handle(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
+async function handle(request: Request, env: Env, ctx?: ExecutionContext, ai?: AIBroker): Promise<Response> {
   let response: Response;
-  try { response = await route(request, env, ctx); } catch (error) {
+  try { response = await route(request, env, ctx, ai); } catch (error) {
     response = error instanceof ApiError ? json({ error: { code: error.code, message: error.message } }, error.status)
+      : error instanceof AIError ? json({ error: { code: 'ai_unavailable', message: error.message } }, error.status)
       : error instanceof ForecastError ? json({ error: { code: 'invalid_forecast', message: error.message } }, error.status)
       : error instanceof AgentResearchError ? json({ error: { code: error.status === 400 ? 'invalid_request' : 'unavailable', message: error.message } }, error.status)
       : error instanceof ExtractError ? json({ error: { code: error.status === 400 ? 'invalid_request' : error.status === 415 ? 'unsupported_media_type' : 'upstream_unavailable', message: error.message } }, error.status)

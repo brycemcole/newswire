@@ -1,0 +1,13 @@
+[Unit]
+Description=Newswire free DeepSeek through the official OpenCode runtime
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/newswire
+ExecStart=/usr/bin/node %h/newswire/scripts/ai/worker.mjs
+Restart=always
+RestartSec=5
+UMask=0077
+
+[Install]
+WantedBy=default.target

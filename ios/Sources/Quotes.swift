@@ -169,6 +169,15 @@ extension NewswireAPI {
         for symbol in symbols where fetchedAt[symbol] == nil { fetchedAt[symbol] = .now }
     }
 
+    func confirm(_ symbols: [String]) async throws -> [Quote] {
+        let missing = symbols.filter { quotes[$0] == nil }
+        if !missing.isEmpty {
+            guard let api else { throw WireError.configuration }
+            store(try await api.quotes(symbols: Array(missing.prefix(6))))
+        }
+        return symbols.compactMap { quotes[$0] }
+    }
+
     private func store(_ found: [Quote]) {
         for quote in found {
             let previous = quotes[quote.symbol]

@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { token } from '../monitor/publish.mjs';
 import { notify, wake } from '../monitor/apns.mjs';
+import { complete as freeComplete, model as freeModel } from '../ai/opencode.mjs';
 
 const origin = process.env.NEWSWIRE_URL ?? 'https://bryce-newswire.bryce-e19.workers.dev';
 const stateFile = process.env.BRAIN_SCRAPE_STATE ?? join(homedir(), '.config', 'newswire', 'brain-state.json');
@@ -13,8 +14,8 @@ const minScore = Number(option('min-score', process.env.BRAIN_MIN_SCORE ?? 8));
 const dailyMax = Number(process.env.BRAIN_DAILY_MAX ?? 24);
 const paperPerRun = Number(process.env.BRAIN_PAPERS_PER_RUN ?? 1);
 const sourcePerRun = Number(process.env.BRAIN_SOURCE_PER_RUN ?? 2);
-const rankModel = process.env.BRAIN_RANK_MODEL ?? '@cf/meta/llama-3.1-8b-instruct-fp8-fast';
-const writeModel = process.env.BRAIN_WRITE_MODEL ?? '@cf/meta/llama-3.1-8b-instruct-fp8-fast';
+const rankModel = process.env.BRAIN_RANK_MODEL ?? freeModel;
+const writeModel = process.env.BRAIN_WRITE_MODEL ?? freeModel;
 const localAI = process.env.BRAIN_AI_URL?.replace(/\/+$/, '');
 const localModel = process.env.BRAIN_AI_LOCAL_MODEL ?? 'gpt-5.6-luna';
 const only = option('only', '').split(',').filter(Boolean);
@@ -29,7 +30,10 @@ const decode = value => value.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (match, e
 });
 const escape = value => String(value).replace(/[&<>"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[char]);
 const squash = value => value.replace(/[\u2010\u2011]/g, '-').replace(/[\u202f\u00a0]/g, ' ').replace(/\s+/g, ' ').trim();
-const clip = text => text.length > 24000 ? `${text.slice(0, 18000)}\n…\n${text.slice(-6000)}` : text;
+const clip = text => {
+  const limit = writeModel === freeModel ? 120000 : 24000;
+  return text.length > limit ? `${text.slice(0, limit * 0.75)}\n…\n${text.slice(-limit * 0.25)}` : text;
+};
 
 export function plain(html) {
   return decode(html
@@ -88,6 +92,7 @@ async function local(messages, maxTokens) {
 
 const ai = async (model, system, user, maxTokens) => {
   const messages = [{ role: 'system', content: system }, { role: 'user', content: user }];
+  if (model === freeModel) return parseJSON((await freeComplete({ model, messages, max_tokens: maxTokens })).choices[0].message.content);
   if (localAI) {
     try { return parseJSON(await local(messages, maxTokens)); } catch (error) { console.warn(`brain: ${error.message}; falling back to Workers AI`); }
   }
