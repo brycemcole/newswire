@@ -7,6 +7,11 @@ on:
       - ios/**
       - .github/workflows/testflight.yml
   workflow_dispatch:
+    inputs:
+      verify_build:
+        description: Check an existing build without uploading another
+        required: false
+        type: string
 
 concurrency:
   group: testflight
@@ -17,7 +22,26 @@ permissions:
   contents: read
 
 jobs:
+  verify:
+    if: github.event_name == 'workflow_dispatch' && inputs.verify_build != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: Verify TestFlight availability
+        env:
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          ASC_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+          ASC_KEY_PATH: ${{ runner.temp }}/AuthKey.p8
+          BUILD_NUMBER: ${{ inputs.verify_build }}
+        run: |
+          trap 'rm -f "$ASC_KEY_PATH"' EXIT
+          printf '%s' "$ASC_KEY" > "$ASC_KEY_PATH"
+          chmod 600 "$ASC_KEY_PATH"
+          ruby ios/ci/testflight_status.rb "$BUILD_NUMBER"
   upload:
+    if: github.event_name != 'workflow_dispatch' || inputs.verify_build == ''
     runs-on: xcode-27
     timeout-minutes: 60
     defaults:
@@ -93,6 +117,10 @@ jobs:
           fi
           { echo "### What to Test"; cat "$RUNNER_TEMP/notes.txt"; } >> "$GITHUB_STEP_SUMMARY"
           ruby ci/set_whats_new.rb "$BUILD_NUMBER" "$RUNNER_TEMP/notes.txt"
+      - name: Verify TestFlight availability
+        env:
+          ASC_KEY_PATH: ${{ runner.temp }}/AuthKey.p8
+        run: ruby ci/testflight_status.rb "$BUILD_NUMBER"
       - name: Revoke this run's signing certificate
         if: always()
         continue-on-error: true

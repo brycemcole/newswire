@@ -89,4 +89,67 @@ import Testing
         #expect(await research.sources.count == 1)
         #expect(await research.sources.first?.url == context.url)
     }
+
+    @Test func aTemporaryFailureOrMalformedAnswerRecoversWithoutTappingRetry() async throws {
+        actor Attempts {
+            var count = 0
+            func next() -> Int { count += 1; return count }
+        }
+        let answer = try raw(stocks: [])
+        let network = Attempts()
+        let recovered = try await StoryLensReport.generate(context: context, retryDelay: .zero) { _ in
+            if await network.next() == 1 { throw WireError.status(503) }
+            return answer
+        }
+        #expect(recovered.stocks.isEmpty)
+        #expect(await network.count == 2)
+        let malformed = Attempts()
+        _ = try await StoryLensReport.generate(context: context, retryDelay: .zero) { _ in
+            await malformed.next() == 1 ? "{\"market\":" : answer
+        }
+        #expect(await malformed.count == 2)
+    }
+
+    @Test func retriesAreBoundedAndConfigurationFailuresNeverRetry() async throws {
+        actor Attempts {
+            var count = 0
+            func increment() { count += 1 }
+        }
+        let attempts = Attempts()
+        await #expect(throws: WireError.self) {
+            try await StoryLensReport.generate(context: context, retryDelay: .zero) { _ in
+                await attempts.increment()
+                throw WireError.status(502)
+            }
+        }
+        #expect(await attempts.count == 2)
+        #expect(!StoryLensFailure.canRetry(WireError.configuration))
+        #expect(!StoryLensFailure.canRetry(StockAIError.missingKey))
+        #expect(!StoryLensFailure.canRetry(CancellationError()))
+        #expect(!StoryLensFailure.canRetry(URLError(.notConnectedToInternet)))
+        #expect(StoryLensFailure.message(URLError(.notConnectedToInternet)).contains("internet"))
+        #expect(StoryLensFailure.message(StockAIError.missingKey).contains("API key"))
+    }
+
+    @Test func failedLensesCanRecoverOnAnExplicitReload() async throws {
+        actor Attempts {
+            var count = 0
+            func next() -> Int { count += 1; return count }
+        }
+        let file = URL.temporaryDirectory.appending(path: "lens-retry-\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        let attempts = Attempts()
+        let answer = try raw(stocks: [])
+        let lenses = StoryLenses(cache: StoryLensCache(file: file)) { _ in
+            if await attempts.next() == 1 { throw WireError.configuration }
+            return answer
+        }
+        await lenses.load(context)
+        #expect(lenses.error != nil)
+        #expect(!lenses.loading)
+        await lenses.load(context, retry: true)
+        #expect(lenses.error == nil)
+        #expect(lenses.report != nil)
+        #expect(await attempts.count == 2)
+    }
 }
