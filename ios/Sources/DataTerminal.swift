@@ -22,6 +22,7 @@ nonisolated struct DataPayload: Decodable, Sendable, Hashable {
         let surprise: Double?
         let ptrId: String?
         let ptrYear: Int?
+        let currentValue: String?
     }
     nonisolated struct Section: Decodable, Sendable, Hashable {
         let title: String
@@ -729,6 +730,8 @@ struct DataScreen: View {
         let portfolio = overview.first(where: { $0.label == "Reported 13F value" })
         let filed = period?.detail.flatMap { $0.hasPrefix("Filed ") ? String($0.dropFirst(6)) : nil }
         let priorPeriod = payload.sections.first(where: { $0.title == "Recent filings" })?.rows.dropFirst().first?.label.components(separatedBy: "as of ").last
+        let nowRow = overview.first(where: { $0.label == "Current value" })
+        let optionsRow = overview.first(where: { $0.label == "Options exposure" })
         let valueChange = portfolio?.detail?.firstMatch(of: /change ([+−-]\$[\d.]+[KMBT]?)/).map { String($0.1) }
         let holdings = payload.sections.first(where: { $0.title == "All reported positions" })
         let history = payload.sections.first(where: { $0.title == "Historical quarters" })?.rows ?? []
@@ -753,6 +756,22 @@ struct DataScreen: View {
                         Text("\(valueChange) since \(priorPeriod.map(DataText.quarter) ?? "last quarter")")
                             .font(.subheadline.weight(.medium)).monospacedDigit()
                             .foregroundStyle(valueChange.hasPrefix("+") ? Color.green : .orange)
+                    }
+                    if let nowRow {
+                        HStack(spacing: 6) {
+                            Text("Now").foregroundStyle(.secondary)
+                            Text(nowRow.value).fontWeight(.semibold)
+                            if let detail = nowRow.detail?.components(separatedBy: " vs ").first {
+                                Text(detail).foregroundStyle(detail.hasPrefix("+") ? Color.green : .orange)
+                            }
+                        }
+                        .font(.subheadline).monospacedDigit().padding(.top, 4)
+                        if let coverage = nowRow.detail?.firstMatch(of: /(\d+)% of value priced/) {
+                            Text("Based on \(coverage.1)% of reported value with live quotes").font(.caption).foregroundStyle(.tertiary)
+                        }
+                    }
+                    if let optionsRow {
+                        Text("Excludes \(optionsRow.value) of options exposure").font(.caption).foregroundStyle(.tertiary).padding(.top, 2)
                     }
                 }
                 .padding(.vertical, 14)
@@ -872,6 +891,9 @@ struct DataScreen: View {
                 if let change {
                     Text(change.text).font(.footnote.weight(.semibold)).monospacedDigit().foregroundStyle(change.tint)
                 }
+                if let now = row.currentValue {
+                    Text(now).font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                }
             }
             .fixedSize()
         }
@@ -907,7 +929,7 @@ struct DataScreen: View {
 
     private func flowFooter(_ title: String) -> String? {
         if title.hasPrefix("Recently listed") { return "Listed in the last 18 months. IPO and spinoff allocations can exaggerate these changes." }
-        if title.hasPrefix("Top holders") { return "Combined reported value across the first 8 screened stocks." }
+        if title.hasPrefix("Top holders") { return "Affiliated filers combined, from each stock's listed top holders across the first 8 screened stocks." }
         return nil
     }
 
