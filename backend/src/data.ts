@@ -9,7 +9,7 @@ import { DataError } from './errors';
 export interface Row {
   label: string; value: string; detail?: string; change?: number; change_label?: string; date?: string;
   symbol?: string; series?: string; story?: string; url?: string; destination?: string; points?: number[];
-  forecast?: string; previous?: string; actual?: string; surprise?: number; ptr_id?: string; ptr_year?: number;
+  forecast?: string; previous?: string; actual?: string; surprise?: number; ptr_id?: string; ptr_year?: number; current_value?: string;
 }
 export interface Pin { lat: number; lon: number; label: string; detail?: string; heading?: number; kind?: string }
 export interface Section { title: string; rows: Row[] }
@@ -1161,9 +1161,22 @@ const tools: Tool[] = [
       const recent = listed.filter(row => row.firstTradeDate && Date.parse(row.firstTradeDate) > cutoff);
       const unknown = listed.filter(row => !row.firstTradeDate);
       const percentValue = (value: string) => Number(value.replace('%', '').replace('−', '-').replace('+', '').trim());
+      const holderFamily = (raw: string) => {
+        const lower = raw.toLowerCase();
+        if (/^vanguard\b/.test(lower)) return 'Vanguard';
+        if (/^blackrock\b|^ishares\b/.test(lower)) return 'BlackRock';
+        if (/^state street\b|^ssga\b/.test(lower)) return 'State Street';
+        if (/^fmr\b|^fidelity\b/.test(lower)) return 'Fidelity (FMR)';
+        if (/^t\.? ?rowe price\b/.test(lower)) return 'T. Rowe Price';
+        if (/^morgan stanley\b/.test(lower)) return 'Morgan Stanley';
+        if (/^jpmorgan\b|^j\.p\. morgan\b/.test(lower)) return 'JPMorgan';
+        if (/^goldman sachs\b/.test(lower)) return 'Goldman Sachs';
+        if (/^invesco\b/.test(lower)) return 'Invesco';
+        return raw;
+      };
       const holderTotals = new Map<string, { value: number; symbols: Set<string>; dates: Set<string> }>();
       for (const row of listed.slice(0, 8)) for (const holder of row.holders) {
-        const name = holder.organization?.trim();
+        const name = holderFamily(holder.organization?.trim() ?? '');
         const value = holder.value?.raw;
         if (!name || !Number.isFinite(value) || !value || value <= 0) continue;
         const total = holderTotals.get(name) ?? { value: 0, symbols: new Set<string>(), dates: new Set<string>() };
@@ -1176,7 +1189,7 @@ const tools: Tool[] = [
         const latestReport = [...total.dates].sort((a, b) => (Date.parse(b) || 0) - (Date.parse(a) || 0))[0];
         return {
           label: name, value: money(total.value),
-          detail: `Reported positions in ${total.symbols.size} of the top 8 screened stocks${latestReport ? ` · latest report ${latestReport}` : ''}`,
+          detail: `Combined filer entities in ${total.symbols.size} of the top 8 screened stocks${latestReport ? ` · latest report ${latestReport}` : ''}`,
           change_label: `${total.symbols.size} STOCKS`, destination: `data:sec/institution-search?q=${encodeURIComponent(name)}`,
         };
       });
@@ -1194,7 +1207,7 @@ const tools: Tool[] = [
       const title = side === 'buying' ? 'Stocks with rising institutional ownership' : 'Stocks with falling institutional ownership';
       const direction = side === 'buying' ? 'increases' : 'decreases';
       return { title, source: 'Finviz Stock Screener + Yahoo Finance ownership filings', url,
-        note: `Finviz's Institutional Transactions is a change in aggregate reported ownership, not a record of purchases or same-day trading. Recent listings are separated because IPO allocations and spinoff distributions can distort quarter-over-quarter comparisons. Established means at least 18 months since first trading. Top holders aggregates Yahoo Finance institution positions across the first 8 screened stocks; 13F and N-PORT disclosures are delayed snapshots. Top performers uses Finviz's daily Change % for the same screened stocks. Use INST <manager> to compare a specific filer's delayed SEC 13F snapshots. ${Math.min(count, 20)} of ${count} matches screened.`,
+        note: `Finviz's Institutional Transactions is a change in aggregate reported ownership, not a record of purchases or same-day trading. Recent listings are separated because IPO allocations and spinoff distributions can distort quarter-over-quarter comparisons. Established means at least 18 months since first trading. Top holders sums Yahoo Finance institution positions across the first 8 screened stocks, combining affiliated filers such as Vanguard's separate entities. Yahoo lists only each stock's largest holders, so smaller holders are not counted; 13F and N-PORT disclosures are delayed snapshots. Top performers uses Finviz's daily Change % for the same screened stocks. Use INST <manager> to compare a specific filer's delayed SEC 13F snapshots. ${Math.min(count, 20)} of ${count} matches screened.`,
         sections: [
           { title: 'Top holders · institutional ownership', rows: topHolders },
           { title: 'Top performers today · daily change', rows: topPerformers },
@@ -1259,11 +1272,19 @@ const tools: Tool[] = [
         priorValue += holding.value;
         if (!latest.has(cusip)) { exitedCount++; exited.push({ holding, cusip }); }
       }
+      const symbolOf = (holding: ThirteenFRow) => issuerSymbols[issuerKey(holding.issuer)];
+      const byValue = [...latest.values()].sort((a, b) => b.value - a.value);
+      const wanted = new Set<string>();
+      for (const holding of byValue.slice(0, offset + pageSize)) { const symbol = symbolOf(holding); if (symbol) wanted.add(symbol); }
+      for (const item of [...added, ...increased, ...reduced]) { const symbol = symbolOf(item.holding); if (symbol) wanted.add(symbol); }
+      const prices = await currentPrices([...wanted]);
+      const currentOf = (holding: ThirteenFRow) => { const symbol = symbolOf(holding); const price = symbol ? prices[symbol] : undefined; return price && holding.shares ? price * holding.shares : undefined; };
+      const currentLabel = (holding: ThirteenFRow) => { const now = currentOf(holding); return now === undefined ? undefined : `${money(now)} now · ${now >= holding.value ? '+' : '−'}${fmt(Math.abs(now / holding.value - 1) * 100, 1)}%`; };
       const makeChangeRow = (item: Change, kind: 'NEW' | 'INCREASED' | 'REDUCED'): Row => {
         const amount = Math.round(Math.abs(item.delta)).toLocaleString('en-US');
         const signedPercent = `${item.percent > 0 ? '+' : item.percent < 0 ? '−' : ''}${fmt(Math.abs(item.percent), 1)}%`;
         const changeLabel = kind === 'NEW' ? 'NEW' : kind === 'INCREASED' ? `+${amount} (${signedPercent}) shares` : `−${amount} (${signedPercent}) shares`;
-        return { label: item.holding.issuer, value: money(item.holding.value), detail: `CUSIP ${item.cusip} · ${Math.round(item.holding.shares).toLocaleString('en-US')} shares${item.old ? ` · prior ${Math.round(item.old.shares).toLocaleString('en-US')}` : ''}`, change_label: changeLabel, symbol: issuerSymbols[issuerKey(item.holding.issuer)] };
+        return { label: item.holding.issuer, value: money(item.holding.value), detail: `CUSIP ${item.cusip} · ${Math.round(item.holding.shares).toLocaleString('en-US')} shares${item.old ? ` · prior ${Math.round(item.old.shares).toLocaleString('en-US')}` : ''}`, change_label: changeLabel, symbol: issuerSymbols[issuerKey(item.holding.issuer)], current_value: currentLabel(item.holding) };
       };
       const addedRows = added.sort((a, b) => b.holding.value - a.holding.value).map(item => makeChangeRow(item, 'NEW'));
       const increasedRows = increased.sort((a, b) => b.dollars - a.dollars).map(item => makeChangeRow(item, 'INCREASED'));
@@ -1273,13 +1294,21 @@ const tools: Tool[] = [
       const pageCUSIPs = sortedCUSIPs.slice(offset, offset + pageSize);
       const holdings = pageCUSIPs.map(cusip => {
         const holding = latest.get(cusip)!;
-        return { label: holding.issuer, value: money(holding.value), detail: `CUSIP ${cusip} · ${Math.round(holding.shares).toLocaleString('en-US')} shares`, symbol: issuerSymbols[issuerKey(holding.issuer)] };
+        return { label: holding.issuer, value: money(holding.value), detail: `CUSIP ${cusip} · ${Math.round(holding.shares).toLocaleString('en-US')} shares`, symbol: issuerSymbols[issuerKey(holding.issuer)], current_value: currentLabel(holding) };
       });
       const valueDelta = currentValue - priorValue;
       const signedMoney = `${valueDelta > 0 ? '+' : valueDelta < 0 ? '−' : ''}${money(Math.abs(valueDelta))}`;
+      let fullCurrent: number | undefined, pricedReported = currentValue, coverage = 1;
+      if (latest.size <= 120) {
+        let total = 0, priced = 0;
+        for (const holding of latest.values()) { const now = currentOf(holding); if (now !== undefined) { total += now; priced += holding.value; } }
+        if (priced >= currentValue * 0.6) { fullCurrent = total; pricedReported = priced; coverage = priced / currentValue; }
+      }
       const overview: Row[] = [
         { label: 'Reporting period', value: filings[0].period, detail: `Filed ${filings[0].date}` },
         { label: 'Reported 13F value', value: money(currentValue), detail: previous ? `Prior ${money(priorValue)} · reported value change ${signedMoney}` : 'Prior filing unavailable' },
+        ...(fullCurrent !== undefined ? [{ label: 'Current value', value: money(fullCurrent), detail: `${fullCurrent >= pricedReported ? '+' : '−'}${money(Math.abs(fullCurrent - pricedReported))} vs reported · latest quotes${coverage < 0.995 ? ` · ${Math.round(coverage * 100)}% of value priced` : ''}` }] : []),
+        ...(current.options > 0 ? [{ label: 'Options exposure', value: money(current.options), detail: 'Notional of puts and calls, excluded from reported value' }] : []),
         { label: 'New positions', value: String(addedCount), detail: `Top ${Math.min(15, addedCount)} shown` },
         { label: 'Increased positions', value: String(increasedCount), detail: `Top ${Math.min(15, increasedCount)} shown` },
         { label: 'Reduced positions', value: String(reducedCount), detail: `Top ${Math.min(15, reducedCount)} shown` },
@@ -1591,6 +1620,21 @@ async function search13FManagers(query: string, limit: number): Promise<Institut
 }
 
 const issuerKey = (name: string) => name.toLowerCase().replace(/\b(?:incorporated|corporation|corp|inc|company|co|limited|ltd|plc|class|common|shares|stock)\b/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
+async function currentPrices(symbols: string[]): Promise<Record<string, number>> {
+  const unique = [...new Set(symbols)].slice(0, 120);
+  const chunks: string[][] = [];
+  for (let i = 0; i < unique.length; i += 20) chunks.push(unique.slice(i, i + 20));
+  const prices: Record<string, number> = {};
+  await Promise.all(chunks.map(async chunk => {
+    const data = await cached<Record<string, { fulldayPrice?: number; close?: (number | null)[] }>>(`sec/13f/spark/v1/${chunk.join(',')}`, 120, async () =>
+      getJSON(`https://query1.finance.yahoo.com/v8/finance/spark?symbols=${encodeURIComponent(chunk.join(','))}&range=1d&interval=1d`, { headers: { 'User-Agent': agent }, timeout: 8000 })).catch(() => ({}));
+    for (const [symbol, item] of Object.entries(data)) {
+      const price = item?.fulldayPrice ?? item?.close?.filter((v): v is number => typeof v === 'number').at(-1);
+      if (typeof price === 'number' && price > 0) prices[symbol] = price;
+    }
+  }));
+  return prices;
+}
 const secIssuerSymbols = () => cached('sec/issuer-tickers/v1', 86400, async () => {
   const data = await getJSON<Record<string, { ticker: string; title: string }>>('https://www.sec.gov/files/company_tickers.json', { headers: { 'User-Agent': sec }, timeout: 15000 });
   const map: Record<string, string> = {};
@@ -1675,23 +1719,26 @@ function xmlText(value: string): string {
     .replace(/&#(\d+);/g, (_, n: string) => String.fromCodePoint(Number(n)))
     .replace(/&#x([0-9a-f]+);/gi, (_, n: string) => String.fromCodePoint(parseInt(n, 16))).trim();
 }
-function parse13F(xml: string, filingYear: number): Map<string, ThirteenFRow> {
+function parse13F(xml: string, filingYear: number): { rows: Map<string, ThirteenFRow>; options: number } {
   const valueMultiplier = filingYear >= 2023 ? 1 : 1000;
   const rows = new Map<string, ThirteenFRow>();
+  let options = 0;
   const tag = (name: string) => `(?:[\\w.-]+:)?${name}`;
   const pattern = new RegExp(`<${tag('infoTable')}\\b[^>]*>[\\s\\S]*?<${tag('nameOfIssuer')}\\b[^>]*>([^<]*)<\\/${tag('nameOfIssuer')}\\s*>[\\s\\S]*?<${tag('cusip')}\\b[^>]*>([^<]*)<\\/${tag('cusip')}\\s*>[\\s\\S]*?<${tag('value')}\\b[^>]*>([^<]*)<\\/${tag('value')}\\s*>[\\s\\S]*?<${tag('sshPrnamt')}\\b[^>]*>([^<]*)<\\/${tag('sshPrnamt')}\\s*>[\\s\\S]*?<\\/${tag('infoTable')}\\s*>`, 'gi');
+  const optionPattern = new RegExp(`<${tag('putCall')}\\b[^>]*>\\s*(?:put|call)\\s*<`, 'i');
   for (const match of xml.matchAll(pattern)) {
     const issuer = xmlText(match[1]), cusip = xmlText(match[2]);
     const value = Number(match[3].replaceAll(',', '').trim()) * valueMultiplier;
     const shares = Number(match[4].replaceAll(',', '').trim());
     if (!issuer || !cusip || !Number.isFinite(value) || !Number.isFinite(shares)) continue;
+    if (optionPattern.test(match[0])) { options += value; continue; }
     const holding = rows.get(cusip);
     if (holding) { holding.value += value; holding.shares += shares; }
     else rows.set(cusip, { issuer, cusip, value, shares });
   }
-  return rows;
+  return { rows, options };
 }
-async function filing13FTable(cik: string, accession: string): Promise<{ rows: Map<string, ThirteenFRow>; url: string }> {
+async function filing13FTable(cik: string, accession: string): Promise<{ rows: Map<string, ThirteenFRow>; options: number; url: string }> {
   const compact = accession.replaceAll('-', '');
   const base = `https://www.sec.gov/Archives/edgar/data/${Number(cik)}/${compact}`;
   const index = await cached(`sec/13f/index/v1/${compact}`, 86400, () => getJSON<{ directory?: { item?: { name: string; type?: string; description?: string }[] } }>(`${base}/index.json`, { headers: { 'User-Agent': sec } }));
@@ -1701,9 +1748,9 @@ async function filing13FTable(cik: string, accession: string): Promise<{ rows: M
   if (!table) throw new DataError(502, 'SEC filing has no readable 13F information table');
   const xml = await cached(`sec/13f/table/v1/${compact}`, 86400, () => getText(`${base}/${table.name}`, { headers: { 'User-Agent': sec }, timeout: 15000 }));
   const filingYear = 2000 + Number(/-(\d{2})-/.exec(accession)?.[1] ?? 0);
-  const rows = parse13F(xml, filingYear);
+  const { rows, options } = parse13F(xml, filingYear);
   if (!rows.size) throw new DataError(502, 'SEC information table contained no parseable positions');
-  return { rows, url: `${base}/${table.name}` };
+  return { rows, options, url: `${base}/${table.name}` };
 }
 
 tools.push(...filingTools({ cik, submissions }));
