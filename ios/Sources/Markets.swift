@@ -554,7 +554,8 @@ nonisolated enum MarketClient {
     }
 
     @concurrent static func chart(_ symbol: String, range: ChartRange) async throws -> MarketChart {
-        let query = range.query
+        var query = range.query
+        if range == .week || range == .month, OptionSymbol(symbol) != nil { query.interval = "1d"; query.prePost = false }
         let data: Data
         do {
             data = try await get("/v8/finance/chart/\(symbol)", [
@@ -579,7 +580,9 @@ nonisolated enum MarketClient {
         var points: [PricePoint] = []
         var run = 0
         for (index, stamp) in (result.timestamp ?? []).enumerated() {
-            guard index < closes.count, let close = closes[index] else { continue }
+            guard index < closes.count else { continue }
+            let carried = range == .day || range == .week ? points.last?.close : nil
+            guard let close = closes[index] ?? carried else { continue }
             if range.intraday, index > 0, index + 1 < closes.count, let before = closes[index - 1], let after = closes[index + 1],
                abs(close - before) / before > 0.02, abs(close - after) / after > 0.02, abs(after - before) / before < 0.01 { continue }
             let date = Date(timeIntervalSince1970: stamp)
@@ -590,7 +593,13 @@ nonisolated enum MarketClient {
         let current = meta.currentTradingPeriod
         var slots = points.count
         if range == .day, let last = points.last {
-            let close = (meta.tradingPeriods?.post.last ?? meta.tradingPeriods?.regular.last).map { Date(timeIntervalSince1970: $0.end) }
+            var close = (meta.tradingPeriods?.post.last ?? meta.tradingPeriods?.regular.last).map { Date(timeIntervalSince1970: $0.end) }
+            if meta.instrumentType == "OPTION" {
+                var calendar = Calendar(identifier: .gregorian)
+                calendar.timeZone = meta.exchangeTimezoneName.flatMap(TimeZone.init(identifier:)) ?? .current
+                let optionClose = calendar.date(bySettingHour: 16, minute: 0, second: 0, of: last.date)
+                close = [close, optionClose].compactMap { $0 }.min()
+            }
             if let close, close > last.date { slots += Int(close.timeIntervalSince(last.date) / 120) }
         }
         return MarketChart(
