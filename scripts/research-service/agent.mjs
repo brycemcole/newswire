@@ -55,8 +55,22 @@ function rehearsalWindow(now) {
     { horizon: 'next_close', target_session: 'next session', target_end_at: tomorrow(20, 0) }] };
 }
 
+// The agent view costs hundreds of D1 reads per symbol and the prediction window is the same for every symbol, so SPY is
+// fetched first and the other symbols only when a window is open. The answer pass reuses the SPY view from the same run.
+let sharedView;
+async function spyView() {
+  if (sharedView && Date.now() - sharedView.at < 120000) return sharedView.view;
+  const view = await api('/v1/research/agent?symbol=SPY');
+  sharedView = { at: Date.now(), view };
+  return view;
+}
+
 export async function predict(tools, { now = Date.now(), dryRun = false, views } = {}) {
-  views ??= Object.fromEntries(await Promise.all(symbols.map(async symbol => [symbol, await api(`/v1/research/agent?symbol=${symbol}`)])));
+  if (!views) {
+    const spy = await spyView();
+    if (!spy.window && !dryRun) return { skipped: 'outside prediction windows' };
+    views = Object.fromEntries([['SPY', spy], ...await Promise.all(symbols.filter(symbol => symbol !== 'SPY').map(async symbol => [symbol, await api(`/v1/research/agent?symbol=${symbol}`)]))]);
+  }
   if (dryRun) for (const view of Object.values(views)) view.window ??= rehearsalWindow(now);
   const due = symbols.flatMap(symbol => (views[symbol].window?.pending ?? []).map(horizon => ({ symbol, horizon })));
   if (!due.length) return { skipped: views.SPY.window ? 'already predicted this window' : 'outside prediction windows' };
@@ -120,7 +134,7 @@ Is this report accurate, and what does it mean for US stocks over the next sessi
 }
 
 export async function answer(tools, { limit = 3, deadline = Date.now() + 6 * 60000, dryRun = false } = {}) {
-  const { questions } = await api('/v1/research/agent?symbol=SPY');
+  const { questions } = await spyView();
   const results = [];
   for (const group of answerQueue(questions, Date.now(), limit)) {
     if (Date.now() > deadline) break;

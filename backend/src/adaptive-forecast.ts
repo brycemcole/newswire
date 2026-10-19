@@ -1,7 +1,7 @@
 import { forecastTilt, makeFeatures, type Features, type Horizon } from './forecast-model';
 
 export const adaptiveVersion = 'forecast-adaptive-v2';
-const coefficients: Record<string, number> = { news_points: 25, market_points: 35, calendar_points: 10, earnings_points: 10 };
+const coefficients: Record<string, number> = { news_points: 25, market_points: 40, calendar_points: 10, earnings_points: 10 };
 export type LearningOutcome = { id: string; session_date: string; horizon: Horizon; available_at: string; direction: number; return_pct: number; forecast_at: string; features: Features };
 const round = (value: number) => Math.round(value * 100) / 100;
 const bounded = (value: number, limit: number) => Math.max(-limit, Math.min(limit, value));
@@ -67,7 +67,7 @@ export function adaptiveForecast(features: Features, rows: LearningOutcome[], ho
     updated_through: usable.map(row => row.available_at).sort().at(-1) ?? null, weights,
     status: ready ? 'learning' : 'collecting',
     note: ready ? `Learning from ${normalized.length} sessions in this forecast period using joint ridge regression and volatility-scaled returns. Experimental index, not a probability.`
-      : `Collecting: ${normalized.length}/60 eligible sessions in this forecast period, after 20 prior returns for volatility. Live scores are unchanged by learning. Experimental index, not a probability.` };
+      : `${usable.length} saved ${usable.length === 1 ? "prediction checked" : "predictions checked"} for this forecast period. ${usable.length < 20 ? `Volatility warm-up: ${usable.length}/20 sessions.` : `Weight training: ${normalized.length}/60 eligible sessions.`} Predictions are active; automatic weight adjustments start after the warm-up and 60 eligible sessions. Experimental index, not a probability.` };
 }
 
 export function adaptPulse<T extends { symbol: string; as_of: string; horizon?: string; score: number | null; research_score: number | null; outlook: string }>(pulse: T, rows: LearningOutcome[]) {

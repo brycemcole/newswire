@@ -230,6 +230,7 @@ struct PositionRow: View {
             VStack(alignment: .trailing, spacing: 3) {
                 if let value = position.value {
                     Text(Money.text(value)).font(.body.monospacedDigit())
+                        .numericTextTransition(value: value)
                 }
                 if let gain = position.gain {
                     Text(gainText(gain))

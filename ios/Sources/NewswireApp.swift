@@ -4,10 +4,22 @@ import SwiftUI
 @main struct NewswireApp: App {
     @UIApplicationDelegateAdaptor(PushDelegate.self) private var push
 
+    #if DEBUG && targetEnvironment(simulator)
+    init() { FrameMeter.startIfRequested() }
+    #endif
+
     var body: some Scene {
         WindowGroup {
             #if DEBUG
-            if CommandLine.arguments.contains("-priceWatch") {
+            if CommandLine.arguments.contains("-marketSessionPreview") {
+                MarketSessionPreview()
+            } else if CommandLine.arguments.contains("-sessionAlertsPreview") {
+                SessionAlertsView(preview: true)
+            } else if CommandLine.arguments.contains("-numericTransitionPreview") {
+                NumericTextPreview()
+            } else if CommandLine.arguments.contains("-predictionHistoryPreview") {
+                PulseDetail()
+            } else if CommandLine.arguments.contains("-priceWatch") {
                 NavigationStack { PriceWatchView() }
             } else if CommandLine.arguments.contains("-priceWatchPreview") {
                 NavigationStack { PriceWatchView(preview: true) }
@@ -255,6 +267,8 @@ struct FeedView: View {
     @State private var search = ""
     @State private var searchPresented = false
     @State private var storyMarketSymbols: [String] = []
+    @State private var homeClock = Date.now
+    @State private var alertSymbol: MarketSymbol?
     @AppStorage("headlinesOnly") private var headlinesOnly = false
     @AppStorage("compactHome") private var compactHome = false
     @AppStorage("homeOrder") private var homeOrder = "marketsFirst"
@@ -273,28 +287,46 @@ struct FeedView: View {
             if !store.configured { return "Not connected" }
             return store.loading ? "Connecting" : "No stories yet"
         }
-        let leadingCategories = Dictionary(grouping: store.stories, by: \.category)
-            .sorted { lhs, rhs in
-                lhs.value.count == rhs.value.count ? lhs.key < rhs.key : lhs.value.count > rhs.value.count
-            }
-            .prefix(2)
-            .map { $0.key.capitalized }
-        return "\(leadingCategories.joined(separator: " · ")) · \(store.stories.count) stories"
+        return homeClock.formatted(.dateTime.weekday(.wide))
+    }
+
+    private var showsHome: Bool { search.isEmpty && store.filters.isEmpty }
+
+    private var myStories: [Story] {
+        guard showsHome, store.category.isEmpty else { return [] }
+        return HomeSymbols.stories(store.stories)
+    }
+
+    @ViewBuilder private func homeBlock(_ block: HomeBlock) -> some View {
+        switch block {
+        case .status:
+            MarketStatusLine(now: homeClock, onQuote: { open(quote: $0) })
+        case .sinceVisit:
+            SinceVisitCard(now: homeClock, stories: store.stories, onQuote: { open(quote: $0) },
+                           onStory: { store.path.append($0) }, onAlert: { alertSymbol = MarketSymbol(id: $0) },
+                           onFindSymbols: { dock = .large })
+        case .positions:
+            PositionMoversCard(onQuote: { open(quote: $0) }, onAlert: { alertSymbol = MarketSymbol(id: $0) }, openPortfolio: { portfolio = true })
+        case .today:
+            TodayEventsCard(now: homeClock, onQuote: { open(quote: $0) })
+        case .dashboard:
+            dashboard
+        case .outlook:
+            OutlookLine()
+        }
     }
 
     private var navigation: some View {
         NavigationStack(path: $store.path) {
             Group {
                 List {
-                    if search.isEmpty && store.filters.isEmpty {
-                        dashboard
-                            .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 14, trailing: 16))
-                            .listRowSeparator(.hidden)
-                            .listRowBackground(Color.clear)
-                        PulseCard()
-                            .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 14, trailing: 16))
-                            .listRowSeparator(.hidden)
-                            .listRowBackground(Color.clear)
+                    if showsHome {
+                        ForEach(HomeBlock.order(for: HomePhase.at(homeClock)), id: \.self) { block in
+                            homeBlock(block)
+                                .listRowInsets(EdgeInsets(top: block == .status ? 8 : 6, leading: 16, bottom: 6, trailing: 16))
+                                .listRowSeparator(.hidden)
+                                .listRowBackground(Color.clear)
+                        }
                     }
                     filterBar
                     .listRowInsets(EdgeInsets())
@@ -318,7 +350,26 @@ struct FeedView: View {
                         }.font(.system(.caption, design: .monospaced)).padding(.vertical, 8)
                     }
                     let olderTrigger = store.olderTriggerID
-                    ForEach(store.stories) { story in
+                    let mine = myStories
+                    let mineIDs = Set(mine.map(\.id))
+                    if !mine.isEmpty {
+                        HomeListHeader(title: "Your symbols")
+                            .listRowInsets(EdgeInsets(top: 14, leading: 16, bottom: 0, trailing: 16))
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
+                        ForEach(mine) { story in
+                            StoryRow(story: story, showSummary: !headlinesOnly)
+                                .background { NavigationLink(value: story) { EmptyView() }.opacity(0) }
+                                .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 12))
+                                .listRowBackground(Color.clear)
+                                .listRowSeparator(.visible)
+                        }
+                        HomeListHeader(title: "All news")
+                            .listRowInsets(EdgeInsets(top: 18, leading: 16, bottom: 0, trailing: 16))
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
+                    }
+                    ForEach(mineIDs.isEmpty ? store.stories : store.stories.filter { !mineIDs.contains($0.id) }) { story in
                         StoryRow(story: story, showSummary: !headlinesOnly)
                             .background { NavigationLink(value: story) { EmptyView() }.opacity(0) }
                             .id(story.id)
@@ -399,7 +450,8 @@ struct FeedView: View {
             .sheet(isPresented: $settings) { SettingsView(store: store) }
             .sheet(isPresented: $showingSaved) { SavedStoriesView() }
             .sheet(isPresented: $portfolio) { PortfolioView() }
-            .sheet(item: $asking) { AskSheet(context: $0, initialQuestion: askPrompt) }
+            .sheet(item: $alertSymbol) { PriceAlertComposer(symbol: $0.id) }
+            .sheet(item: $asking, onDismiss: { askPrompt = "" }) { AskSheet(context: $0, initialQuestion: askPrompt) }
             .task(id: store.category + "|" + search + "|" + store.filters.map(\.id).joined(separator: "|") + "|" + store.serverURL) {
                 store.query = search.trimmingCharacters(in: .whitespacesAndNewlines)
                 store.reset()
@@ -419,6 +471,7 @@ struct FeedView: View {
                     FeedStore.scheduleProcessing()
                 }
                 guard phase == .active else { return }
+                homeClock = .now
                 await store.ready()
                 // Skipped when background refresh just brought the feed up to date; at launch the feed-key task
                 // above usually wins and this returns at once because a load is already in flight. After an hour
@@ -435,6 +488,7 @@ struct FeedView: View {
                 await PriceWatchStore.shared.restoreActivities()
                 while !Task.isCancelled {
                     do { try await Task.sleep(for: .seconds(60)) } catch { return }
+                    homeClock = .now
                     await store.sync(.merge, quiet: true)
                     await PushDelegate.syncStockAlerts()
                 }
@@ -509,6 +563,14 @@ struct FeedView: View {
         }
         #if DEBUG
         .task {
+            if HomeBriefingDemo.active {
+                for _ in 0..<20 where store.stories.isEmpty { try? await Task.sleep(for: .milliseconds(300)) }
+                await HomeBriefingDemo.install(stories: store.stories)
+            }
+            if let index = CommandLine.arguments.firstIndex(of: "-priceAlert"), let symbol = CommandLine.arguments.dropFirst(index + 1).first {
+                try? await Task.sleep(for: .seconds(1))
+                alertSymbol = MarketSymbol(id: symbol)
+            }
             if CommandLine.arguments.contains("-exploreDataTools") {
                 try? await Task.sleep(for: .milliseconds(500))
                 store.path.append(FeedDestination.explore)
@@ -621,6 +683,8 @@ struct FeedView: View {
         let stacked = watchlistExpanded || portfolioExpanded
         let layout = stacked ? AnyLayout(VStackLayout(alignment: .leading, spacing: 20)) : AnyLayout(HStackLayout(alignment: .top, spacing: 12))
         return AnyView(layout {
+            PortfolioCard(compact: !stacked, expanded: portfolioExpanded,
+                          setExpanded: { value in morphDashboard { portfolioExpanded = value } }) { portfolio = true }
             VStack(alignment: .leading, spacing: 8) {
                 if stacked { watchlistHeader.transition(.cardSwap) }
                 ZStack(alignment: .topLeading) {
@@ -630,8 +694,6 @@ struct FeedView: View {
                 .clipShape(.rect(cornerRadius: 24, style: .continuous))
                 .homeCard()
             }
-            PortfolioCard(compact: !stacked, expanded: portfolioExpanded,
-                          setExpanded: { value in morphDashboard { portfolioExpanded = value } }) { portfolio = true }
         }
         .fixedSize(horizontal: false, vertical: true))
     }
@@ -647,6 +709,7 @@ struct FeedView: View {
     /// and a context menu inside a row lifts the whole row (both cards) as its preview.
     private func watchlistMenu<Label: View>(for symbol: String, @ViewBuilder label: () -> Label) -> some View {
         Menu {
+            Button("Set Price Alert…", systemImage: "bell.badge") { alertSymbol = MarketSymbol(id: symbol) }
             Button("Remove from Watchlist", systemImage: "star.slash", role: .destructive) {
                 withAnimation(.easeOut(duration: 0.2)) { watchlist.remove(symbol) }
             }
@@ -721,13 +784,14 @@ struct FeedView: View {
                 withAnimation(selectionAnimation) { pills.scrollTo(category, anchor: .center) }
             }
         }
+        .animation(reduceMotion ? nil : selectionAnimation, value: store.category)
         .sensoryFeedback(.selection, trigger: store.category)
     }
 
     private func categoryPill(_ category: String) -> some View {
         let selected = store.category == category
         return Button {
-            withAnimation(selectionAnimation) { store.category = category }
+            store.selectCategory(category)
         } label: {
             categoryLabel(category)
                 .foregroundStyle(selected ? Theme.shared.accent.onColor : Color.primary)
@@ -744,6 +808,7 @@ struct FeedView: View {
                 .glassEffect(.regular, in: .capsule)
         }
         .buttonStyle(PressSpringStyle())
+        .accessibilityIdentifier("news-topic-\(category.isEmpty ? "all" : category)")
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
@@ -833,10 +898,14 @@ struct StoryRow: View {
             }
             ShareLink(item: story.url)
         }
-        .task(id: story.id) { Summarizer.shared.request(story) }
+        .task(id: story.id) {
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            Summarizer.shared.request(story)
+        }
         .onDisappear { Summarizer.shared.withdraw(story) }
-        .onReceive(Summarizer.shared.updates) { key in
-            guard key == story.url.absoluteString else { return }
+        .onReceive(Summarizer.shared.updates(for: story.url.absoluteString)) {
+            let key = story.url.absoluteString
             withAnimation(.easeOut(duration: 0.2)) {
                 imageURL = Summarizer.shared.poster(for: story)
                 generated = Summarizer.shared.summaries[key]
@@ -887,17 +956,12 @@ struct StoryRow: View {
             if showSummary, let generated {
                 Text("\(Text(Image(systemName: "text.line.3.summary")).foregroundStyle(.tertiary)) \(generated)")
                     .font(.subheadline).foregroundStyle(.secondary).lineLimit(3)
-            } else if showSummary, story.hasDistinctSummary {
-                Text(StoryHTML.plainText(story.summary)).font(.subheadline).foregroundStyle(.secondary).lineLimit(3)
+            } else if showSummary, let teaser = story.feedSummary {
+                Text(teaser).font(.subheadline).foregroundStyle(.secondary).lineLimit(3)
             }
-            if !tickers.isEmpty {
-                StoryQuoteStats(symbols: tickers, quotes: QuoteStore.shared.quotes)
-            }
+            StoryTickerPills(story: story)
         }
-        .task(id: story.id) { QuoteStore.shared.want(QuoteStore.shared.candidates(for: story)) }
     }
-
-    private var tickers: [String] { QuoteStore.shared.symbols(for: story) }
 
     private var isSeen: Bool { ReadState.shared.contains(story) }
     private var unreadPriority: String { isSeen ? "normal" : story.priority }
@@ -990,7 +1054,7 @@ struct StoryDetail: View {
                 }
                 .font(.footnote) }
                 if !quotes.isEmpty {
-                    QuoteStrip(quotes: quotes, selected: $selectedQuote)
+                    QuoteStrip(quotes: quotes, selected: $selectedQuote, glass: true)
                         .transition(.opacity)
                 } else if !story.tickers.isEmpty {
                     filterLinks(story.tickers.map(WireFilter.ticker), separator: "  ·  ")
@@ -1127,7 +1191,6 @@ struct StoryDetail: View {
             guard story.isBrain else { return }
             _ = await feedStore?.brain(story, action: "view")
         }
-        .dockClearance()
         .navigationTitle("").navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -1181,6 +1244,7 @@ struct StoryDetail: View {
             }
         }
     }
+
     private var categoryRow: some View {
         HStack(spacing: 6) {
             filterButton(.category(story.category)) { Text(story.category.uppercased()) }
@@ -1201,7 +1265,6 @@ struct StoryDetail: View {
         context.questions = lenses.questions
         return context
     }
-
 
     private var glanceCard: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1494,6 +1557,7 @@ struct SafariView: UIViewControllerRepresentable {
     }
     func updateUIViewController(_ controller: SFSafariViewController, context: Context) {}
 }
+
 nonisolated struct TweetData: Decodable, Sendable {
     struct User: Decodable, Sendable { let name: String?; let screen_name: String?; let is_blue_verified: Bool?; let verified: Bool?; let profile_image_url_https: String? }
     struct Photo: Decodable, Sendable { let url: String? }
@@ -1687,7 +1751,6 @@ struct TweetCard: View {
     }
 }
 
-
 extension Story {
     var isTweet: Bool { tags.contains("x") && ["x.com", "twitter.com"].contains(url.host?.lowercased() ?? "") && url.path.contains("/status/") }
     var opensInReader: Bool { !isTweet && (tags.contains("headlines") || (isBrain && body.isEmpty)) && ["http", "https"].contains(url.scheme?.lowercased() ?? "") }
@@ -1695,6 +1758,18 @@ extension Story {
         guard let match = body.firstMatch(of: /Matched watchlist: ([^.]+)\./)?.1 else { return [] }
         return match.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
     }
+    private static let feedSummaries = NSCache<NSString, NSString>()
+
+    /// The cleaned teaser a feed row shows under the headline, or nil when it only repeats the headline. Parsing the
+    /// HTML on every row render is costly while scrolling, so the result is kept per story.
+    var feedSummary: String? {
+        let key = "\(id)|\(summary.count)" as NSString
+        if let cached = Self.feedSummaries.object(forKey: key) { return cached.length == 0 ? nil : cached as String }
+        let text = hasDistinctSummary ? StoryHTML.plainText(summary) : ""
+        Self.feedSummaries.setObject(text as NSString, forKey: key)
+        return text.isEmpty ? nil : text
+    }
+
     var hasDistinctSummary: Bool {
         let plain = StoryHTML.plainText(summary).lowercased().filter { $0.isLetter || $0.isNumber }
         let heading = title.lowercased().filter { $0.isLetter || $0.isNumber }
@@ -1752,6 +1827,7 @@ struct SettingsView: View {
                     NavigationLink { BrokerageSyncView() } label: { Label("Set up Plaid", systemImage: "building.columns") }
                 }
                 Section("Price watching") {
+                    NavigationLink { SessionAlertsView() } label: { Label("Market session alerts", systemImage: "clock.badge") }
                     NavigationLink { PriceWatchView() } label: { Label("Live prices and targets", systemImage: "chart.line.uptrend.xyaxis") }
                 }
                 Section("Notifications") {
@@ -1942,5 +2018,40 @@ private struct ConnectionSettingsView: View {
             }
         }
         .onAppear { url = store.serverURL }
+    }
+}
+
+/// Ticker pills for a feed row. Quotes arrive in batches that the store holds back while the list scrolls, and each row
+/// only redraws when one of its own symbols changed.
+struct StoryTickerPills: View {
+    let story: Story
+    @State private var symbols: [String]
+    @State private var quotes: [String: Quote]
+
+    init(story: Story) {
+        self.story = story
+        let store = QuoteStore.shared
+        let symbols = store.peekSymbols(for: story)
+        _symbols = State(initialValue: symbols)
+        _quotes = State(initialValue: store.peekQuotes(symbols))
+    }
+
+    var body: some View {
+        Group {
+            if !symbols.isEmpty { StoryQuoteStats(symbols: symbols, quotes: quotes) }
+        }
+        .onReceive(QuoteStore.shared.updates) { keys in
+            let store = QuoteStore.shared
+            guard keys.contains("#" + story.id) || !keys.isDisjoint(with: store.candidates(for: story)) else { return }
+            let next = store.peekSymbols(for: story)
+            let nextQuotes = store.peekQuotes(next)
+            if next != symbols { symbols = next }
+            if nextQuotes != quotes { quotes = nextQuotes }
+        }
+        .task(id: story.id) {
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            QuoteStore.shared.want(QuoteStore.shared.candidates(for: story))
+        }
     }
 }

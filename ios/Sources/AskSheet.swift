@@ -63,6 +63,8 @@ struct AskSheet: View {
     @State private var showingSettings = false
     @State private var showingHistory = false
     @State private var filing: StockSource?
+    @State private var openedStory: Story?
+    @Environment(\.feedStore) private var feedStore
     @State private var isAtLatest = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var focused: Bool
@@ -164,6 +166,7 @@ struct AskSheet: View {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }
             .navigationDestination(isPresented: $showingSettings) { StockAISettings() }
+            .navigationDestination(item: $openedStory) { StoryDetail(story: $0) }
             .navigationDestination(isPresented: $showingHistory) {
                 ChatHistoryList(current: thread.id) { open($0) }
             }
@@ -196,9 +199,37 @@ struct AskSheet: View {
                 focused = true
             }
             if CommandLine.arguments.contains("-stockAISample") {
+                let date = Date.now.addingTimeInterval(-86_400)
                 chat.messages = [
-                    StockChatMessage(user: true, text: "Will the Fed cut or hike at the next meeting?"),
-                    StockChatMessage(user: false, text: "**Most likely neither: traders expect the Fed to hold rates on Wednesday, Oct 28.**\n\n- **Rates now:** 3.50–3.75%.\n- **Odds:** about a 20% chance of a quarter-point hike, 80% no change.\n- **Inflation:** CPI ran 2.9% over the past year in August, above the Fed's 2% goal.\n- **Jobs:** unemployment held at 4.3% in September.\n\nSources: CME fed funds futures, FRED.", sources: [StockSource(title: "Fed rate expectations", url: URL(string: "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm")!), StockSource(title: "FRED", url: URL(string: "https://fred.stlouisfed.org")!)], provider: "DeepSeek")
+                    StockChatMessage(user: true, text: "How does Visa compare to its payments peers on growth and margins?"),
+                    StockChatMessage(user: false, text: """
+                    **Visa still has the highest net margin in the group at about 50%, while Mastercard is growing earnings twice as fast.** [1][2]
+
+                    Visa's revenue grew 14.4% over the past year, just ahead of Mastercard's 14.1% [1][2].
+
+                    - **Mastercard** grew earnings 22.1%, versus 10.2% at Visa [2].
+                    - **American Express** margins look low because it lends like a bank [3].
+                    - **PayPal** is the laggard, with earnings down 3.1% [4].
+
+                    | Company | Revenue growth (%, TTM) | Net margin (%, FY25) | P/E (TTM) |
+                    |---|---|---|---|
+                    | Visa (V) [1] | 14.4 | 50.2 | 34.3 |
+                    | Mastercard (MA) [2] | 14.1 | 45.7 | 34.0 |
+                    | American Express (AXP) [3] | 12.8 | 14.8 | 19.0 |
+                    | PayPal (PYPL) [4] | 4.8 | 15.8 | n/a |
+
+                    Visa and PayPal report on Tuesday, Oct 27 [1][4].
+
+                    ```stories
+                    [5, 6]
+                    ```
+                    """, sources: [StockSource(title: "Yahoo Finance · V", url: URL(string: "https://finance.yahoo.com/quote/V/")!),
+                                   StockSource(title: "Yahoo Finance · MA", url: URL(string: "https://finance.yahoo.com/quote/MA/")!),
+                                   StockSource(title: "SEC EDGAR · AXP", url: URL(string: "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=AXP")!),
+                                   StockSource(title: "Yahoo Finance · PYPL", url: URL(string: "https://finance.yahoo.com/quote/PYPL/")!),
+                                   StockSource(title: "[TEST] Visa and Mastercard settle merchant fee case", url: URL(string: "https://example.com/visa")!, story: "test-visa", publisher: "Reuters", date: date),
+                                   StockSource(title: "[TEST] PayPal outlines checkout turnaround plan", url: URL(string: "https://example.com/paypal")!, story: "test-paypal", publisher: "Bloomberg", date: date)],
+                                     provider: "DeepSeek")
                 ]
             }
             if CommandLine.arguments.contains("-askOptionsSample") { chat.messages = ChatWidgetFixture.messages }
@@ -261,18 +292,18 @@ struct AskSheet: View {
 
     private func answer(_ message: StockChatMessage) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            MarkdownText(message.text, options: message.options)
+            MarkdownText(message.text, options: message.options, sources: message.sources)
+                .environment(\.openURL, OpenURLAction { open($0, sources: message.sources) })
             if !message.sources.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     GlassEffectContainer(spacing: 8) {
                         HStack(spacing: 8) {
-                            ForEach(message.sources) { source in
-                                let reads = FilingLink.isFiling(source.url)
+                            ForEach(Array(message.sources.enumerated()), id: \.element.id) { index, source in
                                 Button {
-                                    if reads { filing = source } else { openURL(source.url) }
+                                    _ = open(source.url, sources: message.sources)
                                 } label: {
                                     HStack(spacing: 6) {
-                                        Image(systemName: reads ? "doc.text" : "arrow.up.right").font(.caption2.weight(.bold))
+                                        Text("\(index + 1)").font(.caption2.weight(.bold)).monospacedDigit().foregroundStyle(.tint)
                                         Text(source.title).lineLimit(1)
                                     }
                                     .font(.caption.weight(.medium))
@@ -290,6 +321,21 @@ struct AskSheet: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Citation chips and story cards: filings open in the native reader, wire stories in the story view, everything else in the in-app browser.
+    private func open(_ url: URL, sources: [StockSource]) -> OpenURLAction.Result {
+        let source = sources.first { $0.url == url }
+        if let source, FilingLink.isFiling(url) {
+            filing = source
+        } else if let source, let id = source.story {
+            openedStory = feedStore?.story(id: id) ?? Story(id: id, externalId: id, title: source.title, summary: "", body: "",
+                source: source.publisher ?? url.host() ?? "News", url: url, publishedAt: source.date ?? .now, receivedAt: .now,
+                category: "markets", priority: "normal", tickers: [], tags: ["markets"], agent: "market-feed", imageUrl: nil)
+        } else {
+            openURL(url)
+        }
+        return .handled
     }
 
     private var canSend: Bool { !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -398,15 +444,21 @@ struct MarkdownText: View {
         case item(marker: String, text: String, depth: Int)
         case code(String)
         case widget(ChatWidget)
+        case table(header: [String], rows: [[String]])
+        case stories([Int])
     }
 
     private let blocks: [Block]
     private let options: [ChatOption]
+    private let sources: [StockSource]
+    @State private var tableWidth: CGFloat = 0
+    @Environment(\.openURL) private var openURL
 
-    /// `options` are the quotes behind any ```options or ```strategy widget blocks in `source`.
-    init(_ source: String, options: [ChatOption] = []) {
+    /// `options` are the quotes behind any ```options or ```strategy widget blocks in `source`; `sources` resolve [n] citations and ```stories blocks.
+    init(_ source: String, options: [ChatOption] = [], sources: [StockSource] = []) {
         blocks = Self.parse(source)
         self.options = options
+        self.sources = sources
     }
 
     var body: some View {
@@ -414,14 +466,14 @@ struct MarkdownText: View {
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 switch block {
                 case .paragraph(let text):
-                    Text(Self.inline(text))
+                    Text(inline(text))
                 case .heading(let text):
-                    Text(Self.inline(text)).font(.headline).padding(.top, 4)
+                    Text(inline(text)).font(.headline).padding(.top, 4)
                 case .item(let marker, let text, let depth):
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(marker).monospacedDigit().foregroundStyle(.secondary)
                             .frame(minWidth: 18, alignment: .trailing)
-                        Text(Self.inline(text))
+                        Text(inline(text))
                     }
                     .padding(.leading, CGFloat(depth) * 18)
                 case .code(let text):
@@ -432,6 +484,10 @@ struct MarkdownText: View {
                         .background(.fill.quaternary, in: .rect(cornerRadius: 12, style: .continuous))
                 case .widget(let widget):
                     ChatWidgetView(widget: widget, options: options)
+                case .table(let header, let rows):
+                    table(header: header, rows: rows).padding(.vertical, 4)
+                case .stories(let numbers):
+                    stories(numbers)
                 }
             }
         }
@@ -440,16 +496,156 @@ struct MarkdownText: View {
         .fixedSize(horizontal: false, vertical: true)
     }
 
-    private static func inline(_ text: String) -> AttributedString {
-        (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
+    private func table(header: [String], rows: [[String]]) -> some View {
+        let numeric = header.indices.map { column in
+            column > 0 && rows.contains { Self.isNumeric($0[column]) } && rows.allSatisfy { Self.isNumeric($0[column]) || Self.isEmptyValue($0[column]) }
+        }
+        let nameWidth: CGFloat = header.count >= 4 ? 100 : 150
+        let grid = Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 0) {
+            GridRow {
+                ForEach(header.indices, id: \.self) { column in
+                    let parts = Self.headerParts(header[column])
+                    VStack(alignment: numeric[column] ? .trailing : .leading, spacing: 1) {
+                        Text(inline(parts.title))
+                        if let detail = parts.detail { Text(detail).foregroundStyle(.tertiary) }
+                    }
+                    .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
+                    .multilineTextAlignment(numeric[column] ? .trailing : .leading)
+                    .gridColumnAlignment(numeric[column] ? .trailing : .leading)
+                    .frame(maxWidth: column == 0 ? .infinity : 64, alignment: numeric[column] ? .trailing : .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(.bottom, 8)
+            ForEach(rows.indices, id: \.self) { row in
+                Divider().gridCellUnsizedAxes(.horizontal)
+                GridRow {
+                    ForEach(header.indices, id: \.self) { column in
+                        let value = rows[row][column]
+                        if column == 0 {
+                            let markers = value.matches(of: /\[\d{1,2}\]/).map { String($0.output) }.joined()
+                            HStack(alignment: .firstTextBaseline, spacing: 2) {
+                                Text(inline(value.replacing(/\s*\[\d{1,2}\]/, with: ""))).lineLimit(3)
+                                if !markers.isEmpty { Text(inline(markers)) }
+                                Spacer(minLength: 0)
+                            }
+                            .font(.footnote.weight(.medium))
+                            .frame(width: nameWidth, alignment: .leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                        } else {
+                            Text(inline(value))
+                                .font(numeric[column] ? .footnote.monospacedDigit() : .footnote)
+                                .foregroundStyle(Self.isEmptyValue(value) ? .tertiary : .primary)
+                                .lineLimit(1)
+                        }
+                    }
+                }
+                .padding(.vertical, 8)
+            }
+        }
+        .padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 3)
+        return ScrollView(.horizontal, showsIndicators: false) {
+            grid.frame(minWidth: tableWidth, alignment: .leading)
+        }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { tableWidth = $0 }
+        .background(.fill.quaternary, in: .rect(cornerRadius: 16, style: .continuous))
+    }
+
+    private func stories(_ numbers: [Int]) -> some View {
+        let picked = numbers.compactMap { sources.indices.contains($0 - 1) ? sources[$0 - 1] : nil }
+        return VStack(spacing: 0) {
+            ForEach(picked) { source in
+                Button { openURL(source.url) } label: {
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(source.title).font(.subheadline.weight(.semibold)).lineLimit(2).multilineTextAlignment(.leading)
+                            Text([source.publisher ?? source.url.host(), source.date?.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day())].compactMap { $0 }.joined(separator: " · "))
+                                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 12)
+                    .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                if source.id != picked.last?.id { Divider().padding(.leading, 14) }
+            }
+        }
+        .background(.fill.quaternary, in: .rect(cornerRadius: 16, style: .continuous))
+    }
+
+    private func inline(_ text: String) -> AttributedString {
+        var result = (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
+        let numbers = Set(text.matches(of: /\[(\d{1,2})\]/).compactMap { Int($0.1) })
+        guard !numbers.isEmpty, !sources.isEmpty else { return result }
+        for number in numbers {
+            while let range = result.range(of: "[\(number)]") {
+                guard sources.indices.contains(number - 1) else { result.removeSubrange(range); continue }
+                var chip = AttributedString("\u{202F}\(number)\u{202F}")
+                chip.font = .caption2.weight(.semibold).monospacedDigit()
+                chip.foregroundColor = .accentColor
+                chip.backgroundColor = Color.accentColor.opacity(0.14)
+                chip.baselineOffset = 1.5
+                chip.link = sources[number - 1].url
+                var spaced = AttributedString("\u{202F}")
+                spaced.append(chip)
+                result.replaceSubrange(range, with: spaced)
+            }
+        }
+        return result
+    }
+
+    private static func headerParts(_ header: String) -> (title: String, detail: String?) {
+        guard let match = header.firstMatch(of: /^(.+?)\s*\(([^()]+)\)\s*$/) else { return (header, nil) }
+        return (String(match.1), String(match.2))
+    }
+
+    private static func plain(_ cell: String) -> String {
+        cell.replacing(/\[\d{1,2}\]/, with: "").replacingOccurrences(of: "*", with: "").trimmingCharacters(in: .whitespaces)
+    }
+
+    private static func isNumeric(_ cell: String) -> Bool {
+        plain(cell).wholeMatch(of: /[-+−–~≈]?[$€£¥]?\(?[-+−]?[\d.,]+\)?\s*(%|x|×|bp|bps|pts?|[KMBT])?\s*(→\s*[$€£]?[\d.,]+%?)?/) != nil
+    }
+
+    private static func isEmptyValue(_ cell: String) -> Bool {
+        ["", "n/a", "na", "—", "-", "–", "n.m.", "nm"].contains(plain(cell).lowercased())
+    }
+
+    private static func cells(_ line: String) -> [String] {
+        var row = line.trimmingCharacters(in: .whitespaces)
+        if row.hasPrefix("|") { row.removeFirst() }
+        if row.hasSuffix("|") { row.removeLast() }
+        return row.split(separator: "|", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
+    }
+
+    /// A pipe table needs a header, a |---| separator and at least one row; short rows are padded so a slightly malformed table still renders as a grid.
+    private static func table(_ lines: [String]) -> Block? {
+        guard lines.count >= 3 else { return nil }
+        let header = cells(lines[0])
+        let separator = cells(lines[1])
+        guard header.count >= 2, separator.count == header.count,
+              separator.allSatisfy({ $0.wholeMatch(of: /:?-{2,}:?/) != nil }) else { return nil }
+        let rows = lines.dropFirst(2).map { line in
+            let row = cells(line)
+            return Array(row.prefix(header.count)) + Array(repeating: "", count: max(0, header.count - row.count))
+        }
+        return .table(header: header, rows: rows)
     }
 
     private static func parse(_ source: String) -> [Block] {
         var blocks: [Block] = []
         var paragraph: [String] = []
+        var tableLines: [String] = []
         func flush() {
             if !paragraph.isEmpty { blocks.append(.paragraph(paragraph.joined(separator: " "))) }
             paragraph = []
+        }
+        func flushTable() {
+            guard !tableLines.isEmpty else { return }
+            if let block = table(tableLines) { blocks.append(block) } else { blocks.append(contentsOf: tableLines.map { .paragraph($0) }) }
+            tableLines = []
         }
         var fence: (language: String, lines: [String])?
         for raw in source.components(separatedBy: .newlines) {
@@ -465,6 +661,12 @@ struct MarkdownText: View {
                 }
                 continue
             }
+            if line.hasPrefix("|") {
+                flush()
+                tableLines.append(line)
+                continue
+            }
+            flushTable()
             if line.hasPrefix("```") {
                 flush()
                 fence = (String(line.dropFirst(3)).trimmingCharacters(in: .whitespaces), [])
@@ -487,13 +689,34 @@ struct MarkdownText: View {
             }
         }
         flush()
+        flushTable()
         if let open = fence, let block = fenced(open.language, open.lines) { blocks.append(block) }
-        return blocks
+        return tableLast(blocks)
+    }
+
+    /// Answers end with their table and story cards; a closing note the model adds after the table moves above it.
+    private static func tableLast(_ blocks: [Block]) -> [Block] {
+        guard let table = blocks.lastIndex(where: { if case .table = $0 { true } else { false } }) else { return blocks }
+        let trailing = blocks[(table + 1)...]
+        let text = trailing.filter { block in
+            switch block {
+            case .paragraph, .item: true
+            default: false
+            }
+        }
+        guard !text.isEmpty else { return blocks }
+        let first = blocks.firstIndex(where: { if case .table = $0 { true } else { false } }) ?? table
+        return Array(blocks[..<first]) + text + Array(blocks[first...table]) + trailing.filter { !text.contains($0) }
     }
 
     /// A widget when the fence names one and its JSON parses; plain code otherwise. A broken widget block is dropped rather than shown as raw JSON.
     private static func fenced(_ language: String, _ lines: [String]) -> Block? {
         let body = lines.joined(separator: "\n")
+        if language.lowercased() == "stories" {
+            var seen = Set<Int>()
+            let numbers = body.matches(of: /\d{1,2}/).compactMap { Int($0.output) }.filter { seen.insert($0).inserted }
+            return numbers.isEmpty ? nil : .stories(Array(numbers.prefix(3)))
+        }
         if let widget = ChatWidget.parse(language: language, body: body) { return .widget(widget) }
         if ChatWidget.languages.contains(ChatWidget.normalize(language)) { return nil }
         return body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : .code(body)

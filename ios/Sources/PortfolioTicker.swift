@@ -10,6 +10,7 @@ struct PortfolioTicker: View {
     }
 
     let items: [Item]
+    var marketDate: Date? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
     @Environment(\.scenePhase) private var phase
@@ -21,6 +22,22 @@ struct PortfolioTicker: View {
     private var manual: Bool { reduceMotion || voiceOver }
 
     var body: some View {
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            let now = marketDate ?? context.date
+            VStack(alignment: .leading, spacing: 0) {
+                if MarketClock.session(on: now)?.contains(now) != true {
+                    HomeCardHeader(title: "US market closed") { Text("Latest values") }
+                        .padding(.horizontal, 12)
+                        .padding(.top, 12)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel("US market closed. Showing the latest available values.")
+                }
+                ticker
+            }
+        }
+    }
+
+    private var ticker: some View {
         Group {
             if manual {
                 ScrollView(.horizontal) { track }
@@ -78,7 +95,11 @@ struct PortfolioTicker: View {
                 Button(action: item.action) {
                     HStack(spacing: 7) {
                         Text(item.title).foregroundStyle(.primary)
-                        if !item.change.isEmpty { Text(item.change).foregroundStyle(item.tint) }
+                            .numericTextTransition(text: item.title)
+                        if !item.change.isEmpty {
+                            Text(item.change).foregroundStyle(item.tint)
+                                .numericTextTransition(text: item.change)
+                        }
                     }
                     .lineLimit(1)
                     .padding(.horizontal, 12)
@@ -139,15 +160,18 @@ struct CompactPortfolioTicker: View {
 
 #if DEBUG
 struct PortfolioTickerPreview: View {
+    @State private var open = CommandLine.arguments.contains("-tickerMarketOpen")
+
     var body: some View {
         NavigationStack {
             List {
+                Toggle("Market open", isOn: $open)
                 PortfolioTicker(items: [
                     .init(id: "portfolio", title: "$124,580.32", change: "+1.12%", tint: .green, action: {}),
                     .init(id: "AAPL", title: "AAPL", change: "+2.04%", tint: .green, action: {}),
                     .init(id: "MSFT", title: "MSFT", change: "+1.00%", tint: .green, action: {}),
                     .init(id: "SIE.DE", title: "SIE.DE", change: "−4.12%", tint: .red, action: {})
-                ])
+                ], marketDate: ISO8601DateFormatter().date(from: open ? "2026-10-19T15:00:00Z" : "2026-10-18T16:00:00Z"))
                 .padding(.horizontal, 4).homeCard()
                 .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 14, trailing: 16))
                 .listRowBackground(Color.clear).listRowSeparator(.hidden)

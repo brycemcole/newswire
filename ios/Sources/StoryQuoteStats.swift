@@ -15,11 +15,13 @@ struct StoryQuoteStats: View {
         HStack(spacing: 6) {
             Text(symbol).fontWeight(.semibold).foregroundStyle(.primary)
             if let quote = quotes[symbol] {
-                Text(QuoteFormat.percent(quote.changePercent)).foregroundStyle(QuoteFormat.color(quote.changePercent))
+                Text(QuoteFormat.percent(quote.changePercent))
+                    .numericTextTransition(value: quote.changePercent).foregroundStyle(QuoteFormat.color(quote.changePercent))
             }
             if let extended = quotes[symbol]?.extended {
                 Text(extended.session == "pre" ? "Pre" : "AH").foregroundStyle(.secondary)
-                Text(QuoteFormat.percent(extended.changePercent)).foregroundStyle(QuoteFormat.color(extended.changePercent))
+                Text(QuoteFormat.percent(extended.changePercent))
+                    .numericTextTransition(value: extended.changePercent).foregroundStyle(QuoteFormat.color(extended.changePercent))
             }
         }
         .font(.caption.monospaced()).monospacedDigit()

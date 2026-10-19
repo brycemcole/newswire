@@ -328,3 +328,17 @@ test('price watches and live activity tokens validate, persist and preserve olde
   assert.equal((await register({ price_watches: [watch], live_activities: [{ ...activity, watch_id: 'missing' }] })).status, 400);
   assert.equal((await register({ price_watches: [], live_activities: [] })).status, 201);
 });
+
+test('session alert preferences persist, preserve older clients and clear explicitly', async () => {
+  const token = 'f'.repeat(64), alert = { id: 'session-test', kind: 'preopen', minutes: 15 };
+  const register = fields => request('/v1/devices', 'reader', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token, environment: 'sandbox', ...fields }) });
+  assert.equal((await request('/v1/market-session', null)).status, 401);
+  assert.equal((await request('/v1/market-session')).status, 200);
+  assert.equal((await register({ session_alerts: [alert] })).status, 201);
+  assert.equal((await register({ stock_symbols: ['SPY'] })).status, 201);
+  const registered = async () => (await (await request('/v1/devices', 'writer')).json()).devices.find(d => d.token === token);
+  assert.deepEqual(JSON.parse((await registered()).session_alerts), [alert]);
+  assert.equal((await register({ session_alerts: [{ ...alert, minutes: -5 }] })).status, 400);
+  assert.equal((await register({ session_alerts: [] })).status, 201);
+  assert.deepEqual(JSON.parse((await registered()).session_alerts), []);
+});

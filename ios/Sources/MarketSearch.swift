@@ -360,9 +360,11 @@ struct MarketSearchSheet: View, Equatable {
     /// Opens the Ask sheet. Anything typed in the field is sent as the first question.
     private var askButton: some View {
         Button {
+            let prompt = trimmed
+            query = ""
             searching = false
             detent = .peek
-            onAsk(trimmed)
+            onAsk(prompt)
         } label: {
             Image(systemName: "message")
                 .font(.body.weight(.semibold))
@@ -699,6 +701,7 @@ struct MarketRow: View {
             VStack(alignment: .trailing, spacing: 3) {
                 Text(quote.map { QuoteFormat.price($0.price) } ?? "—")
                     .font(.subheadline.weight(.semibold)).monospacedDigit()
+                    .numericTextTransition(value: quote?.price)
                 ChangeBadge(percent: quote?.changePercent)
             }
             .frame(minWidth: 76, alignment: .trailing)
@@ -706,8 +709,6 @@ struct MarketRow: View {
         .padding(.horizontal, inset)
         .frame(minHeight: 60)
         .contentShape(.rect)
-        .contentTransition(.numericText())
-        .animation(.easeOut(duration: 0.2), value: quote)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibility)
     }
@@ -723,6 +724,7 @@ struct ChangeBadge: View {
 
     var body: some View {
         Text(percent.map(QuoteFormat.percent) ?? "—")
+            .numericTextTransition(value: percent)
             .font(.caption.weight(.bold)).monospacedDigit()
             .foregroundStyle(percent == nil ? Color.secondary : .white)
             .padding(.horizontal, 7)
@@ -783,9 +785,11 @@ struct IndexCard: View {
             SparkLine(spark: spark, fallbackUp: (quote?.changePercent ?? 0) >= 0).frame(height: 24)
             HStack(alignment: .firstTextBaseline) {
                 Text(quote.map { QuoteFormat.price($0.price) } ?? "—").font(.subheadline.weight(.semibold))
+                    .numericTextTransition(value: quote?.price)
                     .minimumScaleFactor(0.75)
                 Spacer(minLength: 4)
                 Text(quote.map { QuoteFormat.percent($0.changePercent) } ?? "")
+                    .numericTextTransition(value: quote?.changePercent)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(QuoteFormat.color(quote?.changePercent ?? 0))
                     .fixedSize()
@@ -797,7 +801,6 @@ struct IndexCard: View {
         .frame(width: 142, alignment: .leading)
         .contentShape(.rect(cornerRadius: 18))
         .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 18))
-        .contentTransition(.numericText())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(quote.map { "\(symbol), \($0.name), \(QuoteFormat.price($0.price)), \(QuoteFormat.percent($0.changePercent))" } ?? symbol)
     }
@@ -823,6 +826,7 @@ private struct EarningsRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             VStack(alignment: .trailing, spacing: 3) {
                 Text(QuoteFormat.price(quote.price)).font(.subheadline.weight(.semibold)).monospacedDigit()
+                    .numericTextTransition(value: quote.price)
                 ChangeBadge(percent: quote.changePercent)
             }
         }

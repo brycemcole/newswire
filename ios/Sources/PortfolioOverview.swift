@@ -112,6 +112,7 @@ struct PortfolioHoldingRow: View {
                 VStack(alignment: .trailing, spacing: 4) {
                     Text(holding.value.map { (holding.partialValue ? "Known " : "") + Money.text($0) } ?? "Unavailable")
                         .font(.body.weight(.semibold)).monospacedDigit()
+                        .numericTextTransition(value: holding.value)
                     if let gain = holding.gain {
                         Text((holding.estimated ? "≈" : "") + Money.signed(gain))
                             .font(.caption.weight(.medium)).monospacedDigit().foregroundStyle(Money.tint(gain))
@@ -162,6 +163,7 @@ struct PortfolioOverview: View {
                 Text(Money.text(selected?.value ?? snapshot.totalValue))
                     .font(.system(.largeTitle, design: .rounded).weight(.bold)).monospacedDigit()
                     .minimumScaleFactor(0.6).lineLimit(1)
+                    .numericTextTransition(value: selected?.value ?? snapshot.totalValue)
                 if let selected {
                     Text(selected.date.formatted(.dateTime.month(.abbreviated).day().year()))
                         .font(.caption).foregroundStyle(.secondary)
@@ -172,6 +174,7 @@ struct PortfolioOverview: View {
                     Text("Account gain · all time").font(.caption).foregroundStyle(.secondary)
                     Text((totals.approximate == true ? "≈" : "") + Money.signed(gain))
                         .font(.title3.weight(.semibold)).monospacedDigit().foregroundStyle(Money.tint(gain))
+                        .numericTextTransition(value: gain)
                     HStack(alignment: .top, spacing: 16) {
                         metric("Money in", Money.text(totals.contributed))
                         metric("Money out", Money.text(totals.withdrawn ?? 0))
@@ -203,6 +206,7 @@ struct PortfolioOverview: View {
                 let percent = selected.flatMap { series.percent(at: $0) } ?? (selected == nil ? series.percent : nil)
                 Text(Money.signed(change) + (percent.map { " (\(Money.percent($0)))" } ?? "") + " · Est. \(range.caption)")
                     .font(.caption.weight(.medium)).monospacedDigit().foregroundStyle(Money.tint(change))
+                    .numericTextTransition(value: change)
             }
             Picker("Performance range", selection: $performance.range) {
                 ForEach(PortfolioPerformance.ranges) { Text($0.rawValue).tag($0) }
@@ -273,6 +277,7 @@ struct PortfolioOverview: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title).font(.caption2).foregroundStyle(.secondary)
             Text(value).font(.subheadline.weight(.semibold)).monospacedDigit().foregroundStyle(tint ?? .primary)
+                .numericTextTransition(text: value)
                 .lineLimit(1).minimumScaleFactor(0.65)
         }
         .frame(maxWidth: .infinity, alignment: .leading)

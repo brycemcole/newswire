@@ -336,7 +336,7 @@ export async function evaluateForecastCandidate(db: DB, candidateId: string, now
 }
 
 function directionalScore(rows: any[]) {
-  const decided = rows.filter(r => r.tilt !== 'unavailable');
+  const decided = rows.filter(r => r.tilt === 'up' || r.tilt === 'down');
   const covered = decided.filter(r => r.direction !== 0);
   const sign = (s: string) => s === 'up' ? 1 : s === 'down' ? -1 : 0;
   const hit = (prediction: number, outcome: number) => prediction === outcome ? 1 : 0;
@@ -363,7 +363,7 @@ function compactForecast(row: any, evidence: { evidence: any[]; contradictions: 
   const hasOutcome = row.return_pct !== null && row.return_pct !== undefined && Number.isFinite(Number(row.return_pct));
   return { id: row.id, symbol: row.symbol, session_date: row.session_date, horizon: row.horizon, forecast_at: row.forecast_at,
     target_start_at: row.target_start_at, target_end_at: row.target_end_at, model_version: row.model_version, input_version: row.input_version,
-    score: row.score, tilt: row.tilt, probability_up: null,
+    score: row.score, tilt: row.tilt, probability_up: null, headline: row.headline ?? null, summary: row.summary ?? null,
     outcome: hasOutcome ? { baseline_price: row.baseline_price, baseline_at: row.baseline_at, endpoint_price: row.endpoint_price,
       endpoint_at: row.endpoint_at, return_pct: row.return_pct, direction: row.direction, source: row.outcome_source, source_retrieved_at: row.source_retrieved_at } : null,
     evidence: evidence.evidence, contradictions: evidence.contradictions, created_at: row.created_at };
@@ -398,6 +398,8 @@ export async function getResearch(db: DB, symbol: string) {
   if (!symbolOK(symbol)) invalid('symbol must be SPY or QQQ');
   const [forecasts, questions, activeModel] = await Promise.all([
     db.prepare(`SELECT f.id,f.symbol,f.session_date,f.horizon,f.forecast_at,f.target_start_at,f.target_end_at,f.model_version,f.input_version,f.score,f.tilt,f.created_at,
+      CASE WHEN json_valid(f.snapshot_json) THEN json_extract(f.snapshot_json,'$.pulse.call.headline') END AS headline,
+      CASE WHEN json_valid(f.snapshot_json) THEN json_extract(f.snapshot_json,'$.pulse.summary') END AS summary,
       f.price_only_direction,o.baseline_price,o.baseline_at,o.endpoint_price,o.endpoint_at,o.return_pct,o.direction,o.source AS outcome_source,o.source_retrieved_at
       FROM forecasts f LEFT JOIN forecast_outcomes o ON o.forecast_id=f.id WHERE f.symbol=? ORDER BY f.forecast_at DESC,f.session_date DESC LIMIT 300`).bind(symbol).all<any>(),
     db.prepare("SELECT id,query,reason,status,created_at,event_id FROM research_questions WHERE status IN ('open','queued') ORDER BY created_at DESC LIMIT 30").all<any>(),
@@ -413,7 +415,7 @@ export async function getResearch(db: DB, symbol: string) {
   }
   const probabilityRows = activeModel ? await db.prepare('SELECT forecast_id,probability_up FROM forecast_candidate_predictions WHERE candidate_id=?').bind(activeModel.id).all<any>() : { results: [] };
   const probabilityById = new Map(probabilityRows.results.map(row => [row.forecast_id, row.probability_up]));
-  const recent = rows.slice(0, 30).map(row => ({ ...compactForecast(row), probability_up: probabilityById.get(row.id) ?? null }));
+  const recent = rows.slice(0, 90).map(row => ({ ...compactForecast(row), probability_up: probabilityById.get(row.id) ?? null }));
   const latestDTO = latest ? { ...compactForecast(latest, latestDrivers), probability_up: probabilityById.get(latest.id) ?? null } : null;
   return { symbol, status: latest ? (latest.tilt === 'unavailable' ? 'limited' : 'available') : 'collecting',
     summary: latest ? `${latest.tilt} research tilt; experimental and uncalibrated` : 'Collecting frozen forecasts; no probability estimate is validated.',

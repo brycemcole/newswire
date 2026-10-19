@@ -174,6 +174,11 @@ extension NewswireAPI {
     func refresh(force: Bool = false) async {
         let symbol = symbol
         #if DEBUG
+        if CommandLine.arguments.contains("-predictionHistoryPreview") {
+            if let data = try? Data(contentsOf: URL.documentsDirectory.appending(path: "prediction-pulse.json")),
+               let pulse = try? NewswireAPI.decoder().decode(MarketPulse.self, from: data) { snapshots[symbol] = pulse }
+            return
+        }
         if CommandLine.arguments.contains("-pulseSample") { loadSample(symbol); return }
         #endif
         if !force, let at = loadedAt[symbol], at.timeIntervalSinceNow > -55 { return }
@@ -416,9 +421,12 @@ struct PulseDetail: View {
                 }
                 if let pulse = store.current {
                     Section { hero(pulse) }
+                    PredictionHistorySection(symbol: store.symbol).id("predictionHistory")
                     if let learning = pulse.learning {
-                        Section("Learning as it goes") {
-                            Text(learning.note).font(.caption).foregroundStyle(.secondary)
+                        Section {
+                            DisclosureGroup("Prediction learning") {
+                                Text(learning.note).font(.caption).foregroundStyle(.secondary)
+                            }
                         }
                     }
                     macroContext
@@ -471,8 +479,12 @@ struct PulseDetail: View {
                     }
                 }
             }
+            .scrollEdgeEffectStyle(.soft, for: .all)
             .onChange(of: store.current?.asOf) {
                 if CommandLine.arguments.contains("-pulseComingUp") { proxy.scrollTo("comingUp", anchor: .top) }
+                #if DEBUG
+                if CommandLine.arguments.contains("-predictionHistoryFocus") { proxy.scrollTo("predictionHistory", anchor: .top) }
+                #endif
             }
             }
             .navigationTitle("Market outlook")
@@ -560,26 +572,30 @@ struct PulseDetail: View {
 
     private func color(_ effect: String) -> Color { effect == "lower" ? .red : .green }
 
+    @ViewBuilder
     private func featured(_ item: MarketPulse.Driver) -> some View {
-        Button { open(item) } label: {
-            VStack(alignment: .leading, spacing: 10) {
-                Label(item.effect == "lower" ? "Pushing prices lower" : "Pushing prices higher", systemImage: item.effect == "lower" ? "arrow.down" : "arrow.up")
-                    .font(.caption.weight(.semibold)).foregroundStyle(color(item.effect))
-                Text(item.title).font(.headline).fixedSize(horizontal: false, vertical: true)
-                if let stat = item.stat {
-                    HStack(alignment: .firstTextBaseline, spacing: 10) {
-                        Text(stat.value).font(.system(size: 34, weight: .semibold, design: .rounded)).monospacedDigit()
-                        Text(stat.change).font(.headline).monospacedDigit().foregroundStyle(stat.change.hasPrefix("Expected") ? .secondary : color(item.effect))
-                    }
-                    Text(stat.label).font(.caption).foregroundStyle(.secondary)
+        let content = VStack(alignment: .leading, spacing: 10) {
+            Label(item.effect == "lower" ? "Pushing prices lower" : "Pushing prices higher", systemImage: item.effect == "lower" ? "arrow.down" : "arrow.up")
+                .font(.caption.weight(.semibold)).foregroundStyle(color(item.effect))
+            Text(item.title).font(.headline).fixedSize(horizontal: false, vertical: true)
+            if let stat = item.stat {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text(stat.value).font(.system(size: 34, weight: .semibold, design: .rounded)).monospacedDigit()
+                    Text(stat.change).font(.headline).monospacedDigit().foregroundStyle(stat.change.hasPrefix("Expected") ? .secondary : color(item.effect))
                 }
-                Text(item.detail).font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                if let name = item.source { sourceLine(name, item) }
+                Text(stat.label).font(.caption).foregroundStyle(.secondary)
             }
-            .padding(.vertical, 6)
-            .contentShape(.rect)
+            Text(item.detail).font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if let name = item.source { sourceLine(name, item) }
         }
-        .buttonStyle(.plain)
+        .padding(.vertical, 6)
+        .contentShape(.rect)
+
+        if item.kind == "news", item.url != nil {
+            Button { open(item) } label: { content }.buttonStyle(.plain)
+        } else {
+            content
+        }
     }
 
     private func sourceLine(_ name: String, _ item: MarketPulse.Driver) -> some View {
@@ -590,19 +606,23 @@ struct PulseDetail: View {
         .font(.caption).foregroundStyle(Color.wireAccent)
     }
 
+    @ViewBuilder
     private func driver(_ item: MarketPulse.Driver) -> some View {
-        Button { open(item) } label: {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: icon(item.kind)).foregroundStyle(color(item.effect)).frame(width: 22)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(item.title).font(.subheadline.weight(.medium)).fixedSize(horizontal: false, vertical: true)
-                    Text(item.detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    if let name = item.source { sourceLine(name, item) }
-                }
+        let content = HStack(alignment: .top, spacing: 12) {
+            Image(systemName: icon(item.kind)).foregroundStyle(color(item.effect)).frame(width: 22)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.title).font(.subheadline.weight(.medium)).fixedSize(horizontal: false, vertical: true)
+                Text(item.detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if let name = item.source { sourceLine(name, item) }
             }
-            .contentShape(.rect)
         }
-        .buttonStyle(.plain)
+        .contentShape(.rect)
+
+        if item.kind == "news", item.url != nil {
+            Button { open(item) } label: { content }.buttonStyle(.plain)
+        } else {
+            content
+        }
     }
 
     private func row(_ input: MarketPulse.Input) -> some View {

@@ -13,10 +13,12 @@ struct CompactWatchlistQuote: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             VStack(alignment: .trailing, spacing: 3) {
                 Text(quote.map { QuoteFormat.price($0.price) } ?? "—").font(.caption.weight(.semibold))
+                    .numericTextTransition(value: quote?.price)
                 Text(quote.map { QuoteFormat.percent($0.changePercent) } ?? " ")
                     .font(.caption2.weight(.semibold)).foregroundStyle(QuoteFormat.color(quote?.changePercent ?? 0))
+                    .numericTextTransition(value: quote?.changePercent)
             }
-            .monospacedDigit().lineLimit(1).contentTransition(.numericText())
+            .monospacedDigit().lineLimit(1)
             .fixedSize(horizontal: true, vertical: false)
         }
         .padding(.horizontal, 14).padding(.vertical, 11)

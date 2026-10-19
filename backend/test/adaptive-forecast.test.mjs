@@ -32,7 +32,7 @@ test('aggregate score delta cannot amplify correlated inputs', () => {
   assert.deepEqual(run(rows, { ...features, score_delta: 1000 }), run(rows, { ...features, score_delta: -1000 }));
   const learned = run(rows);
   assert.ok(Object.values(learned.weights).every(Number.isFinite));
-  assert.equal(learned.weights.news_points - 25, learned.weights.market_points - 35);
+  assert.equal(learned.weights.news_points - 25, learned.weights.market_points - 40);
 });
 test('targets preserve magnitude and volatility uses only outcomes known at each capture', () => {
   const small = rows.map(r => ({ ...r, return_pct: Number(r.id) < 20 ? r.return_pct : -0.001 }));
@@ -46,4 +46,14 @@ test('collecting leaves the live score intact and stale evidence stays unavailab
   assert.equal(adaptPulse(pulse, []).score, 73);
   assert.equal(adaptPulse({ ...pulse, status: 'stale', score: null }, rows).score, null);
   assert.equal(adaptPulse({ ...pulse, symbol: 'XLE' }, rows).learning, null);
+});
+
+
+test('warm-up reports checked predictions before weight training starts', () => {
+  const learning = run(rows.slice(0, 4));
+  assert.equal(learning.settled, 4);
+  assert.equal(learning.training_sessions, 0);
+  assert.match(learning.note, /4 saved predictions checked/);
+  assert.match(learning.note, /warm-up: 4\/20/);
+  assert.match(learning.note, /Predictions are active/);
 });

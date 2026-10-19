@@ -33,7 +33,7 @@ nonisolated struct MarketResearchResponse: Decodable, Sendable {
     nonisolated struct Forecast: Decodable, Sendable, Identifiable {
         enum CodingKeys: String, CodingKey {
             case id, symbol, sessionDate, horizon, forecastAt, targetStartAt, targetEndAt
-            case modelVersion, inputVersion, score, tilt, probabilityUp, outcome, evidence, contradictions
+            case modelVersion, inputVersion, score, tilt, probabilityUp, outcome, evidence, contradictions, headline, summary
         }
 
         let id: String
@@ -47,6 +47,8 @@ nonisolated struct MarketResearchResponse: Decodable, Sendable {
         let inputVersion: String
         let score: Double?
         let tilt: String
+        let headline: String?
+        let summary: String?
         let probabilityUp: Double?
         let outcome: Outcome?
         let evidence: [Evidence]
@@ -65,6 +67,8 @@ nonisolated struct MarketResearchResponse: Decodable, Sendable {
             inputVersion = try values.decode(String.self, forKey: .inputVersion)
             score = try values.decodeIfPresent(Double.self, forKey: .score)
             tilt = try values.decode(String.self, forKey: .tilt)
+            headline = try values.decodeIfPresent(String.self, forKey: .headline)
+            summary = try values.decodeIfPresent(String.self, forKey: .summary)
             probabilityUp = try values.decodeIfPresent(Double.self, forKey: .probabilityUp)
             outcome = try values.decodeIfPresent(Outcome.self, forKey: .outcome)
             evidence = try values.decodeIfPresent([Evidence].self, forKey: .evidence) ?? []
@@ -759,21 +763,9 @@ struct MarketResearchView: View {
     }
 
     private func recentSection(_ items: [MarketResearchResponse.Forecast]) -> some View {
-        Section("Recent frozen forecasts") {
+        Section("Previous predictions") {
             ForEach(items) { forecast in
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text(direction(forecast.tilt)).font(.headline)
-                        Spacer()
-                        if let score = forecast.score { Text("Index \(score.formatted(.number.precision(.fractionLength(1))))").font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
-                    }
-                    Text("\(display(forecast.horizon)) · target \(forecast.sessionDate) · \(forecast.forecastAt.formatted(date: .abbreviated, time: .shortened))")
-                        .font(.caption).foregroundStyle(.secondary)
-                    if let outcome = forecast.outcome { outcomeView(outcome) }
-                    if !forecast.evidence.isEmpty { forecastEvidence("Supporting evidence", items: forecast.evidence) }
-                    if !forecast.contradictions.isEmpty { forecastEvidence("Contradictions", items: forecast.contradictions) }
-                }
-                .padding(.vertical, 4)
+                SavedPredictionRow(forecast: forecast)
             }
         }
     }
@@ -880,6 +872,227 @@ struct MarketResearchView: View {
             failed = false
         } catch {
             if !Task.isCancelled { failureMessage = researchFailureMessage(error); failed = true }
+        }
+    }
+}
+
+private enum PredictionPeriod: String, CaseIterable, Identifiable {
+    case opening = "opening_gap", day = "open_to_close", overnight = "cutoff_to_open"
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .opening: "Opening"
+        case .day: "Trading day"
+        case .overnight: "Overnight"
+        }
+    }
+    var comparison: String {
+        switch self {
+        case .opening: "Morning price to the open. Earlier models used the previous close."
+        case .day: "The market open to the same day's close."
+        case .overnight: "Late trading to the next session's open."
+        }
+    }
+}
+
+struct SavedPredictionRow: View {
+    let forecast: MarketResearchResponse.Forecast
+    var showsPeriod = true
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @State private var expanded = false
+
+    private var sessionDay: Date? {
+        try? Date.ISO8601FormatStyle().parse(forecast.sessionDate + "T12:00:00Z")
+    }
+    private var direction: String {
+        switch forecast.tilt {
+        case "up": "Higher"
+        case "down": "Lower"
+        case "neutral": "No clear call"
+        default: "Unavailable"
+        }
+    }
+    private var period: String {
+        switch forecast.horizon {
+        case "opening_gap": forecast.modelVersion.hasSuffix("v1") ? "Previous close → open" : "Morning price → open"
+        case "cutoff_to_open": "Late trading → next open"
+        default: "Open → close"
+        }
+    }
+    private var result: String {
+        guard let outcome = forecast.outcome else { return "Pending" }
+        guard forecast.tilt == "up" || forecast.tilt == "down" else { return "Not scored" }
+        guard outcome.direction != 0 else { return "Flat" }
+        return outcome.direction == (forecast.tilt == "up" ? 1 : -1) ? "Correct" : "Missed"
+    }
+    private var resultColor: Color {
+        result == "Correct" ? .green : result == "Missed" ? .orange : .secondary
+    }
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $expanded) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(period).font(.subheadline.weight(.medium)).foregroundStyle(.primary)
+                if let headline = forecast.headline { Text("Original outlook: \(headline)").font(.subheadline.weight(.medium)) }
+                if let summary = forecast.summary { Text(summary).font(.subheadline) }
+                Text("Saved \(forecast.forecastAt.formatted(date: .abbreviated, time: .shortened))")
+                if let outcome = forecast.outcome {
+                    Text("\(outcome.baselinePrice.formatted(.number.precision(.fractionLength(2)))) → \(outcome.endpointPrice.formatted(.number.precision(.fractionLength(2))))")
+                    Text("\(outcome.baselineAt.formatted(date: .abbreviated, time: .shortened)) → \(outcome.endpointAt.formatted(date: .abbreviated, time: .shortened))")
+                    if let url = URL(string: outcome.source), url.scheme == "https" { Link("Price source", destination: url) }
+                }
+                Text("\(forecast.modelVersion) · index \(forecast.score?.formatted(.number.precision(.fractionLength(1))) ?? "—")")
+                if forecast.modelVersion != "forecast-adaptive-v2" {
+                    Text("Earlier model · excluded from current model training and accuracy.")
+                }
+            }
+            .font(.caption).foregroundStyle(.secondary).padding(.vertical, 8)
+        } label: {
+            VStack(alignment: .leading, spacing: 6) {
+                if typeSize.isAccessibilitySize {
+                    dateLabel
+                    HStack(alignment: .top) { predictionLabel; Spacer(); actualLabel }
+                } else {
+                    HStack(spacing: 12) {
+                        dateLabel.frame(width: 60, alignment: .leading)
+                        predictionLabel.frame(maxWidth: .infinity, alignment: .leading)
+                        actualLabel
+                    }
+                }
+                if showsPeriod { Text(period).font(.caption).foregroundStyle(.secondary) }
+            }
+            .foregroundStyle(.primary).padding(.vertical, 3)
+        }
+        #if DEBUG
+        .onAppear {
+            if let index = CommandLine.arguments.firstIndex(of: "-expandedPrediction"),
+               CommandLine.arguments.dropFirst(index + 1).first == forecast.id { expanded = true }
+        }
+        #endif
+    }
+
+    private var dateLabel: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if let day = sessionDay {
+                Text(day, format: .dateTime.weekday(.abbreviated)).font(.subheadline.weight(.semibold))
+                Text(day, format: .dateTime.month(.abbreviated).day()).font(.caption).foregroundStyle(.secondary)
+            } else { Text(forecast.sessionDate).font(.subheadline) }
+        }
+    }
+    private var predictionLabel: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(direction).font(.subheadline.weight(.medium))
+            if forecast.modelVersion != "forecast-adaptive-v2" {
+                Text("Earlier model").font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+    }
+    private var actualLabel: some View {
+        VStack(alignment: .trailing, spacing: 3) {
+            if let outcome = forecast.outcome {
+                Text("\(outcome.returnPct > 0 ? "+" : "")\(outcome.returnPct.formatted(.number.precision(.fractionLength(2))))%")
+                    .font(.subheadline.weight(.medium)).monospacedDigit()
+            } else { Text("—").font(.subheadline).foregroundStyle(.secondary) }
+            Text(result).font(.caption2.weight(.medium)).foregroundStyle(resultColor)
+        }
+    }
+}
+
+struct PredictionHistorySection: View {
+    let symbol: String
+    @State private var response: MarketResearchResponse?
+    @State private var failed = false
+    @State private var showAll = false
+    @State private var period = PredictionPeriod.opening
+
+    private var supported: Bool { ["SPY", "QQQ"].contains(symbol) }
+    private var forecasts: [MarketResearchResponse.Forecast] {
+        guard response?.symbol == symbol else { return [] }
+        return (response?.recent ?? []).filter { $0.horizon == period.rawValue }
+            .sorted { $0.sessionDate > $1.sessionDate }
+    }
+    private var currentResults: [MarketResearchResponse.Forecast] {
+        forecasts.filter { $0.modelVersion == "forecast-adaptive-v2" && $0.outcome != nil }
+    }
+    private var record: String {
+        let directional = currentResults.filter { ["up", "down"].contains($0.tilt) && $0.outcome?.direction != 0 }
+        guard !directional.isEmpty else { return "\(currentResults.count) checked" }
+        let correct = directional.filter { $0.outcome?.direction == ($0.tilt == "up" ? 1 : -1) }.count
+        return "\(correct) of \(directional.count) correct"
+    }
+
+    var body: some View {
+        if supported {
+            Section {
+                Picker("Forecast period", selection: $period) {
+                    ForEach(PredictionPeriod.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .listRowSeparator(.hidden)
+                if !forecasts.isEmpty {
+                    if !currentResults.isEmpty {
+                        HStack {
+                            Text("Current model")
+                            Spacer()
+                            Text(record).monospacedDigit()
+                        }
+                        .font(.caption).foregroundStyle(.secondary)
+                    }
+                    HStack(spacing: 12) {
+                        Text("Day").frame(width: 60, alignment: .leading)
+                        Text("Prediction").frame(maxWidth: .infinity, alignment: .leading)
+                        Text("Actual").padding(.trailing, 20)
+                    }
+                    .font(.caption).foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                    ForEach(showAll ? forecasts : Array(forecasts.prefix(5))) { forecast in
+                        SavedPredictionRow(forecast: forecast, showsPeriod: false)
+                    }
+                    if forecasts.count > 5 {
+                        Button(showAll ? "Show fewer days" : "Show all \(forecasts.count) days") { showAll.toggle() }
+                    }
+                } else if failed {
+                    Button("Couldn't load predictions · Retry") { Task { await refresh() } }
+                } else if response?.symbol == symbol {
+                    Text("No saved predictions for this period yet.").font(.subheadline).foregroundStyle(.secondary)
+                } else {
+                    ProgressView("Loading saved predictions…")
+                }
+            } header: { Text("Prediction history") }
+            footer: {
+                Text("\(period.comparison) Tap a day for the original outlook. Neutral calls aren't scored for accuracy.")
+            }
+            .task(id: symbol) {
+                showAll = false
+                #if DEBUG
+                if let index = CommandLine.arguments.firstIndex(of: "-predictionPeriod"),
+                   let raw = CommandLine.arguments.dropFirst(index + 1).first,
+                   let selected = PredictionPeriod(rawValue: raw) { period = selected }
+                #endif
+                await refresh()
+            }
+        }
+    }
+
+    @MainActor private func refresh() async {
+        failed = false
+        #if DEBUG
+        if CommandLine.arguments.contains("-predictionHistoryPreview") {
+            do {
+                let file = URL.documentsDirectory.appending(path: "prediction-history.json")
+                response = try NewswireAPI.decoder().decode(MarketResearchResponse.self, from: Data(contentsOf: file))
+            } catch { failed = true }
+            return
+        }
+        #endif
+        guard let baseURL = NewswireAPI.validatedURL(FeedStore.shared.serverURL) else { failed = true; return }
+        let requestedSymbol = symbol
+        do {
+            let result = try await NewswireAPI(baseURL: baseURL).marketResearch(symbol: requestedSymbol)
+            guard !Task.isCancelled, requestedSymbol == symbol else { return }
+            response = result
+        } catch {
+            if !Task.isCancelled { failed = true }
         }
     }
 }

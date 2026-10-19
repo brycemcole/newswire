@@ -27,7 +27,15 @@ nonisolated struct ArticlePage: Sendable {
     /// Bumped whenever a summary, image or article text lands. Only the story detail observes it.
     private(set) var revision = 0
     /// Emits the story URL whose results just changed, so a visible feed row can update itself without re-rendering the feed.
-    @ObservationIgnored let updates = PassthroughSubject<String, Never>()
+    @ObservationIgnored private var rowUpdates: [String: PassthroughSubject<Void, Never>] = [:]
+
+    /// One subject per story, so a result only wakes the row that shows it.
+    func updates(for key: String) -> PassthroughSubject<Void, Never> {
+        if let subject = rowUpdates[key] { return subject }
+        let subject = PassthroughSubject<Void, Never>()
+        rowUpdates[key] = subject
+        return subject
+    }
     @ObservationIgnored private(set) var summaries: [String: String] = [:]
     @ObservationIgnored private(set) var glances: [String: [String]] = [:]
     @ObservationIgnored private(set) var briefs: [String: String] = [:]
@@ -37,7 +45,9 @@ nonisolated struct ArticlePage: Sendable {
     @ObservationIgnored private var validated: Set<String> = []
     @ObservationIgnored private var stamps: [String: Date] = [:]
     /// Set by the feed while the list is moving; results wait for it to settle before they change a row.
-    @ObservationIgnored var scrolling = false
+    @ObservationIgnored var scrolling = false {
+        didSet { if !scrolling && oldValue { QuoteStore.shared.flushUpdates() } }
+    }
     /// Stories on screen, most recently shown first, then the stories just below them.
     @ObservationIgnored private var onScreen: [Story] = []
     @ObservationIgnored private var ahead: [Story] = []
@@ -385,7 +395,7 @@ nonisolated struct ArticlePage: Sendable {
     private func changed(_ key: String) {
         stamps[key] = .now
         revision += 1
-        updates.send(key)
+        rowUpdates[key]?.send()
         guard saving == nil else { return }
         saving = Task {
             try? await Task.sleep(for: .seconds(2))

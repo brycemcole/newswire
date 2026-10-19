@@ -27,13 +27,17 @@ test('saved research preserves evidence dates and opposing driver direction', as
   const snap = snapshot('2026-10-14T12:36:00Z', '2026-10-14T12:35:00Z');
   snap.inputs.prices.QQQ.previous_close_at = '2026-10-13T19:55:00Z';
   const item = { title: 'Energy supply improves', source: 'Source', url: 'https://example.com/energy', received_at: '2026-10-14T10:31:00Z', published_at: '2026-10-14T10:30:00Z', direction: 1 };
-  snap.pulse = { ...pulse, components: { ...pulse.components, news: { ...pulse.components.news, channels: [{ channel: 'energy', top: [item] }] } },
+  snap.pulse = { ...pulse, call: { headline: 'Expect a higher open' }, summary: 'Original saved explanation.', components: { ...pulse.components, news: { ...pulse.components.news, channels: [{ channel: 'energy', top: [item] }] } },
     drivers: [
       { kind: 'news', title: item.title, source: item.source, url: item.url, at: item.published_at, effect: 'higher', channel: 'energy' },
       { kind: 'news', title: 'Conflicting report', source: 'Source', url: 'https://example.com/conflict', at: '2026-10-14T10:40:00Z', effect: 'lower', detail: 'Supply risk' },
     ] };
   await forecast.captureForecast(db, { symbol: 'QQQ', snapshot: snap }, Date.parse('2026-10-14T12:37:00Z'));
   const research = await forecast.getResearch(db, 'QQQ');
+  assert.equal(research.recent[0].headline, 'Expect a higher open');
+  assert.equal(research.recent[0].summary, 'Original saved explanation.');
+  snap.pulse.summary = 'Changed after capture';
+  assert.equal((await forecast.getResearch(db, 'QQQ')).recent[0].summary, 'Original saved explanation.');
   assert.equal(research.latest.evidence.length, 1);
   assert.equal(research.latest.evidence[0].received_at, item.received_at);
   assert.equal(research.latest.evidence[0].at, item.published_at);
@@ -184,4 +188,18 @@ test('post-release opening forecasts use capture prices and reject stale or futu
   assert.equal(training.rows.some(r => r.id === captured.forecasts[0].id), false);
   const research = await forecast.getResearch(db, 'SPY');
   assert.equal(research.performance.horizons.opening_gap.count, 0);
+});
+
+
+test('neutral predictions retain outcomes but do not count as directional misses', async () => {
+  const snap = snapshot('2026-10-22T13:26:00Z', '2026-10-22T13:25:00Z');
+  const captured = await forecast.captureForecast(db, { symbol: 'QQQ', snapshot: snap }, Date.parse('2026-10-22T13:27:00Z'));
+  const id = captured.forecasts[0].id;
+  await db.prepare("UPDATE forecasts SET tilt='neutral' WHERE id=?").bind(id).run();
+  await db.prepare(`INSERT INTO forecast_outcomes VALUES (?,?,?,?,?,?,?,?,?,?)`).bind(id,100,'2026-10-22T13:30:00Z',101,'2026-10-22T20:00:00Z',1,1,'https://query1.finance.yahoo.com/v8/finance/chart/QQQ','2026-10-22T20:10:00Z','2026-10-22T20:10:00Z').run();
+  const research = await forecast.getResearch(db, 'QQQ');
+  assert.ok(research.recent.find(row => row.id === id).outcome);
+  assert.equal(research.performance.horizons.open_to_close.count, 1);
+  assert.equal(research.performance.horizons.open_to_close.scored, 0);
+  assert.equal(research.performance.horizons.open_to_close.hit_rate, null);
 });

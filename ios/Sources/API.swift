@@ -114,11 +114,12 @@ nonisolated struct APIError: Decodable, LocalizedError {
 }
 
 nonisolated enum WireError: LocalizedError {
-    case configuration, response, status(Int)
+    case configuration, response, sessionAlertsUnavailable, status(Int)
     var errorDescription: String? {
         switch self {
         case .configuration: "Enter an HTTPS server URL in Settings."
         case .response: "The server returned an unreadable response."
+        case .sessionAlertsUnavailable: "Saved on this device. The server needs the market-alert update before it can deliver these alerts."
         case .status(let code): "Server request failed (\(code)). Try again."
         }
     }
@@ -255,13 +256,17 @@ nonisolated struct NewswireAPI: Sendable {
         return try? Self.decoder().decode(StoryEnvelope.self, from: data).story
     }
 
-    func register(device: String, environment: String, symbols: [String] = [], muted: [String] = [], watches: [[String: Any]] = [], activities: [[String: Any]] = []) async throws {
+    func register(device: String, environment: String, symbols: [String] = [], muted: [String] = [], watches: [[String: Any]] = [], activities: [[String: Any]] = [], sessionAlerts: [[String: Any]] = []) async throws {
         var request = URLRequest(url: baseURL.appending(path: "v1/devices"), timeoutInterval: 20)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["token": device, "environment": environment, "stock_symbols": symbols, "muted_topics": muted, "price_watches": watches, "live_activities": activities])
-        let (_, response) = try await send(request)
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["token": device, "environment": environment, "stock_symbols": symbols, "muted_topics": muted, "price_watches": watches, "live_activities": activities, "session_alerts": sessionAlerts])
+        let (data, response) = try await send(request)
         guard (200..<300).contains(response.statusCode) else { throw WireError.status(response.statusCode) }
+        if !sessionAlerts.isEmpty {
+            let receipt = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            guard receipt?["session_alerts_registered"] as? Bool == true else { throw WireError.sessionAlertsUnavailable }
+        }
     }
 }
 

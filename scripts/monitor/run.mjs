@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { notify, wake } from './apns.mjs';
 import { syncCalendar } from './calendar.mjs';
 import { publish } from './publish.mjs';
-import { classifierUsage } from './jev.mjs';
+import { classifierIdentity, classifierUsage } from './jev.mjs';
 import { classifyImpacts } from './impacts.mjs';
 import { load, save, statePath } from './state.mjs';
 import * as crypto from './rules/crypto.mjs';
@@ -119,7 +119,7 @@ failures.push(...(impacts?.failures ?? []));
 const report = {
   checked: selected.map(rule => rule.id),
   mode: seed ? 'seed' : dryRun ? 'dry-run' : 'publish',
-  classifier: 'zen:jev-1.13 (free first, paid fallback)',
+  classifier: classifierIdentity,
   classifier_calls: classifierUsage(),
   impacts: impacts && { calls: impacts.calls, moving: impacts.moving, posted: impacts.posted, backlog: impacts.backlog },
   backfill_hours: lookbackHours ?? null,

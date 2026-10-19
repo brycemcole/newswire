@@ -14,8 +14,12 @@ export interface MarketInput {
 // Deterministic price inputs. A move of one "typical" 24-hour size gives about three quarters of the input's points;
 // the 1-hour move uses a third of that size so a sudden spike registers before the day's change catches up.
 const instruments = [
-  { id: 'futures', label: 'S&P 500 futures', symbol: 'ES=F', unit: 'pct', typical: 0.9, points: 8, direction: 1, up: 1, down: 1, stale: 3, reason: 'Overnight and intraday futures direction',
+  { id: 'futures', label: 'S&P 500 futures', symbol: 'ES=F', unit: 'pct', typical: 0.6, points: 16, direction: 1, up: 1, down: 1, stale: 3, reason: 'Overnight futures are the best single read on the next open and already price in recent headlines',
     exposure: { SPY: 1, QQQ: 1.1, XLE: 0.6, DAL: 1.1 } },
+  { id: 'nasdaq', label: 'Nasdaq 100 futures', symbol: 'NQ=F', unit: 'pct', typical: 0.9, points: 6, direction: 1, up: 1, down: 1, stale: 3, reason: 'Tech-heavy futures confirm or contradict the S&P move',
+    exposure: { SPY: 1, QQQ: 1.3, XLE: 0.4, DAL: 0.8 } },
+  { id: 'smallcaps', label: 'Russell 2000 futures', symbol: 'RTY=F', unit: 'pct', typical: 1, points: 4, direction: 1, up: 1, down: 1, stale: 3, reason: 'Small caps show how broad the overnight move is',
+    exposure: { SPY: 0.9, QQQ: 0.7, XLE: 1, DAL: 1.2 } },
   { id: 'oil', label: 'WTI crude', symbol: 'CL=F', unit: 'pct', typical: 2.5, points: 8, direction: -1, up: 1, down: 1, stale: 3, reason: 'Rising crude raises costs; falling crude eases them',
     exposure: { SPY: 1, QQQ: 0.8, XLE: -1.5, DAL: 1.8 } },
   { id: 'vix', label: 'VIX', symbol: '^VIX', unit: 'pct', typical: 8, points: 8, direction: -1, up: 1, down: 0.7, stale: 3, reason: 'Rising implied volatility reflects demand for protection',
@@ -32,6 +36,12 @@ const instruments = [
     exposure: { SPY: 1, QQQ: 0.9, XLE: 0.8, DAL: 1 } },
   { id: 'asia', label: 'Nikkei 225', symbol: '^N225', unit: 'pct', typical: 1.3, points: 3, direction: 1, up: 1, down: 1, stale: 18, reason: "Asia's session sets the overnight tone",
     exposure: { SPY: 1, QQQ: 1.1, XLE: 0.6, DAL: 0.8 } },
+  { id: 'china', label: 'Hang Seng', symbol: '^HSI', unit: 'pct', typical: 1.3, points: 3, direction: 1, up: 1, down: 1, stale: 18, reason: "Hong Kong trades through Asia's day and reflects China and global risk appetite",
+    exposure: { SPY: 1, QQQ: 1.1, XLE: 0.8, DAL: 0.7 } },
+  { id: 'germany', label: 'DAX', symbol: '^GDAXI', unit: 'pct', typical: 1, points: 3, direction: 1, up: 1, down: 1, stale: 18, reason: 'Germany is the most cyclical large European market and leads the US open',
+    exposure: { SPY: 1, QQQ: 0.9, XLE: 0.8, DAL: 1 } },
+  { id: 'gold', label: 'Gold', symbol: 'GC=F', unit: 'pct', typical: 1, points: 3, direction: -1, up: 0.7, down: 0.5, stale: 3, reason: 'A sharp rush into gold signals demand for safety',
+    exposure: { SPY: 1, QQQ: 0.9, XLE: 0.4, DAL: 0.8 } },
   { id: 'copper', label: 'Copper', symbol: 'HG=F', unit: 'pct', typical: 1.5, points: 3, direction: 1, up: 1, down: 1, stale: 3, reason: 'Copper tracks expectations for global industrial demand',
     exposure: { SPY: 1, QQQ: 0.8, XLE: 1.2, DAL: 0.8 } },
   { id: 'bitcoin', label: 'Bitcoin', symbol: 'BTC-USD', unit: 'pct', typical: 3, points: 3, direction: 1, up: 1, down: 1, stale: 3, reason: 'Trades around the clock, so it carries risk appetite through weekends',
@@ -160,7 +170,7 @@ export function scoreMarket(inputs: MarketInput[] | undefined, symbol: string) {
   });
   const live = scored.filter(i => i.status === 'live').length;
   return { status: live >= 3 ? 'available' as const : 'unavailable' as const, live_inputs: live,
-    points: live >= 3 ? round(clamp(scored.reduce((sum, i) => sum + i.points, 0), 35)) : 0, inputs: scored };
+    points: live >= 3 ? round(clamp(scored.reduce((sum, i) => sum + i.points, 0), 40)) : 0, inputs: scored };
 }
 interface Rule {
   id: string; factor: Factor; direction: number; reason: string;
@@ -277,11 +287,13 @@ export function calculatePulse(stories: PulseStory[], asOf: string, symbol = 'SP
   // Jev's per-headline reads replace the keyword rules whenever they are available.
   const read = scoreImpacts(extras.impacts, now, symbol);
   const useRead = Boolean(read && read.classified);
-  const newsPoints = useRead ? read!.points : factors.reduce((sum, f) => sum + f.points, 0);
-  const newsSignal = useRead ? read!.channels.some(c => Math.abs(c.points) >= 0.1) : evidence.length > 0;
-  const newsStatus = truncated ? 'incomplete' : !news.length && !useRead ? 'no_coverage' : !useRead && age! > pulseModel.staleAfterHours ? 'stale' : !newsSignal ? 'no_signal' : 'available';
   const market = scoreMarket(extras.market, symbol);
   const marketLive = market?.status === 'available';
+  // Headlines from the last few days are already in live futures, so counting both double-counts old news against the market's verdict.
+  const futuresLive = Boolean(market?.inputs.some(i => i.id === 'futures' && i.status === 'live'));
+  const newsPoints = (useRead ? read!.points : factors.reduce((sum, f) => sum + f.points, 0)) * (futuresLive ? 0.5 : 1);
+  const newsSignal = useRead ? read!.channels.some(c => Math.abs(c.points) >= 0.1) : evidence.length > 0;
+  const newsStatus = truncated ? 'incomplete' : !news.length && !useRead ? 'no_coverage' : !useRead && age! > pulseModel.staleAfterHours ? 'stale' : !newsSignal ? 'no_signal' : 'available';
   const calendar = scoreCalendar(extras.calendar, now, symbol, extras.calendarRequiresVintage);
   const earnings = scoreEarnings(extras.earnings?.events, now, symbol);
   const calendarPoints = (calendar?.points ?? 0) + (earnings?.points ?? 0);
@@ -310,7 +322,24 @@ export function calculatePulse(stories: PulseStory[], asOf: string, symbol = 'SP
   };
 }
 
+const liveInputCache = new WeakMap<D1Database, Map<number, Awaited<ReturnType<typeof readPulseInputs>>>>();
+
 async function loadPulseInputs(db: D1Database, asOf: string, historyHours: number) {
+  const now = pulseTime(asOf), wall = Date.now();
+  if (now > wall) throw new Error('as_of cannot be in the future');
+  if (wall - now > 5000) return readPulseInputs(db, asOf, historyHours);
+  let cache = liveInputCache.get(db);
+  if (!cache) { cache = new Map(); liveInputCache.set(db, cache); }
+  const saved = cache.get(historyHours);
+  if (saved && now >= saved.now && wall - saved.now < 120000) return saved;
+  const inputs = await readPulseInputs(db, asOf, historyHours);
+  if (!inputs.impacts) return inputs;
+  if (cache.size >= 4) cache.delete(cache.keys().next().value!);
+  cache.set(historyHours, inputs);
+  return inputs;
+}
+
+async function readPulseInputs(db: D1Database, asOf: string, historyHours: number) {
   const now = pulseTime(asOf);
   if (now > Date.now()) throw new Error('as_of cannot be in the future');
   const iso = new Date(now).toISOString(), start = new Date(now - (pulseModel.windowHours + historyHours) * hour).toISOString();
