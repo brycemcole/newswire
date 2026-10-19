@@ -105,8 +105,8 @@ final class PushDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCen
         let realItems = Set(store.items.filter { $0.environment == .production }.map(\.id))
         let symbols = Set(store.snapshot.positions.filter { realItems.contains($0.itemID) && $0.option == nil && $0.quantity != 0 }.map { $0.symbol.uppercased() }).sorted()
         do {
-            try await NewswireAPI(baseURL: url).register(device: device, environment: environment, symbols: symbols, muted: AlertTopic.muted.sorted(), watches: PriceWatchStore.shared.registration, activities: PriceWatchStore.shared.activityRegistration)
-            UserDefaults.standard.set("Synced: \(symbols.count) held stocks", forKey: "pushServerStatus")
+            try await NewswireAPI(baseURL: url).register(device: device, environment: environment, symbols: symbols, muted: AlertTopic.muted.sorted(), watches: PriceWatchStore.shared.registration, activities: PriceWatchStore.shared.activityRegistration, sessionAlerts: SessionAlertStore.shared.registration)
+            UserDefaults.standard.set("Synced: \(symbols.count) held stocks · \(SessionAlertStore.shared.alerts.count) market alerts", forKey: "pushServerStatus")
         }
         catch {
             UserDefaults.standard.set("Sync failed: \(error.localizedDescription)", forKey: "pushServerStatus")

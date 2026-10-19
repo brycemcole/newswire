@@ -26,19 +26,19 @@ export function makeFeatures(snapshot: any): Features {
     score_available: Number.isFinite(score) ? 1 : 0,
     news_points: valid && news?.status === 'available' ? Number(news.points ?? 0) / 25 : 0,
     news_available: valid && news?.status === 'available' ? 1 : 0,
-    market_points: valid && market?.status === 'available' ? Number(market.points ?? 0) / 35 : 0,
+    market_points: valid && market?.status === 'available' ? Number(market.points ?? 0) / 40 : 0,
     market_available: valid && market?.status === 'available' ? 1 : 0,
     earnings_points: Number(pulse.components?.earnings?.points ?? 0) / 10,
     calendar_points: Number(calendar?.points ?? 0) / 10,
     story_count: Math.log1p(Math.max(0, Number(pulse.coverage?.headline_stories ?? 0))) / 5,
-    market_coverage: Math.max(0, Math.min(1, Number(market?.live_inputs ?? 0) / 11)),
+    market_coverage: Math.max(0, Math.min(1, Number(market?.live_inputs ?? 0) / 16)),
   };
 }
 
 export function forecastTilt(features: Features): { score: number | null; tilt: 'up' | 'down' | 'neutral' | 'unavailable'; probabilities: null } {
   const available = features.score_available || features.news_available || features.market_available;
   if (!available) return { score: null, tilt: 'unavailable', probabilities: null };
-  const score = Math.max(0, Math.min(100, Math.round((50 + 25 * (features.news_points ?? 0) + 35 * (features.market_points ?? 0) + 10 * (features.calendar_points ?? 0) + 10 * (features.earnings_points ?? 0)) * 100) / 100));
+  const score = Math.max(0, Math.min(100, Math.round((50 + 25 * (features.news_points ?? 0) + 40 * (features.market_points ?? 0) + 10 * (features.calendar_points ?? 0) + 10 * (features.earnings_points ?? 0)) * 100) / 100));
   const tilt = score >= 55 ? 'up' : score <= 45 ? 'down' : 'neutral';
   return { score, tilt, probabilities: null };
 }

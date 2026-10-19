@@ -146,10 +146,11 @@ struct PortfolioCard: View {
                     Text(Money.text(today?.last ?? store.snapshot.totalValue))
                         .font(.system(.title3, design: .rounded).weight(.bold).monospacedDigit())
                         .lineLimit(1).minimumScaleFactor(0.6)
-                        .contentTransition(.numericText())
+                        .numericTextTransition(value: today?.last ?? store.snapshot.totalValue)
                     if let today {
                         HStack(spacing: 4) {
                             Text(today.percent.map(Money.percent) ?? "—").foregroundStyle(Money.tint(today.change))
+                                .numericTextTransition(value: today.percent)
                             Text("Today").foregroundStyle(.secondary)
                         }
                         .font(.caption.weight(.semibold).monospacedDigit())
@@ -208,8 +209,7 @@ struct PortfolioCard: View {
             HStack(alignment: .firstTextBaseline) {
                 Text(Money.text(value))
                     .font(.system(.title, design: .rounded).weight(.bold).monospacedDigit())
-                    .contentTransition(.numericText())
-                    .animation(.easeOut(duration: 0.15), value: value)
+                    .numericTextTransition(value: value)
                 Spacer()
                 if let selected {
                     Text(selected.date.formatted(shown.intraday ? .dateTime.month(.abbreviated).day().hour().minute() : .dateTime.month(.abbreviated).day().year()))
@@ -233,10 +233,10 @@ struct PortfolioCard: View {
         HStack(spacing: 6) {
             Text(Money.signed(change) + (percent.map { " (" + Money.percent($0) + ")" } ?? ""))
                 .foregroundStyle(Money.tint(change))
+                .numericTextTransition(value: change)
             Text(label).foregroundStyle(.secondary)
         }
         .font(.subheadline.weight(.semibold).monospacedDigit())
-        .contentTransition(.numericText())
     }
 
     @ViewBuilder

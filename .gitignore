@@ -20,3 +20,4 @@ ios/Newswire.xcodeproj/
 
 # Local UI screenshots (see AGENTS.md)
 screenshots/
+backend/node/worker.mjs

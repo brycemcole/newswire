@@ -69,8 +69,8 @@ function detail(id, preserveAction = null) {
   state.selected = id; render();
   const index = state.stories.findIndex((story) => story.id === id);
   const controls = `<div class="report-controls"><button id="report-prev" data-inspector-action="previous" ${index === 0 ? 'disabled' : ''}>← PREVIOUS</button><span id="report-position">${index + 1} OF ${state.stories.length} LOADED</span><button id="report-next" data-inspector-action="next" ${index === state.stories.length - 1 ? 'disabled' : ''}>NEXT →</button><button id="report-close" class="close-detail" data-inspector-action="close">CLOSE</button></div>`;
-  const url = new URL(s.url);
-  const sourceLink = ['https:', 'http:'].includes(url.protocol) ? `<a href="${escape(url.href)}" target="_blank" rel="noopener noreferrer">OPEN ORIGINAL SOURCE ↗</a>` : '';
+  const url = URL.canParse(s.url) ? new URL(s.url) : null;
+  const sourceLink = url && ['https:', 'http:'].includes(url.protocol) ? `<a href="${escape(url.href)}" target="_blank" rel="noopener noreferrer">OPEN ORIGINAL SOURCE ↗</a>` : '';
   $('#detail').innerHTML = `<div class="detail-label">STORY INSPECTOR <span>02</span></div>${controls}<article class="report"><span class="eyebrow">${escape(s.category.toUpperCase())} / ${escape(s.priority.toUpperCase())}</span><h2>${escape(s.title)}</h2><p class="summary">${escape(s.summary)}</p><div class="body">${escape(s.body)}</div><dl><dt>SOURCE</dt><dd>${escape(s.source)}</dd><dt>PUBLISHED / UTC</dt><dd>${escape(new Date(s.published_at).toUTCString())}</dd><dt>REPORTING AGENT</dt><dd>${escape(s.agent)}</dd>${s.tags.length ? `<dt>TAGS</dt><dd>${s.tags.map(escape).join(' / ')}</dd>` : ''}</dl>${sourceLink}</article>`;
   $('#detail').classList.add('open');
   $('#detail').scrollTop = 0;
@@ -104,7 +104,7 @@ $('#priority').onchange = () => { state.priority = $('#priority').value; filterC
 $('#refresh').onclick = () => load();
 $('#load-more').onclick = () => load(true);
 $('#new-stories').onclick = () => { window.scrollTo({ top: 0, behavior: 'instant' }); load(); };
-function revealSelection() { document.querySelector(`#stories [data-id="${state.selected}"]`)?.scrollIntoView({ block: 'nearest' }); }
+function revealSelection() { document.querySelector(`#stories [data-id="${CSS.escape(state.selected || '')}"]`)?.scrollIntoView({ block: 'nearest' }); }
 document.addEventListener('keydown', (event) => {
   if (event.metaKey || event.ctrlKey || event.altKey) return;
   if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName) || $('#settings').open) return;

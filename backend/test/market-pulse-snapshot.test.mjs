@@ -22,6 +22,59 @@ const impact = { id: 'impact-1', title: 'Unexpected energy supply disruption', s
   published_at: '2026-10-12T10:00:00Z', received_at: '2026-10-12T10:01:00Z', direction: -1, channel: 'energy', size: 'major', confidence: 0.8,
   classified_at: '2026-10-12T10:02:00Z' };
 
+test('live inputs reuse reads across symbols for two minutes, then see new stories', async t => {
+  let now = Date.parse(asOf);
+  t.mock.method(Date, 'now', () => now);
+  const rows = [wireStory], db = database(rows, [impact]);
+  let reads = 0;
+  const prepare = db.prepare;
+  db.prepare = sql => { reads += 1; return prepare(sql); };
+  const first = await loadPulseSnapshot(db, new Date(now).toISOString(), 'SPY');
+  now += 60000;
+  rows.push({ ...wireStory, id: 'story-2' });
+  const second = await loadPulseSnapshot(db, new Date(now).toISOString(), 'QQQ');
+  assert.equal(reads, 2);
+  assert.equal(second.inputs.stories.length, 1);
+  assert.equal(second.as_of, first.as_of);
+  assert.equal(second.pulse.symbol, 'QQQ');
+  now += 60000;
+  const fresh = await loadPulseSnapshot(db, new Date(now).toISOString());
+  assert.equal(reads, 4);
+  assert.equal(fresh.inputs.stories.length, 2);
+  assert.notEqual(fresh.as_of, first.as_of);
+  await loadPulseSnapshot(database(), new Date(now).toISOString());
+  assert.equal((await loadPulseSnapshot(database(), new Date(now).toISOString())).inputs.stories.length, 0);
+});
+
+test('historical requests and different history windows never reuse live inputs', async t => {
+  const now = Date.parse(asOf);
+  t.mock.method(Date, 'now', () => now);
+  const db = database([wireStory], [impact]);
+  let reads = 0;
+  const prepare = db.prepare;
+  db.prepare = sql => { if (!sql.includes('forecast_outcomes')) reads += 1; return prepare(sql); };
+  await loadPulseSnapshot(db, new Date(now).toISOString());
+  await loadPulse(db, new Date(now).toISOString(), 'SPY', undefined, 12);
+  assert.equal(reads, 4);
+  await loadPulseSnapshot(db, new Date(now - 60000).toISOString());
+  await loadPulseSnapshot(db, new Date(now - 60000).toISOString());
+  assert.equal(reads, 8);
+});
+
+test('an unavailable impact store is retried instead of caching missing coverage', async t => {
+  const now = Date.parse(asOf);
+  t.mock.method(Date, 'now', () => now);
+  const db = database([wireStory], [impact]), prepare = db.prepare;
+  let fail = true;
+  db.prepare = sql => {
+    if (fail && sql.includes('pulse_impacts')) return { bind() { return this; }, async all() { throw new Error('Unavailable'); } };
+    return prepare(sql);
+  };
+  assert.equal((await loadPulseSnapshot(db, asOf)).inputs.impacts.length, 0);
+  fail = false;
+  assert.equal((await loadPulseSnapshot(db, asOf)).inputs.impacts.length, 1);
+});
+
 test('late classifications enter an as-of score only once classified_at is reached', () => {
   const late = { ...impact, classified_at: '2026-10-12T11:00:01Z' };
   const before = calculatePulse([], asOf, 'SPY', false, { impacts: [late] });

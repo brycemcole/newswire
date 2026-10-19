@@ -1,3 +1,4 @@
+import { marketSchedule, validSessionAlerts } from './market-session';
 import { AttestError, checkChallenge, fromBase64, makeChallenge, sha256, toBase64, verifyAssertion, verifyAttestation } from './attest';
 import { DataError, dataRoute, mcpRoute, shipAreas, pulseCalendar, pulseEarnings, refreshEarnings, storeEconEvents, storeEconHistory, storeEconSeries, storePublicSources } from './data';
 import { quotes, resolve, type Mention } from './quotes';
@@ -22,6 +23,8 @@ interface Env {
   BRAIN_AI_MODEL?: string;
   FRED_API_KEY?: string;
   COMPUTE?: DurableObjectNamespace;
+  ORIGIN_URL?: string;
+  ORIGIN_TOKEN?: string;
 }
 
 const categories = ['general', 'markets', 'technology', 'economy', 'politics', 'world', 'science'];
@@ -262,7 +265,7 @@ async function list(url: URL, env: Env) {
       if (q.cursor.length > 256 || !/^[A-Za-z0-9_-]+$/.test(q.cursor)) invalid('Invalid cursor');
       const cursor = JSON.parse(atob(q.cursor.replace(/-/g, '+').replace(/_/g, '/')));
       if (!Array.isArray(cursor) || cursor.length !== 2 || typeof cursor[1] !== 'string' || !uuid.test(cursor[1]) || timestamp(cursor[0]) !== cursor[0]) invalid('Invalid cursor');
-      where.push('(published_at < ? OR (published_at = ? AND id < ?))'); args.push(cursor[0], cursor[0], cursor[1]);
+      where.push('(published_at, id) < (?, ?)'); args.push(cursor[0], cursor[1]);
     } catch { invalid('Invalid cursor'); }
   }
   const { results } = await env.DB.prepare(`SELECT * FROM stories ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY published_at DESC, id DESC LIMIT ?`).bind(...args, limit + 1).all();
@@ -478,9 +481,14 @@ async function route(request: Request, env: Env, ctx?: ExecutionContext, ai?: AI
     throw new ApiError(404, 'not_found', 'AI route not found');
   }
   if (path.startsWith('/v1/brain/')) return brainRoute(request, url, path, env);
+  if (path === '/v1/market-session') {
+    if (request.method !== 'GET') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
+    query(url.searchParams, []);
+    return json(marketSchedule());
+  }
   if (path === '/v1/devices') {
     query(url.searchParams, []);
-    if (request.method === 'GET') return json({ devices: (await env.DB.prepare('SELECT token, environment, stock_symbols, muted_topics, price_watches, live_activities FROM devices').all()).results });
+    if (request.method === 'GET') return json({ devices: (await env.DB.prepare('SELECT token, environment, stock_symbols, muted_topics, price_watches, live_activities, session_alerts FROM devices').all()).results });
     if (request.method === 'POST') {
       const data = await readBody(request) as Record<string, unknown>;
       const token = text(data?.token, 'token', 200).toLowerCase();
@@ -492,6 +500,8 @@ async function route(request: Request, env: Env, ctx?: ExecutionContext, ai?: AI
       if (muted !== null && (!Array.isArray(muted) || muted.length > 40 || muted.some(t => typeof t !== 'string' || !/^[a-z-]{1,30}$/.test(t)))) invalid('Invalid muted_topics');
       const watches = data.price_watches;
       const activities = data.live_activities;
+      const sessionAlerts = data.session_alerts;
+      if (sessionAlerts !== undefined && !validSessionAlerts(sessionAlerts)) invalid('Invalid session_alerts');
       if (watches !== undefined && (!Array.isArray(watches) || watches.length > 20 || watches.some(w =>
         !w || typeof w !== 'object' || typeof w.id !== 'string' || !/^[a-zA-Z0-9-]{1,64}$/.test(w.id) ||
         typeof w.symbol !== 'string' || !/^[A-Z0-9.^=-]{1,30}$/.test(w.symbol) || !['above', 'below'].includes(w.direction) ||
@@ -502,9 +512,9 @@ async function route(request: Request, env: Env, ctx?: ExecutionContext, ai?: AI
         typeof a.expires_at !== 'number' || !Number.isInteger(a.expires_at) || a.expires_at > Date.now() / 1000 + 8 * 3600 + 60 ||
         !Array.isArray(watches) || !watches.some(w => w.id === a.watch_id)))) invalid('Invalid live_activities');
       const now = new Date().toISOString();
-      await env.DB.prepare('INSERT INTO devices (token, environment, created_at, updated_at, stock_symbols, muted_topics, price_watches, live_activities) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(token) DO UPDATE SET environment = excluded.environment, updated_at = excluded.updated_at, stock_symbols = excluded.stock_symbols, muted_topics = CASE WHEN ? THEN excluded.muted_topics ELSE devices.muted_topics END, price_watches = CASE WHEN ? THEN excluded.price_watches ELSE devices.price_watches END, live_activities = CASE WHEN ? THEN excluded.live_activities ELSE devices.live_activities END')
-        .bind(token, environment, now, now, JSON.stringify([...new Set(symbols)]), JSON.stringify([...new Set(muted ?? [])]), JSON.stringify(watches ?? []), JSON.stringify(activities ?? []), muted !== null ? 1 : 0, watches !== undefined ? 1 : 0, activities !== undefined ? 1 : 0).run();
-      return json({ registered: true }, 201);
+      await env.DB.prepare('INSERT INTO devices (token, environment, created_at, updated_at, stock_symbols, muted_topics, price_watches, live_activities, session_alerts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(token) DO UPDATE SET environment = excluded.environment, updated_at = excluded.updated_at, stock_symbols = excluded.stock_symbols, muted_topics = CASE WHEN ? THEN excluded.muted_topics ELSE devices.muted_topics END, price_watches = CASE WHEN ? THEN excluded.price_watches ELSE devices.price_watches END, live_activities = CASE WHEN ? THEN excluded.live_activities ELSE devices.live_activities END, session_alerts = CASE WHEN ? THEN excluded.session_alerts ELSE devices.session_alerts END')
+        .bind(token, environment, now, now, JSON.stringify([...new Set(symbols)]), JSON.stringify([...new Set(muted ?? [])]), JSON.stringify(watches ?? []), JSON.stringify(activities ?? []), JSON.stringify(sessionAlerts ?? []), muted !== null ? 1 : 0, watches !== undefined ? 1 : 0, activities !== undefined ? 1 : 0, sessionAlerts !== undefined ? 1 : 0).run();
+      return json({ registered: true, session_alerts_registered: sessionAlerts !== undefined }, 201);
     }
     throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
   }
@@ -749,6 +759,9 @@ function compute(env: Env, name = 'compute') { return env.COMPUTE!.get(env.COMPU
 async function handle(request: Request, env: Env, ctx?: ExecutionContext, ai?: AIBroker): Promise<Response> {
   let response: Response;
   try { response = await route(request, env, ctx, ai); } catch (error) {
+    if (!(error instanceof ApiError || error instanceof AIError || error instanceof ForecastError || error instanceof AgentResearchError || error instanceof ExtractError || error instanceof DataError)) {
+      console.error('Request failed', new URL(request.url).pathname, error instanceof Error ? error.message : 'Unknown error');
+    }
     response = error instanceof ApiError ? json({ error: { code: error.code, message: error.message } }, error.status)
       : error instanceof AIError ? json({ error: { code: 'ai_unavailable', message: error.message } }, error.status)
       : error instanceof ForecastError ? json({ error: { code: 'invalid_forecast', message: error.message } }, error.status)
@@ -770,10 +783,19 @@ async function handle(request: Request, env: Env, ctx?: ExecutionContext, ai?: A
 
 export default {
   async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
+    // With ORIGIN_URL set the API runs on the Mini; this Worker only keeps the public address and forwards.
+    if (env.ORIGIN_URL && new URL(request.url).pathname !== '/v1/brain/ai') {
+      const url = new URL(request.url), headers = new Headers(request.headers);
+      if (url.pathname === '/__cron') return new Response('Not found', { status: 404 });
+      headers.set('X-Forwarded-Host', url.host);
+      headers.set('X-Newswire-Origin', env.ORIGIN_TOKEN ?? '');
+      return fetch(new Request(new URL(url.pathname + url.search, env.ORIGIN_URL), { method: request.method, headers, body: request.body, redirect: 'manual' }));
+    }
     if (env.COMPUTE && !isLight(new URL(request.url).pathname)) return compute(env, new URL(request.url).pathname.startsWith('/v1/ai/') ? 'ai-v2' : 'compute').fetch(request);
     return handle(request, env, ctx);
   },
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    if (env.ORIGIN_URL) return;
     ctx.waitUntil(env.COMPUTE ? compute(env).fetch('https://compute/__cron').then(() => undefined) : refreshEarnings(env).then(() => undefined));
   },
 };

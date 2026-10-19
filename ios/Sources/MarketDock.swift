@@ -188,6 +188,7 @@ struct MarketDock: View {
                             Text(symbol)
                             if let quote = quoteStore.quotes[symbol] {
                                 Text(QuoteFormat.percent(quote.changePercent))
+                                    .numericTextTransition(value: quote.changePercent)
                                     .foregroundStyle(QuoteFormat.color(quote.changePercent))
                             }
                         }

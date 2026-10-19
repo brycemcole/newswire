@@ -8,7 +8,7 @@ import { classifyImpacts } from '../monitor/impacts.mjs';
 
 const state = join(homedir(), '.config', 'newswire', 'crawler');
 const origin = process.env.NEWSWIRE_URL ?? 'https://bryce-newswire.bryce-e19.workers.dev';
-if (new URL(origin).protocol !== 'https:') throw new Error('Research service requires HTTPS');
+if (new URL(origin).protocol !== 'https:' && !['localhost', '127.0.0.1'].includes(new URL(origin).hostname)) throw new Error('Research service requires HTTPS');
 await mkdir(state, { recursive: true, mode: 0o700 });
 const questions = new Map();
 const failures = [];
@@ -18,7 +18,8 @@ try {
     body: JSON.stringify({ symbol: 'SPY' }), signal: AbortSignal.timeout(20000) });
   if (!generated.ok) failures.push(`Question generation HTTP ${generated.status}`);
 } catch (error) { failures.push(`Question generation: ${error.message}`); }
-for (const symbol of ['SPY', 'QQQ']) {
+// Open questions are shared across symbols, so one research request is enough.
+for (const symbol of ['SPY']) {
   try {
     const response = await fetch(new URL(`/v1/research?symbol=${symbol}`, origin), {
       headers: { Authorization: `Bearer ${await token()}` }, signal: AbortSignal.timeout(15000),

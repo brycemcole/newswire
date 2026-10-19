@@ -82,10 +82,19 @@ targets:
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
+  SessionUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [SessionUITests]
+    dependencies:
+      - target: Newswire
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
 schemes:
   Newswire:
     build:
       targets:
         Newswire: all
     test:
-      targets: [NewswireTests]
+      targets: [NewswireTests, SessionUITests]

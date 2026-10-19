@@ -14,7 +14,7 @@ if (!/^\d{4}-\d{2}-\d{2}$/.test(args.session ?? '')) throw new Error('Choose a f
 const target = new Date(`${args.session}T12:00:00Z`);
 if (!Number.isFinite(+target) || target.toISOString().slice(0, 10) !== args.session || [0, 6].includes(target.getUTCDay())) throw new Error('Session must be a valid weekday; check exchange holidays separately');
 const origin = process.env.NEWSWIRE_URL ?? 'https://bryce-newswire.bryce-e19.workers.dev';
-if (new URL(origin).protocol !== 'https:') throw new Error('HTTPS required');
+if (new URL(origin).protocol !== 'https:' && !['localhost', '127.0.0.1'].includes(new URL(origin).hostname)) throw new Error('HTTPS required');
 const auth = `Bearer ${await token()}`;
 const responses = {};
 for (const symbol of pulseModel.symbols) {

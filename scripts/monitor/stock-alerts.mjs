@@ -1,3 +1,4 @@
+import { sessionAlertEvents } from './session-alerts.mjs';
 import { connect } from 'node:http2';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -61,13 +62,42 @@ async function liveQuote(symbol) {
 export async function runStockAlerts() {
   const targets = await devices(await token());
   const symbols = [...new Set(targets.flatMap(d => [...JSON.parse(d.stock_symbols ?? '[]'), ...JSON.parse(d.price_watches ?? '[]').map(w => w.symbol)]))];
-  if (!symbols.length) return { monitored: 0, delivered: 0, failures: [] };
+  if (!symbols.length && !targets.some(d => JSON.parse(d.session_alerts ?? '[]').length)) return { monitored: 0, delivered: 0, failures: [] };
   const directory = join(homedir(), '.config', 'newswire');
   const file = join(directory, 'stock-alert-state.json');
   const state = JSON.parse(await readFile(file, 'utf8').catch(() => '{}'));
   const jwt = await credentials();
   let delivered = 0;
   const failures = [];
+  const sessionDevices = targets.filter(d => JSON.parse(d.session_alerts ?? '[]').length);
+  if (sessionDevices.length) {
+    let schedule;
+    if (sessionDevices.some(d => JSON.parse(d.session_alerts).some(a => ['preopen', 'close'].includes(a.kind)))) {
+      try {
+        const response = await fetch(new URL('/v1/market-session', process.env.NEWSWIRE_URL ?? 'https://bryce-newswire.bryce-e19.workers.dev'), { headers: { Authorization: `Bearer ${await token()}` }, signal: AbortSignal.timeout(15000) });
+        if (!response.ok) throw new Error(`schedule ${response.status}`);
+        schedule = await response.json();
+      } catch (error) { failures.push(error.message); }
+    }
+    const quotes = {};
+    for (const symbol of new Set(sessionDevices.flatMap(d => JSON.parse(d.session_alerts).filter(a => a.kind === 'move' || a.kind === 'reopen').map(a => a.kind === 'reopen' ? 'ES=F' : a.symbol)))) {
+      try { quotes[symbol] = await liveQuote(symbol); } catch (error) { failures.push(`${symbol}: ${error.message}`); }
+    }
+    for (const device of sessionDevices) {
+      const key = `stocks:${device.token}`;
+      const values = state[key]?.values ?? {};
+      for (const event of sessionAlertEvents(JSON.parse(device.session_alerts), schedule, quotes, values)) {
+        const client = connect(device.environment === 'sandbox' ? 'https://api.sandbox.push.apple.com' : 'https://api.push.apple.com');
+        client.on('error', () => {});
+        const result = await send(client, jwt, device, { aps: { alert: { title: event.title, body: event.body }, sound: 'default', 'thread-id': 'market-session' }, ...(event.symbol ? { symbol: event.symbol } : { market_session: true }) });
+        client.close();
+        if (result.status === 200) { values[event.key] = { at: new Date().toISOString(), armed: false }; delivered++; }
+        else failures.push(`session push ${result.status} ${result.reason ?? ''}`);
+      }
+      const active = JSON.parse(device.session_alerts);
+      state[key] = { at: new Date().toISOString(), values: Object.fromEntries(Object.entries(values).filter(([k, v]) => !k.startsWith('session:') || (active.some(a => k.startsWith(`session:${a.id}:`)) && (k.endsWith(':move') || Date.now() - Date.parse(v.at) < 2 * 86400000)))) };
+    }
+  }
   for (const symbol of symbols) {
     try {
       const quote = await liveQuote(symbol);
@@ -104,7 +134,7 @@ export async function runStockAlerts() {
           for (const key of event.marks) deviceState[key] = { at: new Date().toISOString() };
           delivered++;
         }
-        state[deviceKey] = { at: new Date().toISOString(), values: Object.fromEntries(Object.entries(deviceState).filter(([key, value]) => key.startsWith('target:') ? JSON.parse(device.price_watches ?? '[]').some(w => key === `target:${w.id}`) : Date.now() - Date.parse(value.at) < 2 * 86400000)) };
+        state[deviceKey] = { at: new Date().toISOString(), values: Object.fromEntries(Object.entries(deviceState).filter(([key, value]) => key.startsWith('session:') ? JSON.parse(device.session_alerts ?? '[]').some(a => key.startsWith(`session:${a.id}:`)) : key.startsWith('target:') ? JSON.parse(device.price_watches ?? '[]').some(w => key === `target:${w.id}`) : Date.now() - Date.parse(value.at) < 2 * 86400000)) };
       }
     } catch (error) { failures.push(`${symbol}: ${error.message}`); }
   }

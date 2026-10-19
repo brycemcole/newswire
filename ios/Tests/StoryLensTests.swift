@@ -97,17 +97,17 @@ import Testing
         }
         let answer = try raw(stocks: [])
         let network = Attempts()
-        let recovered = try await StoryLensReport.generate(context: context, retryDelay: .zero) { _ in
+        let recovered = try await StoryLensReport.generate(context: context, retryDelay: .zero) { _, _ in
             if await network.next() == 1 { throw WireError.status(503) }
             return answer
         }
         #expect(recovered.stocks.isEmpty)
-        #expect(await network.count == 2)
+        #expect(await network.count == 4)
         let malformed = Attempts()
-        _ = try await StoryLensReport.generate(context: context, retryDelay: .zero) { _ in
+        _ = try await StoryLensReport.generate(context: context, retryDelay: .zero) { _, _ in
             await malformed.next() == 1 ? "{\"market\":" : answer
         }
-        #expect(await malformed.count == 2)
+        #expect(await malformed.count == 4)
     }
 
     @Test func retriesAreBoundedAndConfigurationFailuresNeverRetry() async throws {
@@ -117,12 +117,12 @@ import Testing
         }
         let attempts = Attempts()
         await #expect(throws: WireError.self) {
-            try await StoryLensReport.generate(context: context, retryDelay: .zero) { _ in
+            try await StoryLensReport.generate(context: context, retryDelay: .zero) { _, _ in
                 await attempts.increment()
                 throw WireError.status(502)
             }
         }
-        #expect(await attempts.count == 2)
+        #expect(await attempts.count == 6)
         #expect(!StoryLensFailure.canRetry(WireError.configuration))
         #expect(!StoryLensFailure.canRetry(StockAIError.missingKey))
         #expect(!StoryLensFailure.canRetry(CancellationError()))
@@ -140,16 +140,42 @@ import Testing
         defer { try? FileManager.default.removeItem(at: file) }
         let attempts = Attempts()
         let answer = try raw(stocks: [])
-        let lenses = StoryLenses(cache: StoryLensCache(file: file)) { _ in
+        let lenses = StoryLenses(cache: StoryLensCache(file: file)) { _, _ in
             if await attempts.next() == 1 { throw WireError.configuration }
             return answer
         }
         await lenses.load(context)
         #expect(lenses.error != nil)
+        #expect(lenses.hasContent)
         #expect(!lenses.loading)
         await lenses.load(context, retry: true)
         #expect(lenses.error == nil)
-        #expect(lenses.report != nil)
-        #expect(await attempts.count == 2)
+        #expect(lenses.market != nil && lenses.watch != nil && lenses.stocksLoaded)
+        #expect(await attempts.count == 6)
+    }
+}
+
+extension StoryLensTests {
+    @Test func eachGroupAsksForOnlyItsOwnPartAndPublishesAsSoonAsItIsReady() async throws {
+        actor Seen { var groups: [StoryLensReport.Group] = []; func add(_ group: StoryLensReport.Group) { groups.append(group) } }
+        let seen = Seen()
+        let answer = try raw(stocks: [])
+        _ = try await StoryLensReport.generate(context: context, retryDelay: .zero, completion: { group, _ in
+            if group == .market { try await Task.sleep(for: .milliseconds(80)) }
+            return answer
+        }, onPart: { part in await seen.add(part.group) })
+        let order = await seen.groups
+        #expect(Set(order) == Set(StoryLensReport.Group.allCases))
+        #expect(order.last == .market)
+        for group in StoryLensReport.Group.allCases {
+            let text = StoryLensReport.instructions(for: group)
+            #expect(group == .stocks ? text.contains("\"stocks\"") : !text.contains("\"stocks\":["))
+        }
+    }
+
+    @Test func quotesWithCurlyPunctuationStillMatchTheStory() {
+        let story = StoryChatContext(story: Story(id: "n", externalId: "n", title: "Netflix\u{2019}s content calendar prompts a harsh response", summary: "Summary", body: "", source: "Test",
+            url: context.url, publishedAt: .now, receivedAt: .now, category: "markets", priority: "normal", tickers: ["NFLX"], tags: [], agent: "test", imageUrl: nil), article: "")
+        #expect(story.contains("Netflix's content calendar prompts a harsh response"))
     }
 }

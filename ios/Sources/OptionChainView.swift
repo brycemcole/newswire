@@ -150,11 +150,14 @@ struct OptionChainView: View {
                 .frame(width: 76, alignment: .leading)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(QuoteFormat.price(option.mark)).font(.subheadline.weight(.semibold))
+                        .numericTextTransition(value: option.mark)
                     Text("\(QuoteFormat.price(option.bid))–\(QuoteFormat.price(option.ask))").font(.caption).foregroundStyle(.secondary)
+                        .numericTextTransition(text: "\(option.bid)–\(option.ask)")
                 }
                 Spacer(minLength: 4)
                 VStack(alignment: .trailing, spacing: 2) {
                     Text(QuoteFormat.percent(option.changePercent))
+                        .numericTextTransition(value: option.changePercent)
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(QuoteFormat.color(option.changePercent))
                     Text([option.volatility.map { $0.formatted(.percent.precision(.fractionLength(0))) + " IV" },

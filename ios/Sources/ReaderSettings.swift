@@ -66,6 +66,11 @@ import UIKit
             serverURL = url
             UserDefaults.standard.set(url, forKey: "serverURL")
         }
+        if let json = environment["NEWSWIRE_TEST_FEED"],
+           let data = json.data(using: .utf8),
+           let page = try? JSONDecoder().decode(PageSnapshot.self, from: data) {
+            Self.snapshots[cacheKey] = page
+        }
         #endif
         displayedKey = cacheKey
         restoring = Task { await restore() }
@@ -99,8 +104,15 @@ import UIKit
         return decoded
     }
 
+    private var cachedSelection: PageSnapshot? {
+        if let snapshot = Self.snapshots[cacheKey] { return snapshot }
+        guard !category.isEmpty, query.isEmpty, filters.isEmpty,
+              let all = Self.snapshots[Self.key(serverURL: serverURL)] else { return nil }
+        return PageSnapshot(stories: all.stories.filter { $0.category == category }, cursor: nil, fetchedAt: nil)
+    }
+
     private func restoreCache() {
-        guard stories.isEmpty, let snapshot = Self.snapshots[cacheKey] else { return }
+        guard stories.isEmpty, let snapshot = cachedSelection else { return }
         stories = snapshot.stories
         cursor = snapshot.cursor
         saved = (snapshot.stories.count, snapshot.cursor)
@@ -268,11 +280,17 @@ import UIKit
 
     func apply(_ filter: WireFilter) {
         if case .category(let value) = filter {
-            category = value
+            selectCategory(value)
         } else {
             filters = filters.filter { $0.name != filter.name } + [filter]
         }
         path = NavigationPath()
+    }
+
+    func selectCategory(_ value: String) {
+        guard category != value else { return }
+        category = value
+        reset()
     }
 
     /// Switches the displayed feed to the current mode, category, search and filters, showing its cached copy at once.
@@ -280,16 +298,16 @@ import UIKit
         guard displayedKey != cacheKey else { return }
         displayedKey = cacheKey
         generation = UUID()
-        stories = []
+        let snapshot = cachedSelection
+        stories = snapshot?.stories ?? []
         pending = []
-        cursor = nil
-        saved = (0, nil)
-        hasLoaded = false
-        lastUpdated = nil
+        cursor = snapshot?.cursor
+        saved = (stories.count, cursor)
+        hasLoaded = snapshot?.fetchedAt != nil
+        lastUpdated = snapshot?.fetchedAt
         error = nil
         loading = false
         loadingOlder = false
-        restoreCache()
     }
 
     // MARK: Loading

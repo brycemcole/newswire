@@ -47,7 +47,7 @@ private struct StatRows: View {
                             Text(stat.label).font(.caption).foregroundStyle(.secondary)
                             Text(stat.value).font(.subheadline.weight(.semibold)).monospacedDigit()
                                 .foregroundStyle(stat.tint ?? .primary)
-                                .contentTransition(.numericText())
+                                .numericTextTransition(text: stat.value)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .accessibilityElement(children: .combine)

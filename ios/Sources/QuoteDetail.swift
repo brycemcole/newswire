@@ -1148,8 +1148,7 @@ private struct QuoteHeader: View {
             Text(chart.money(price))
                 .font(.system(size: 44, weight: .bold, design: .rounded))
                 .monospacedDigit()
-                .contentTransition(.numericText(value: price))
-                .animation(point == nil ? .smooth(duration: 0.3) : nil, value: price)
+                .numericTextTransition(value: price, animated: point == nil)
             if let reference {
                 let value = point?.close ?? current
                 change(value - reference, reference, label: point.map { stamp($0.date) } ?? (prior ? "Prior close" : range.caption))
@@ -1170,7 +1169,9 @@ private struct QuoteHeader: View {
         let percent = base == 0 ? 0 : delta / base
         return HStack(spacing: 6) {
             Text((delta >= 0 ? "+" : "") + delta.formatted(.number.precision(.fractionLength(chart.decimals))))
+                .numericTextTransition(value: delta, animated: scrub.index == nil)
             Text("(" + percent.formatted(.percent.precision(.fractionLength(2)).sign(strategy: .always())) + ")")
+                .numericTextTransition(value: percent, animated: scrub.index == nil)
             Text(label).foregroundStyle(.secondary)
         }
         .font(.subheadline.weight(.semibold))

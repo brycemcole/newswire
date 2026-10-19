@@ -1,4 +1,5 @@
 import Charts
+import Combine
 import SwiftUI
 
 struct Quote: Codable, Hashable, Identifiable {
@@ -58,8 +59,36 @@ extension NewswireAPI {
 @Observable final class QuoteStore {
     static let shared = QuoteStore()
 
-    private(set) var quotes: [String: Quote] = [:]
-    private(set) var resolved: [String: [String]] = [:]
+    /// Feed rows do not observe these dictionaries: a quote landing for one ticker must not redraw every visible row.
+    /// They read `peekSymbols`/`peekQuotes` and refresh themselves from `updates`, which waits for scrolling to settle.
+    /// Other screens still observe `quotes` and `resolved` through the tracked accessors below.
+    @ObservationIgnored private var quoteBook: [String: Quote] = [:]
+    @ObservationIgnored private var resolvedBook: [String: [String]] = [:]
+    @ObservationIgnored let updates = PassthroughSubject<Set<String>, Never>()
+    @ObservationIgnored private var pendingKeys: Set<String> = []
+
+    var quotes: [String: Quote] {
+        access(keyPath: \.quotes)
+        return quoteBook
+    }
+
+    var resolved: [String: [String]] {
+        access(keyPath: \.resolved)
+        return resolvedBook
+    }
+
+    /// Story rows listen for symbol names and `#<story id>` keys; the batch is held back while the list is moving.
+    func flushUpdates() {
+        guard !pendingKeys.isEmpty, !Summarizer.shared.scrolling else { return }
+        let keys = pendingKeys
+        pendingKeys = []
+        updates.send(keys)
+    }
+
+    private func publish(_ keys: Set<String>) {
+        pendingKeys.formUnion(keys)
+        flushUpdates()
+    }
     private var fetchedAt: [String: Date] = [:]
     private var queued: Set<String> = []
     private var flushing: Task<Void, Never>?
@@ -77,15 +106,25 @@ extension NewswireAPI {
     /// The feed's own tickers, then symbols found in the story's text. Headline symbols appear only once Yahoo has
     /// confirmed them with a quote, so a stray capitalized word in parentheses never shows as a pill.
     func symbols(for story: Story) -> [String] {
+        access(keyPath: \.quotes)
+        access(keyPath: \.resolved)
+        return peekSymbols(for: story)
+    }
+
+    func peekSymbols(for story: Story) -> [String] {
         var seen = Set<String>()
-        let confirmed = headline(story).filter { quotes[$0] != nil }
-        return (story.tickers + (resolved[story.id] ?? []) + confirmed).filter { seen.insert($0).inserted }.prefix(6).map { $0 }
+        let confirmed = headline(story).filter { quoteBook[$0] != nil }
+        return (story.tickers + (resolvedBook[story.id] ?? []) + confirmed).filter { seen.insert($0).inserted }.prefix(6).map { $0 }
+    }
+
+    func peekQuotes(_ symbols: [String]) -> [String: Quote] {
+        symbols.reduce(into: [:]) { $0[$1] = quoteBook[$1] }
     }
 
     /// Everything worth asking Yahoo about for a feed row: its tickers plus any symbol its headline or summary spells out.
     func candidates(for story: Story) -> [String] {
         var seen = Set<String>()
-        return (story.tickers + (resolved[story.id] ?? []) + headline(story)).filter { seen.insert($0).inserted }
+        return (story.tickers + (resolvedBook[story.id] ?? []) + headline(story)).filter { seen.insert($0).inserted }
     }
 
     private func headline(_ story: Story) -> [String] {
@@ -114,16 +153,16 @@ extension NewswireAPI {
         }
         guard !found.isEmpty else { return }
         var seen = Set<String>()
-        resolved[story.id] = ((resolved[story.id] ?? []) + found).filter { seen.insert($0).inserted }
+        setResolved(((resolvedBook[story.id] ?? []) + found).filter { seen.insert($0).inserted }, for: story.id)
     }
 
     func quotes(for story: Story) -> [Quote] {
-        symbols(for: story).compactMap { quotes[$0] }
+        symbols(for: story).compactMap { quoteBook[$0] }
     }
 
     private func stale(_ symbol: String) -> Bool {
         guard let at = fetchedAt[symbol] else { return true }
-        let limit: TimeInterval = quotes[symbol]?.isLive == false ? 600 : 30
+        let limit: TimeInterval = quoteBook[symbol]?.isLive == false ? 600 : 30
         return Date.now.timeIntervalSince(at) > limit
     }
 
@@ -143,7 +182,7 @@ extension NewswireAPI {
     }
 
     func load(_ story: Story) async {
-        if !story.tickers.isEmpty || resolved[story.id] != nil {
+        if !story.tickers.isEmpty || resolvedBook[story.id] != nil {
             await fetch(candidates(for: story).filter { stale($0) })
             return
         }
@@ -154,36 +193,65 @@ extension NewswireAPI {
         await fetch(headline(story).filter { stale($0) })
         guard let found = try? await api.quotes(text: text) else { return }
         store(found)
-        resolved[story.id] = found.map(\.symbol)
+        setResolved(found.map(\.symbol), for: story.id)
     }
 
     func refresh(_ story: Story) async {
         let symbols = symbols(for: story)
-        guard symbols.contains(where: { quotes[$0]?.isLive ?? true }) else { return }
+        guard symbols.contains(where: { quoteBook[$0]?.isLive ?? true }) else { return }
         await fetch(symbols.filter { stale($0) })
     }
 
     private func fetch(_ symbols: [String]) async {
+        #if DEBUG && targetEnvironment(simulator)
+        if !symbols.isEmpty, ProcessInfo.processInfo.environment["NEWSWIRE_TEST_QUOTES"] != nil {
+            try? await Task.sleep(for: .milliseconds(150))
+            store(symbols.map(Self.synthetic))
+            return
+        }
+        #endif
         guard !symbols.isEmpty, let api, let found = try? await api.quotes(symbols: symbols) else { return }
         store(found)
         for symbol in symbols where fetchedAt[symbol] == nil { fetchedAt[symbol] = .now }
     }
 
     func confirm(_ symbols: [String]) async throws -> [Quote] {
-        let missing = symbols.filter { quotes[$0] == nil }
+        let missing = symbols.filter { quoteBook[$0] == nil }
         if !missing.isEmpty {
             guard let api else { throw WireError.configuration }
             store(try await api.quotes(symbols: Array(missing.prefix(6))))
         }
-        return symbols.compactMap { quotes[$0] }
+        return symbols.compactMap { quoteBook[$0] }
+    }
+
+    #if DEBUG && targetEnvironment(simulator)
+    private static func synthetic(_ symbol: String) -> Quote {
+        let move = Double.random(in: -4...4)
+        return Quote(symbol: symbol, name: symbol + " Corp", match: nil, currency: "USD", exchange: "NMS", state: "regular", price: 100 + move, change: move, changePercent: move, previousClose: 100, time: .now, extended: nil, points: (0..<40).map { _ in Double.random(in: 95...105) }, extendedPoints: [], url: URL(string: "https://example.com/\(symbol)")!)
+    }
+    #endif
+
+    private func setResolved(_ symbols: [String], for id: String) {
+        guard resolvedBook[id] != symbols else { return }
+        withMutation(keyPath: \.resolved) { resolvedBook[id] = symbols }
+        publish(["#" + id])
     }
 
     private func store(_ found: [Quote]) {
-        for quote in found {
-            let previous = quotes[quote.symbol]
-            quotes[quote.symbol] = previous?.match != nil && quote.match == nil ? quote.keeping(match: previous?.match) : quote
-            fetchedAt[quote.symbol] = .now
+        guard !found.isEmpty else { return }
+        var changed: Set<String> = []
+        withMutation(keyPath: \.quotes) {
+            for quote in found {
+                let previous = quoteBook[quote.symbol]
+                let next = previous?.match != nil && quote.match == nil ? quote.keeping(match: previous?.match) : quote
+                fetchedAt[quote.symbol] = .now
+                if previous != next {
+                    quoteBook[quote.symbol] = next
+                    changed.insert(quote.symbol)
+                }
+            }
         }
+        publish(changed)
     }
 }
 
@@ -231,24 +299,29 @@ enum QuoteFormat {
 struct QuotePill: View {
     let quote: Quote
     var showsPrice = true
+    var glass = false
 
     var body: some View {
         HStack(spacing: 5) {
             Text(quote.symbol).fontWeight(.bold).foregroundStyle(.primary)
-            if showsPrice { Text(QuoteFormat.price(quote.price)).foregroundStyle(.secondary) }
+            if showsPrice {
+                Text(QuoteFormat.price(quote.price)).foregroundStyle(.secondary)
+                    .numericTextTransition(value: quote.price)
+            }
             Text("\(QuoteFormat.arrow(quote.changePercent))\(QuoteFormat.percent(quote.changePercent).trimmingCharacters(in: CharacterSet(charactersIn: "+−")))")
                 .foregroundStyle(QuoteFormat.color(quote.changePercent))
+                .numericTextTransition(value: quote.changePercent)
             if let extended = quote.extended {
                 Image(systemName: QuoteFormat.sessionSymbol(extended)).font(.system(size: 9)).foregroundStyle(.tertiary)
                 Text(QuoteFormat.percent(extended.changePercent)).foregroundStyle(QuoteFormat.color(extended.changePercent))
+                    .numericTextTransition(value: extended.changePercent)
             }
         }
         .font(.system(.footnote, design: .monospaced).weight(.semibold))
         .monospacedDigit()
         .lineLimit(1)
         .padding(.horizontal, 10).padding(.vertical, 6)
-        .background(QuoteFormat.color(quote.changePercent).opacity(0.12), in: .capsule)
-        .contentTransition(.numericText())
+        .modifier(QuotePillBackground(glass: glass, change: quote.changePercent))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibility)
     }
@@ -260,15 +333,29 @@ struct QuotePill: View {
     }
 }
 
+private struct QuotePillBackground: ViewModifier {
+    let glass: Bool
+    let change: Double
+
+    func body(content: Content) -> some View {
+        if glass {
+            content.glassEffect(.regular, in: .capsule)
+        } else {
+            content.background(QuoteFormat.color(change).opacity(0.12), in: .capsule)
+        }
+    }
+}
+
 struct QuoteStrip: View {
     let quotes: [Quote]
     @Binding var selected: Quote?
+    var glass = false
 
     var body: some View {
         ScrollView(.horizontal) {
             HStack(spacing: 8) {
                 ForEach(quotes) { quote in
-                    Button { selected = quote } label: { QuotePill(quote: quote) }
+                    Button { selected = quote } label: { QuotePill(quote: quote, glass: glass) }
                         .buttonStyle(.plain)
                         .accessibilityHint("Shows quote details")
                 }
@@ -276,7 +363,6 @@ struct QuoteStrip: View {
         }
         .scrollIndicators(.hidden)
         .scrollClipDisabled()
-        .animation(.easeOut(duration: 0.2), value: quotes)
     }
 }
 
