@@ -5,8 +5,7 @@ struct AskContext: Identifiable, Hashable {
     var symbol = ""
     var name = "Markets"
     var price: String?
-    var story: StoryChatContext?
-    var id: String { story?.cacheKey ?? symbol }
+    var id: String { symbol }
     static let markets = AskContext()
 }
 
@@ -16,7 +15,6 @@ struct ChatThread: Identifiable, Codable, Hashable {
     var name = "Markets"
     var updated = Date.now
     var messages: [StockChatMessage] = []
-    var story: StoryChatContext?
 
     var title: String { messages.first { $0.user }?.text ?? "New chat" }
 }
@@ -74,13 +72,12 @@ struct AskSheet: View {
     init(context: AskContext = .markets, initialQuestion: String? = nil) {
         self.context = context
         self.initialQuestion = initialQuestion
-        _thread = State(initialValue: ChatThread(symbol: context.symbol, name: context.name, story: context.story))
+        _thread = State(initialValue: ChatThread(symbol: context.symbol, name: context.name))
     }
 
     private var market: Bool { thread.symbol.isEmpty }
     private var price: String? { thread.symbol == context.symbol ? context.price : nil }
     private var suggestions: [String] {
-        if let story = thread.story { return story.questions }
         return market ? generator.questions
             : ["Why is \(thread.symbol) moving today?", "What does \(thread.name) do, in plain terms?", "Compare bullish earnings trades with a $1,000 budget"]
     }
@@ -147,7 +144,7 @@ struct AskSheet: View {
                 }
                 .safeAreaInset(edge: .bottom, spacing: 0) { composer }
             }
-            .navigationTitle(thread.story != nil || market ? "Ask" : "Ask about \(thread.symbol)")
+            .navigationTitle(market ? "Ask" : "Ask about \(thread.symbol)")
             .navigationDestination(item: $filing) { FilingReaderView(url: $0.url, title: $0.title) }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -171,7 +168,7 @@ struct AskSheet: View {
                 ChatHistoryList(current: thread.id) { open($0) }
             }
             .scrollEdgeEffectStyle(.soft, for: .all)
-            .task { if market && thread.story == nil { await generator.refresh() } }
+            .task { if market { await generator.refresh() } }
             .task {
                 guard let initialQuestion, !initialQuestion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
                 question = initialQuestion
@@ -191,7 +188,7 @@ struct AskSheet: View {
         .task {
             if CommandLine.arguments.contains("-stockAISettings") { showingSettings = true }
             if let index = CommandLine.arguments.firstIndex(of: "-askPrompt"), CommandLine.arguments.indices.contains(index + 1) {
-                chat.send(CommandLine.arguments[index + 1], symbol: context.symbol, name: context.name, price: context.price, story: thread.story)
+                chat.send(CommandLine.arguments[index + 1], symbol: context.symbol, name: context.name, price: context.price)
             }
             if CommandLine.arguments.contains("-askHistory") { showingHistory = true }
             if CommandLine.arguments.contains("-stockAIComposer") {
@@ -242,7 +239,7 @@ struct AskSheet: View {
     private func startNew() {
         chat.cancel()
         chat = StockChat()
-        thread = ChatThread(symbol: context.symbol, name: context.name, story: context.story)
+        thread = ChatThread(symbol: context.symbol, name: context.name)
         question = ""
         focused = true
     }
@@ -259,7 +256,7 @@ struct AskSheet: View {
 
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(thread.story?.title ?? (market ? "What do you want to know about the markets?" : "What do you want to know about \(thread.name)?"))
+            Text(market ? "What do you want to know about the markets?" : "What do you want to know about \(thread.name)?")
                 .font(.title3.weight(.semibold))
             VStack(spacing: 0) {
                 ForEach(suggestions, id: \.self) { text in
@@ -342,7 +339,7 @@ struct AskSheet: View {
 
     private var composer: some View {
         HStack(alignment: .bottom, spacing: 10) {
-            TextField(thread.story != nil ? "Ask about this story" : market ? "Ask anything about the markets" : "Ask about \(thread.symbol)", text: $question, axis: .vertical)
+            TextField(market ? "Ask anything about the markets" : "Ask about \(thread.symbol)", text: $question, axis: .vertical)
                 .lineLimit(1...5).focused($focused)
                 .submitLabel(.send).onSubmit(send)
                 .padding(.vertical, 14)
@@ -391,7 +388,7 @@ struct AskSheet: View {
         let text = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !chat.busy else { return }
         focused = false
-        chat.send(String(text.prefix(4000)), symbol: thread.symbol, name: thread.name, price: price, story: thread.story)
+        chat.send(String(text.prefix(4000)), symbol: thread.symbol, name: thread.name, price: price)
         question = ""
     }
 }
@@ -415,7 +412,7 @@ struct ChatHistoryList: View {
                 Button { open(thread) } label: {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(thread.title).font(.body.weight(thread.id == current ? .semibold : .regular)).lineLimit(2)
-                        Text([thread.story?.source ?? (thread.symbol.isEmpty ? "Markets" : thread.symbol), thread.updated.formatted(.relative(presentation: .named))].joined(separator: " · "))
+                        Text([thread.symbol.isEmpty ? "Markets" : thread.symbol,thread.updated.formatted(.relative(presentation: .named))].joined(separator: " · "))
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -727,7 +724,6 @@ struct StockAISettings: View {
     @AppStorage(AIFeature.stockChat.defaultsKey) private var stock = true
     @AppStorage(AIFeature.articleSummaries.defaultsKey) private var summaries = true
     @AppStorage(AIFeature.moveExplanations.defaultsKey) private var moves = true
-    @AppStorage(AIFeature.storyLenses.defaultsKey) private var lenses = true
     @State private var provider = AIRouter.provider
     @State private var key = ""
     @State private var hasKey = false
@@ -780,7 +776,6 @@ struct StockAISettings: View {
                     Toggle("Ask", isOn: $stock)
                     Toggle("Article summaries", isOn: $summaries)
                     Toggle("Why it moved", isOn: $moves)
-                    Toggle("Story lenses", isOn: $lenses)
                 } header: {
                     Text("Use DeepSeek for")
                 } footer: {

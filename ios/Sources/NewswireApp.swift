@@ -39,8 +39,6 @@ import SwiftUI
                 TweetPreview()
             } else if CommandLine.arguments.contains("-storyLayoutPreview") {
                 StoryLayoutPreview()
-            } else if CommandLine.arguments.contains("-storyLensesPreview") {
-                StoryLensPreview()
             } else if let index = CommandLine.arguments.firstIndex(of: "-articlePreview"),
                let raw = CommandLine.arguments.dropFirst(index + 1).first, let url = URL(string: raw) {
                 ArticleReaderPreview(url: url)
@@ -998,16 +996,10 @@ struct StoryDetail: View {
     @State private var interaction: String?
     @State private var savedStories = SavedStories.shared
     @State private var selectedQuote: Quote?
-    @State private var lenses = StoryLenses()
-    @State private var storyQuestion: StoryQuestion?
-    private struct StoryQuestion: Identifiable { let id = UUID(); let text: String }
+    @State private var asking = false
     private var key: String { story.url.absoluteString }
     private var quotes: [Quote] { QuoteStore.shared.quotes(for: story) }
-    private var suggestedSymbols: [String] {
-        var seen = Set<String>()
-        return Array((QuoteStore.shared.symbols(for: story) + lenses.stocks.map(\.symbol)).filter { seen.insert($0).inserted }.prefix(6))
-    }
-    private var lensContext: StoryChatContext { StoryChatContext(story: story, article: Summarizer.shared.texts[key] ?? "") }
+    private var suggestedSymbols: [String] { Array(QuoteStore.shared.symbols(for: story).prefix(6)) }
     private var lead: String? {
         if story.isBrain && story.opensInReader && story.hasDistinctSummary { return StoryHTML.plainText(story.summary) }
         return glance == nil && !preparingGlance ? Summarizer.shared.summaries[key] : nil
@@ -1075,11 +1067,6 @@ struct StoryDetail: View {
                     Text("\(Text(Image(systemName: "text.line.3.summary")).foregroundStyle(.tertiary)) \(Text(annotated(lead, at: 0)))")
                         .font(.body.weight(.medium)).fixedSize(horizontal: false, vertical: true)
                 }
-                StoryLensView(lenses: lenses, context: lensContext,
-                    ask: { storyQuestion = StoryQuestion(text: $0) },
-                    openStock: { selectedQuote = QuoteStore.shared.quotes[$0] },
-                    retry: { Task { await lenses.load(lensContext, retry: true) } })
-                Divider()
                 if story.isTweet {
                 } else if story.opensInReader {
                     if !excerpt.isEmpty {
@@ -1118,9 +1105,15 @@ struct StoryDetail: View {
         .animation(.easeOut(duration: 0.2), value: excerpt)
         .animation(.easeOut(duration: 0.2), value: loading)
         .animation(.easeOut(duration: 0.2), value: quotes)
-        .onAppear { onSuggestedSymbolsChange(suggestedSymbols) }
+        .onAppear {
+            onSuggestedSymbolsChange(suggestedSymbols)
+            CurrentScreen.shared.story = story
+        }
         .onChange(of: suggestedSymbols) { _, symbols in onSuggestedSymbolsChange(symbols) }
-        .onDisappear { onSuggestedSymbolsChange([]) }
+        .onDisappear {
+            onSuggestedSymbolsChange([])
+            if CurrentScreen.shared.story == story { CurrentScreen.shared.story = nil }
+        }
         .task(id: story.id) {
             await QuoteStore.shared.load(story)
             while !Task.isCancelled {
@@ -1130,19 +1123,7 @@ struct StoryDetail: View {
             }
         }
         .navigationDestination(item: $selectedQuote) { QuoteDetail(symbol: $0.symbol).dockClearance() }
-        .sheet(item: $storyQuestion) { question in
-            AskSheet(context: AskContext(name: story.title, story: chatContext), initialQuestion: question.text)
-        }
-        .task(id: lensContext.cacheKey + String(loading)) {
-            guard !loading else { return }
-            do { try await Task.sleep(for: .milliseconds(700)) } catch { return }
-            await lenses.load(lensContext)
-            #if DEBUG
-            if CommandLine.arguments.contains("-storyLensesAsk") {
-                storyQuestion = StoryQuestion(text: lenses.questions.first ?? StoryLensReport.fallbackQuestions[0])
-            }
-            #endif
-        }
+        .sheet(isPresented: $asking) { AskSheet() }
         .task(id: attempt) {
             if !rerender, let pending = Summarizer.shared.pendingPreload(story) {
                 loading = true
@@ -1195,6 +1176,10 @@ struct StoryDetail: View {
         }
         .navigationTitle("").navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { asking = true } label: { Image(systemName: "message") }
+                    .accessibilityLabel("Ask about this story")
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     withAnimation(.easeOut(duration: 0.18)) {
@@ -1260,12 +1245,6 @@ struct StoryDetail: View {
         }
         .font(.system(.caption, design: .monospaced).weight(.semibold))
         .foregroundStyle(.secondary)
-    }
-
-    private var chatContext: StoryChatContext {
-        var context = lensContext
-        context.questions = lenses.questions
-        return context
     }
 
     private var glanceCard: some View {

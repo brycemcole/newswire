@@ -2,14 +2,13 @@ import Foundation
 import FoundationModels
 
 enum AIFeature: String, CaseIterable, Identifiable {
-    case stockChat, articleSummaries, moveExplanations, storyLenses
+    case stockChat, articleSummaries, moveExplanations
     var id: String { rawValue }
     var title: String {
         switch self {
         case .stockChat: "Ask"
         case .articleSummaries: "Article summaries"
         case .moveExplanations: "Why it moved"
-        case .storyLenses: "Story lenses"
         }
     }
     var defaultsKey: String { "ai.deepseek." + rawValue }
