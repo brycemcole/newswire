@@ -1,6 +1,7 @@
 import { cached, quote, type Quote } from './quotes';
 import { bellwethers, loadPulse, pulseModel, pulseTime, type EarningsEvent } from './market-pulse';
 import { filingTools, readerRoute } from './filings';
+import { lastCompletedSession, parseRating, tally, upcomingEarnings, windowReturn } from './screens';
 
 export interface DataEnv { DB: D1Database; FRED_API_KEY?: string }
 export { DataError } from './errors';
@@ -1060,6 +1061,93 @@ const tools: Tool[] = [
       });
       return { title: 'Stock screen', source: 'Yahoo Finance screener (unofficial)', url: 'https://finance.yahoo.com/research-hub/screener/',
         note: `${result?.total ?? 0} matches · region ${region.join('/')}${sector ? ` · ${sector}` : ''}${maxPE ? ` · P/E ≤ ${maxPE}` : ''} · cap ≥ $${minCap}B${minYield ? ` · yield ≥ ${minYield}%` : ''}. Market caps are in each listing's currency; exchanges such as XETRA also list foreign companies.`, sections: [{ title: 'Results', rows }] };
+    },
+  },
+  {
+    name: 'stock_screens', path: 'screens', description: 'Preset US stock screens: momentum_3m (largest 3-month price gains among large, liquid stocks), earnings_soon (large companies reporting in the next days) and analyst_buy (large companies whose consensus analyst rating is Buy or Strong Buy). Each screen ranks a stated candidate pool, not every listed stock.',
+    params: {
+      preset: { type: 'string', description: 'Screen to run', enum: ['momentum_3m', 'earnings_soon', 'analyst_buy'], required: true },
+      days: { type: 'number', description: 'earnings_soon only: look-ahead window in days, 1–30; default 14' },
+      limit: { type: 'number', description: 'Maximum rows, default 25, maximum 50' },
+    },
+    async run(args) {
+      const preset = pick(args.preset, 'preset', ['momentum_3m', 'earnings_soon', 'analyst_buy'], '');
+      const days = number(args.days, 'days', 1, 30, 14), limit = number(args.limit, 'limit', 1, 50, 25);
+      const momentum = preset === 'momentum_3m';
+      // Momentum needs a bar history per candidate, so its pool is small; the other screens read fields already on each quote.
+      const pool = momentum ? 80 : 250;
+      const operands: unknown[] = [{ operator: 'eq', operands: ['region', 'us'] }, { operator: 'gt', operands: ['intradaymarketcap', (momentum ? 5 : 10) * 1e9] }];
+      if (momentum) operands.push({ operator: 'gt', operands: ['avgdailyvol3m', 1e6] });
+      const body = { size: pool, offset: 0, sortField: momentum ? 'fiftytwowkpercentchange' : 'intradaymarketcap', sortType: 'DESC', quoteType: 'EQUITY', query: { operator: 'and', operands }, userId: '', userIdType: 'guid' };
+      const fetched = Date.now();
+      const data = await yahooAuthed<{ finance?: { result?: { total: number; quotes: Record<string, unknown>[] }[] } }>('https://query2.finance.yahoo.com/v1/finance/screener?formatted=false&lang=en-US&region=US',
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const quotes = (data.finance?.result?.[0]?.quotes ?? []).filter(q => typeof q.symbol === 'string' && !String(q.symbol).includes('.'));
+      if (!quotes.length) throw new DataError(502, 'Yahoo returned no candidates for this screen');
+      const name = (q: Record<string, unknown>) => String(q.longName ?? q.shortName ?? q.symbol);
+      const price = (q: Record<string, unknown>) => typeof q.regularMarketPrice === 'number' ? `$${fmt(q.regularMarketPrice)}` : 'price unavailable';
+      const cap = (q: Record<string, unknown>) => typeof q.marketCap === 'number' ? `cap ${money(q.marketCap)}` : '';
+      const dayChange = (q: Record<string, unknown>) => typeof q.regularMarketChangePercent === 'number' ? q.regularMarketChangePercent : undefined;
+      const quoteTimes = quotes.flatMap(q => typeof q.regularMarketTime === 'number' ? [q.regularMarketTime * 1000] : []);
+      const excluded: string[] = [];
+      let rows: Row[] = [], title = '', observed = quoteTimes.length ? Math.max(...quoteTimes) : undefined, basis = '';
+
+      if (preset === 'analyst_buy') {
+        const rated = quotes.flatMap(q => { const rating = parseRating(q.averageAnalystRating); if (!rating) excluded.push('no consensus rating'); return rating ? [{ q, rating }] : []; });
+        const buys = rated.filter(r => r.rating.score < 2.5).sort((a, b) => a.rating.score - b.rating.score || Number(b.q.marketCap ?? 0) - Number(a.q.marketCap ?? 0));
+        rows = buys.slice(0, limit).map(({ q, rating }) => ({ label: name(q), symbol: String(q.symbol), value: `${rating.label} · ${fmt(rating.score, 1)}`, change: dayChange(q), change_label: 'TODAY',
+          detail: [`Consensus ${fmt(rating.score, 1)} of 5 (1 strong buy, 5 sell)`, price(q), cap(q)].filter(Boolean).join(' · ') }));
+        title = 'Rated Buy by analysts';
+        basis = `${buys.length} of ${rated.length} rated companies in the ${quotes.length} largest US companies have a consensus under 2.5 (Buy or Strong Buy), best score first. Yahoo supplies the consensus without the number of analysts or the date of the latest change, so treat it as a current snapshot of unknown age.`;
+      } else if (preset === 'earnings_soon') {
+        const dated = quotes.flatMap(q => {
+          const result = upcomingEarnings(q, fetched, days);
+          if (!result.ok) { if (result.reason !== 'after window') excluded.push(result.reason); return []; }
+          return [{ q, when: result.value }];
+        }).sort((a, b) => a.when.at - b.when.at || Number(b.q.marketCap ?? 0) - Number(a.q.marketCap ?? 0));
+        const stamp = (seconds: number) => new Date(seconds * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+        rows = dated.slice(0, limit).map(({ q, when }) => {
+          const range = when.start !== null && when.end !== null && when.end !== when.start;
+          const eps = typeof q.epsForward === 'number' ? `forward EPS ${fmt(q.epsForward)}` : '';
+          return { label: name(q), symbol: String(q.symbol), value: range ? `${stamp(when.start!)}–${stamp(when.end!)}` : stamp(when.at), date: iso(when.at * 1000), change: dayChange(q), change_label: 'TODAY',
+            detail: [range ? 'Date range, not confirmed' : 'Scheduled date', price(q), cap(q), eps].filter(Boolean).join(' · ') };
+        });
+        title = `Reporting in the next ${days} days`;
+        basis = `${dated.length} of the ${quotes.length} largest US companies have a report date within ${days} days of ${ymd(fetched)}. Dates are Yahoo's and can move; a range means the company has not confirmed a day. Companies whose only date is a past report are excluded, not treated as having none.`;
+      } else {
+        const symbols = quotes.map(q => String(q.symbol));
+        const batches = Array.from({ length: Math.ceil(symbols.length / 20) }, (_, i) => symbols.slice(i * 20, i * 20 + 20));
+        type Spark = { spark?: { result?: { symbol: string; response?: { timestamp?: number[]; indicators?: { quote?: { close?: (number | null)[] }[] } }[] }[] } };
+        const sparks = await mapLimited(batches, batch => cached(`yahoo/spark3mo/v1/${batch.join(',')}`, 900,
+          () => yahooAuthed<Spark>(`https://query2.finance.yahoo.com/v7/finance/spark?symbols=${encodeURIComponent(batch.join(','))}&range=3mo&interval=1d`)).catch(() => null), 4);
+        const history = new Map<string, { timestamp: number[]; close: (number | null)[] }>();
+        for (const result of sparks.flatMap(s => s?.spark?.result ?? [])) {
+          const response = result.response?.[0];
+          if (response?.timestamp && response.indicators?.quote?.[0]?.close) history.set(result.symbol, { timestamp: response.timestamp, close: response.indicators.quote[0].close });
+        }
+        const session = lastCompletedSession(fetched);
+        const ranked = quotes.flatMap(q => {
+          const bars = history.get(String(q.symbol));
+          if (!bars) { excluded.push('price history unavailable'); return []; }
+          const result = windowReturn(bars.timestamp, bars.close, fetched, 91, session);
+          if (!result.ok) { excluded.push(result.reason); return []; }
+          return [{ q, ...result.value }];
+        }).sort((a, b) => b.change - a.change);
+        const shown = ranked.slice(0, limit);
+        const when = (seconds: number) => new Date(seconds * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/New_York' });
+        rows = shown.map(r => ({ label: name(r.q), symbol: String(r.q.symbol), value: signed(r.change, 1, '%'), change: round(r.change), change_label: '3 MO', date: iso(r.to * 1000),
+          detail: [`$${fmt(r.fromPrice)} on ${when(r.from)} → $${fmt(r.toPrice)} on ${when(r.to)}`, cap(r.q)].filter(Boolean).join(' · ') }));
+        observed = ranked.length ? Math.max(...ranked.map(r => r.to)) * 1000 : observed;
+        title = 'Up the most over 3 months';
+        basis = `Price change over about 3 months from daily closes (dividends and splits not adjusted separately), ranked among the ${quotes.length} US stocks over $5B with the biggest 52-week gains and 1M+ average volume. A stock that rose sharply in 3 months but not over 12 may not be in this pool. ${ranked.length} had enough current history to rank.`;
+      }
+      const drops = tally(excluded).map(e => `${e.count} ${e.reason}`).join(', ');
+      // as_of is the newest source observation. A pool whose newest quote predates the last completed session is flagged, not passed off as current.
+      const session = lastCompletedSession(fetched);
+      const stale = observed !== undefined && observed / 1000 < session.open - 60;
+      return { title, source: 'Yahoo Finance screener (unofficial)', url: 'https://finance.yahoo.com/research-hub/screener/', as_of: observed !== undefined ? iso(observed) : undefined,
+        note: `${basis}${drops ? ` Left out: ${drops}.` : ''}${stale ? ` The newest quote is from ${iso(observed)}, before the ${session.date} session, so these may be out of date.` : ''} Fetched ${iso(fetched)}.`,
+        sections: [{ title: 'Results', rows }] };
     },
   },
   {
