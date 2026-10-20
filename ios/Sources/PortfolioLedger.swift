@@ -68,10 +68,16 @@ nonisolated struct PortfolioLedger: Sendable {
     let quantities: [String: Double]
     let cash: Double
     let events: [Event]
+    // Account-specific gaps where exact history cannot be built; never silently dropped from a total.
+    let limitations: [String]
+    var limitation: String? { limitations.isEmpty ? nil : limitations.joined(separator: " ") }
     var symbols: Set<String> { Set(quantities.keys).union(events.compactMap(\.symbol)) }
 
     init(snapshot: PortfolioSnapshot, start: Date) throws {
         func fail(_ message: String) throws -> Never { throw PortfolioHistoryError.unavailable(message) }
+        guard snapshot.failedItemIDs?.isEmpty != false else {
+            try fail("Some brokerages did not refresh. Sync all selected accounts before calculating performance.")
+        }
         guard let updated = snapshot.updated, let balances = snapshot.accountBalances, !balances.isEmpty,
               let value = snapshot.reportedValue, value.isFinite else {
             try fail("Sync brokerage balances and transaction history to calculate performance.")
@@ -83,14 +89,20 @@ nonisolated struct PortfolioLedger: Sendable {
         var quantities: [String: Double] = [:]
         var cash = 0.0
         var events: [Event] = []
+        var limitations: [String] = []
         for balance in balances {
+            let account = "\(balance.institution) \(balance.name)"
+            func limit(_ message: String) {
+                let note = "\(account): \(message)"
+                if !limitations.contains(note) { limitations.append(note) }
+            }
             guard balance.holdingsComplete == true, let balanceValue = balance.value, balanceValue.isFinite,
                   let accountCash = balance.cashValue, accountCash.isFinite else {
                 try fail("Sync complete holdings and cash balances to calculate performance.")
             }
             let positions = snapshot.positions.filter { $0.itemID == balance.itemID && $0.id.hasPrefix(balance.accountID + "|") }
-            guard positions.allSatisfy({ $0.option == nil && $0.value?.isFinite == true && $0.quantity.isFinite }) else {
-                try fail("Historical option prices or position values are missing for this account.")
+            guard positions.allSatisfy({ $0.value?.isFinite == true && $0.quantity.isFinite }) else {
+                try fail("Position values are missing for this account. Sync again.")
             }
             let holdingValue = positions.compactMap(\.value).reduce(0, +)
             guard abs(balanceValue - holdingValue - accountCash) < max(1, abs(balanceValue) * 0.001) else {
@@ -103,8 +115,18 @@ nonisolated struct PortfolioLedger: Sendable {
                 try fail("Transaction history does not cover this range. Sync again or choose a shorter range.")
             }
             let securities = Dictionary((history.securities ?? []).map { ($0.securityId, $0) }, uniquingKeysWith: { _, last in last })
+            let cashIDs = Set(history.cashSecurityIDs ?? []).union(securities.values.filter { $0.type == "cash" }.map(\.securityId))
+            // Cash-unit quantities (for example USD amounts on a dividend) are not share movements.
+            func movesShares(_ record: PlaidClient.Transactions.Transaction) -> Bool {
+                guard let id = record.securityId, record.quantity != 0 else { return false }
+                return !cashIDs.contains(id)
+            }
             var symbolsByID: [String: String] = [:]
             for position in positions {
+                if position.option != nil {
+                    limit("options have no historical price source here, so exact history is unavailable for \(position.symbol) options.")
+                    continue
+                }
                 let id = String(position.id.dropFirst(balance.accountID.count + 1))
                 symbolsByID[id] = position.symbol
                 quantities[position.symbol, default: 0] += position.quantity
@@ -116,7 +138,7 @@ nonisolated struct PortfolioLedger: Sendable {
                 guard record.amount.isFinite, record.quantity.isFinite,
                       record.isoCurrencyCode.map({ $0 == "USD" }) ?? true else { try fail("A transaction has an unsupported currency or amount.") }
                 let single = InvestmentHistory(itemID: history.itemID, start: history.start, end: history.end,
-                                               transactions: [record], cashSecurityIDs: history.cashSecurityIDs)
+                                               transactions: [record], cashSecurityIDs: Array(cashIDs))
                 let flows = InvestmentCashFlows(history: single, accountID: balance.accountID, institution: balance.institution)
                 guard flows.unknown == 0 else { try fail("A transfer needs review before performance can be calculated.") }
                 let flow = flows.contributed - flows.withdrawn
@@ -127,29 +149,57 @@ nonisolated struct PortfolioLedger: Sendable {
                 switch record.type {
                 case "buy", "sell":
                     guard let id = record.securityId else { try fail("A trade is missing its security.") }
+                    if cashIDs.contains(id) {
+                        guard record.quantity != 0,
+                              abs(abs(record.quantity) - abs(record.amount)) < 1e-6,
+                              record.type == "buy" ? record.amount >= 0 : record.amount <= 0,
+                              securities[id]?.isoCurrencyCode.map({ $0 == "USD" }) ?? true else {
+                            limit("a cash-equivalent trade needs its unit value reconciled before exact history can be calculated.")
+                            continue
+                        }
+                        // Sweeps move dollars between cash compartments already included in account cash.
+                        events.append(Event(date: date, symbol: nil, quantity: 0, cash: flow, flow: flow))
+                        continue
+                    }
                     if let security = securities[id] {
-                        guard security.optionContract == nil, ["equity", "etf", "mutual fund"].contains(security.type ?? ""),
-                              security.isoCurrencyCode.map({ $0 == "USD" }) ?? true else {
-                            try fail("Historical prices are unavailable for a traded security.")
+                        if security.optionContract != nil {
+                            limit("option trades have no historical price source, so exact history is unavailable.")
+                            continue
+                        }
+                        guard ["equity", "etf", "mutual fund"].contains(security.type ?? ""), security.isoCurrencyCode.map({ $0 == "USD" }) ?? true else {
+                            limit("\(security.name ?? "a traded security") is not an equity, ETF or mutual fund with a USD price, so exact history is unavailable.")
+                            continue
                         }
                         symbol = security.tickerSymbol?.uppercased()
                     }
                     symbol = symbol ?? symbolsByID[id]
-                    guard symbol != nil, record.quantity != 0,
-                          record.type == "buy" ? record.amount >= 0 : record.amount <= 0 else {
+                    guard let traded = symbol else {
+                        limit("a traded security has no exchange ticker, so exact history is unavailable for it.")
+                        continue
+                    }
+                    guard record.quantity != 0, record.type == "buy" ? record.amount >= 0 : record.amount <= 0 else {
                         try fail("A trade is missing security details or has an inconsistent amount.")
                     }
+                    symbol = traded
                     quantity = (record.type == "buy" ? 1 : -1) * abs(record.quantity)
                     if subtype == "contribution" || subtype == "distribution" {
                         cashChange = 0
                     }
                 case "cash":
                     let supported = ["deposit", "contribution", "withdrawal", "distribution", "dividend", "interest", "qualified dividend", "non-qualified dividend", "long-term capital gain", "short-term capital gain", "return of principal", "tax", "tax withheld", "margin expense", "account fee", "legal fee", "management fee", "miscellaneous fee", "non-resident tax", "transfer fee", "trust fee", "unqualified gain"]
-                    guard supported.contains(subtype) else { try fail("A cash activity needs review before performance can be calculated.") }
-                case "fee": break
+                    guard supported.contains(subtype) else { limit("a \(subtype.isEmpty ? "cash" : subtype) activity needs review before exact history can be calculated."); continue }
+                    if movesShares(record) {
+                        limit("a \(subtype) activity moves a security whose type is not known to be cash, so it needs review before exact history can be calculated.")
+                        continue
+                    }
+                case "fee":
+                    if movesShares(record) {
+                        limit("a fee moves a security whose type is not known to be cash, so it needs review before exact history can be calculated.")
+                        continue
+                    }
                 case "transfer":
-                    guard flow != 0 else { try fail("A security transfer or corporate action needs review.") }
-                default: try fail("An unsupported or cancelled transaction needs review.")
+                    guard flow != 0 else { limit("a security transfer or corporate action needs review."); continue }
+                default: limit("an unsupported or cancelled transaction needs review."); continue
                 }
                 events.append(Event(date: date, symbol: symbol, quantity: quantity, cash: cashChange, flow: flow))
             }
@@ -157,9 +207,11 @@ nonisolated struct PortfolioLedger: Sendable {
         self.quantities = quantities
         self.cash = cash
         self.events = events.sorted { $0.date < $1.date }
+        self.limitations = limitations
     }
 
     func build(prices: [String: [HistoryPoint]]) throws -> PerformanceSeries {
+        if let limitation { throw PortfolioHistoryError.unavailable(limitation) }
         var days = Set([start, end])
         days.formUnion(events.map(\.date))
         for track in prices.values { days.formUnion(track.map { Self.calendar.startOfDay(for: $0.date) }.filter { $0 >= start && $0 <= end }) }

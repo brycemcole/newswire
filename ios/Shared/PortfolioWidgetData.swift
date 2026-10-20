@@ -62,9 +62,10 @@ nonisolated struct WidgetPortfolio: Codable, Sendable {
     var accountingVersion: Int?
     var measuredDayChange: Double?
     var measuredDayPercent: Double?
+    var syncIncomplete: Bool?
 
-    var dayChange: Double? { accountingVersion == 1 ? measuredDayChange : nil }
-    var dayPercent: Double? { accountingVersion == 1 ? measuredDayPercent : nil }
+    var dayChange: Double? { syncIncomplete != true && accountingVersion == 1 ? measuredDayChange : nil }
+    var dayPercent: Double? { syncIncomplete != true && accountingVersion == 1 ? measuredDayPercent : nil }
     var monthChange: Double? { nil }
     var monthPercent: Double? { nil }
     var dayHigh: Double? { day.map(\.value).max() }

@@ -41,6 +41,66 @@ struct PortfolioLedgerTests {
         #expect(abs(result.percent! - 0.2) < 1e-9)
     }
 
+    @Test func closedWinnersAndLosersRemainInHistoryAlongsideCashSweeps() throws {
+        var source = snapshot(cash: 2400, transactions: [
+            transaction("2026-01-02", "cash", 0, -500, subtype: "deposit", security: nil),
+            transaction("2026-01-03", "sell", -10, -1200, security: "winner"),
+            transaction("2026-01-03", "buy", 1200, 1200, security: "sweep"),
+            transaction("2026-01-04", "sell", -10, -700, security: "loser"),
+            transaction("2026-01-04", "sell", -300, -300, security: "sweep")
+        ])
+        source.histories?[0].securities = [
+            .init(securityId: "winner", name: "Sold winner", tickerSymbol: "WIN", type: "equity", optionContract: nil),
+            .init(securityId: "loser", name: "Sold loser", tickerSymbol: "LOSE", type: "equity", optionContract: nil),
+            .init(securityId: "sweep", name: "Money market", tickerSymbol: "SPAXX", type: "cash", optionContract: nil)
+        ]
+        let ledger = try PortfolioLedger(snapshot: source, start: date("2026-01-01"))
+        #expect(source.positions.isEmpty)
+        #expect(ledger.limitation == nil)
+        #expect(ledger.symbols == ["WIN", "LOSE"])
+        let tracks = ["WIN": [100.0, 110, 120, 120, 120], "LOSE": [100.0, 90, 85, 70, 70]].mapValues { values in
+            values.enumerated().map { index, price in
+                HistoryPoint(date: date("2026-01-0\(index + 1)"), close: price, adjusted: price)
+            }
+        }
+        let result = try ledger.build(prices: tracks)
+        #expect(result.points.map(\.value) == [2000, 2500, 2550, 2400, 2400])
+        #expect(result.change == -100)
+        #expect(abs(result.percent! - (-100.0 / 2375)) < 1e-9)
+        let flows = InvestmentCashFlows(history: source.histories![0], accountID: "a")
+        #expect(flows.contributed == 500 && flows.withdrawn == 0)
+        #expect(flows.buys == 0 && flows.sells == 1900)
+    }
+
+    @Test(arguments: [true, false]) func cashEquivalentFundingIsNotLostInsideASweep(_ deposit: Bool) throws {
+        var source = snapshot(cash: deposit ? 1100 : 900, transactions: [
+            transaction("2026-01-03", deposit ? "buy" : "sell", deposit ? 100 : -100, deposit ? 100 : -100,
+                        subtype: deposit ? "contribution" : "distribution", security: "sweep")
+        ])
+        source.histories?[0].securities = [.init(securityId: "sweep", name: "Money market", tickerSymbol: "SPAXX", type: "cash", optionContract: nil)]
+        let result = try series(source)
+        #expect(result.baseline == 1000 && result.change == 0)
+    }
+
+    @Test func cashEquivalentWithUnknownUnitValueDoesNotBecomeAFlatLine() throws {
+        var source = snapshot(cash: 1000, transactions: [transaction("2026-01-03", "buy", 10, 100, security: "sweep")])
+        source.histories?[0].securities = [.init(securityId: "sweep", name: "Cash fund", tickerSymbol: "CASH", type: "cash", optionContract: nil)]
+        let ledger = try PortfolioLedger(snapshot: source, start: date("2026-01-01"))
+        #expect(ledger.limitation?.contains("unit value") == true)
+        #expect(throws: PortfolioHistoryError.self) { try ledger.build(prices: [:]) }
+    }
+
+    @Test func fullSaleRetainsRealizedLoss() throws {
+        var tracks = prices
+        tracks["AAA"] = [100.0, 90, 80, 80, 80].enumerated().map { index, price in
+            HistoryPoint(date: date("2026-01-0\(index + 1)"), close: price, adjusted: price)
+        }
+        let ledger = try PortfolioLedger(snapshot: snapshot(cash: 800, transactions: [transaction("2026-01-03", "sell", -10, -800)]), start: date("2026-01-01"))
+        let result = try ledger.build(prices: tracks)
+        #expect(result.points.map(\.value) == [1000, 900, 800, 800, 800])
+        #expect(result.change == -200 && result.percent == -0.2)
+    }
+
     @Test func partialSalePreservesProceedsAndRemainingShares() throws {
         let result = try series(snapshot(quantity: 5, cash: 600, transactions: [transaction("2026-01-03", "sell", -5, -600)]))
         #expect(result.baseline == 1000 && result.last == 1200 && result.change == 200)
@@ -140,5 +200,57 @@ struct PortfolioLedgerTests {
     @Test func combinedContributionPurchaseDoesNotDebitCashTwice() throws {
         let result = try series(snapshot(quantity: 10, cash: 1000, transactions: [transaction("2026-01-03", "buy", 10, 1200, subtype: "contribution")]))
         #expect(result.baseline == 1000 && result.change == 0)
+    }
+
+    @Test func optionPositionsAreLimitedInsteadOfPricedAsTheirUnderlying() throws {
+        var source = snapshot(cash: 0, transactions: [])
+        let option = OptionDetail(isCall: true, strike: 120, expiration: date("2026-06-19"), contracts: 1)
+        source.positions = [Position(id: "a|o", itemID: "i", institution: "Test", account: "Account", symbol: "AAA", name: nil, option: option, quantity: 1, price: 2, value: 200)]
+        source.accountBalances = [BrokerageBalance(accountID: "a", itemID: "i", institution: "Test", name: "Account", value: 200, cashValue: 0, holdingsComplete: true)]
+        let ledger = try PortfolioLedger(snapshot: source, start: date("2026-01-01"))
+        #expect(ledger.symbols.isEmpty)
+        #expect(ledger.limitation?.hasPrefix("Test Account:") == true)
+        #expect(throws: PortfolioHistoryError.self) { try ledger.build(prices: prices) }
+    }
+
+    @Test func tickerlessFundTradeIsAnAccountLimitationNotAFlatLine() throws {
+        var source = snapshot(cash: 1200, transactions: [])
+        let trade = transaction("2026-01-03", "buy", 10, 1200)
+        source.histories = [InvestmentHistory(itemID: "i", start: date("2025-01-01"), end: date("2026-01-05"), transactions: [trade],
+            cashSecurityIDs: [], securities: [.init(securityId: "s", name: "Fidelity Fund", tickerSymbol: nil, type: "mutual fund", optionContract: nil)], version: 1)]
+        let ledger = try PortfolioLedger(snapshot: source, start: date("2026-01-01"))
+        #expect(ledger.limitation?.contains("no exchange ticker") == true)
+        #expect(throws: PortfolioHistoryError.self) { try ledger.build(prices: prices) }
+    }
+
+    @Test func feesAndCashRecordsThatMoveSharesAreLimitations() throws {
+        let fee = transaction("2026-01-03", "fee", -1, 0, subtype: "management fee")
+        let ledger = try PortfolioLedger(snapshot: snapshot(quantity: 10, cash: 0, transactions: [fee]), start: date("2026-01-01"))
+        #expect(ledger.limitation?.contains("not known to be cash") == true)
+        let contribution = transaction("2026-01-04", "cash", 2, 0, subtype: "contribution")
+        let other = try PortfolioLedger(snapshot: snapshot(quantity: 10, cash: 0, transactions: [contribution]), start: date("2026-01-01"))
+        #expect(other.limitation?.contains("not known to be cash") == true)
+    }
+
+    @Test func partialSyncWithholdsReturnsUntilRecovery() throws {
+        var source = snapshot(quantity: 10, cash: 0, transactions: [])
+        source.failedItemIDs = ["i"]
+        #expect(throws: PortfolioHistoryError.self) { try series(source) }
+        source.failedItemIDs = []
+        #expect(try series(source).points.isEmpty == false)
+    }
+
+    @Test func cashUnitQuantitiesOnDividendsAndFeesDoNotBlockHistory() throws {
+        var source = snapshot(quantity: 10, cash: 0, transactions: [])
+        source.histories = [InvestmentHistory(itemID: "i", start: date("2025-01-01"), end: date("2026-01-05"), transactions: [
+            transaction("2026-01-03", "cash", -0.02, -0.02, subtype: "dividend", security: "usd"),
+            transaction("2026-01-04", "fee", 0.06, 0.06, subtype: "miscellaneous fee", security: "usd")
+        ], cashSecurityIDs: ["usd"], securities: [
+            .init(securityId: "s", name: nil, tickerSymbol: "AAA", type: "equity", optionContract: nil),
+            .init(securityId: "usd", name: "US Dollar", tickerSymbol: "USD", type: "cash", optionContract: nil)
+        ], version: 1)]
+        let ledger = try PortfolioLedger(snapshot: source, start: date("2026-01-01"))
+        #expect(ledger.limitation == nil)
+        _ = try ledger.build(prices: prices)
     }
 }

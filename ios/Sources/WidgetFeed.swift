@@ -29,8 +29,9 @@ enum WidgetFeed {
             otherGain: gains.isEmpty ? nil : gains.reduce(0, +),
             value: day?.last ?? snapshot.totalValue, dayBaseline: day?.baseline,
             day: WidgetPortfolio.thin((day?.points ?? []).map { WidgetPoint(date: $0.date, value: $0.value) }, to: 120),
-            updated: snapshot.updated ?? .now, fetched: day == nil ? nil : .now,
-            accountingVersion: 1, measuredDayChange: day?.change, measuredDayPercent: day?.percent)
+            updated: snapshot.aggregateSyncedAt ?? .distantPast, fetched: day == nil ? nil : .now,
+            accountingVersion: 1, measuredDayChange: day?.change, measuredDayPercent: day?.percent,
+            syncIncomplete: snapshot.itemIDs.contains(where: { snapshot.isStale($0) }))
         portfolio.save()
         WidgetCenter.shared.reloadTimelines(ofKind: WidgetPortfolio.kind)
     }

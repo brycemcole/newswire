@@ -32,7 +32,9 @@ test('aggregate score delta cannot amplify correlated inputs', () => {
   assert.deepEqual(run(rows, { ...features, score_delta: 1000 }), run(rows, { ...features, score_delta: -1000 }));
   const learned = run(rows);
   assert.ok(Object.values(learned.weights).every(Number.isFinite));
-  assert.equal(learned.weights.news_points - 25, learned.weights.market_points - 40);
+  for (const key of ['futures_points', 'rates_points', 'volatility_points', 'overseas_points', 'commodity_points', 'market_other_points']) assert.ok(Number.isFinite(learned.weights[key]));
+  const groups = ['futures_points', 'rates_points', 'volatility_points', 'overseas_points', 'commodity_points', 'market_other_points'].map(key => learned.weights[key]);
+  assert.equal(learned.weights.market_points, Math.round(groups.reduce((s, v) => s + v, 0) / groups.length * 100) / 100);
 });
 test('targets preserve magnitude and volatility uses only outcomes known at each capture', () => {
   const small = rows.map(r => ({ ...r, return_pct: Number(r.id) < 20 ? r.return_pct : -0.001 }));
@@ -56,4 +58,18 @@ test('warm-up reports checked predictions before weight training starts', () => 
   assert.match(learning.note, /4 saved predictions checked/);
   assert.match(learning.note, /warm-up: 4\/20/);
   assert.match(learning.note, /Predictions are active/);
+});
+test('learner separates market groups and only the predictive group gains weight', () => {
+  const grouped = Array.from({ length: 80 }, (_, i) => {
+    const day = new Date(Date.UTC(2026, 0, i + 1)).toISOString().slice(0, 10);
+    const futures = i % 2 ? 0.1 : -0.1;
+    return { id: String(i), session_date: day, horizon: 'open_to_close', forecast_at: `${day}T13:25:00.000Z`, available_at: `${day}T20:10:00.000Z`,
+      direction: futures > 0 ? 1 : -1, return_pct: futures * (5 + (i % 5)), forecast_at_check: null,
+      features: { score_available: 1, news_points: 0, calendar_points: 0, earnings_points: 0, futures_points: futures, commodity_points: Math.sin(i * 3) * 0.2,
+        rates_points: 0, volatility_points: 0, overseas_points: 0, market_other_points: 0, market_points: futures } };
+  });
+  const learned = adaptiveForecast(grouped[0].features, grouped, 'open_to_close', asOf);
+  assert.equal(learned.status, 'learning');
+  assert.ok(learned.weights.futures_points > learned.weights.commodity_points);
+  assert.ok(learned.weights.futures_points - 40 > Math.abs(learned.weights.commodity_points - 40));
 });

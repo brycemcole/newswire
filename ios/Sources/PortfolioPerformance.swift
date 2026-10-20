@@ -28,6 +28,7 @@ nonisolated struct PerformanceSeries: Sendable {
         didSet { UserDefaults.standard.set(range.rawValue, forKey: "portfolioRange") }
     }
     private(set) var series: [ChartRange: PerformanceSeries] = [:]
+    private(set) var recorded: [ChartRange: [PerformancePoint]] = [:]
     private var fetchedAt: [ChartRange: Date] = [:]
     private var signature: Data?
     private(set) var errors: [ChartRange: String] = [:]
@@ -54,11 +55,15 @@ nonisolated struct PerformanceSeries: Sendable {
         if changed {
             signature = key
             series = [:]
+            recorded = [:]
             errors = [:]
             fetchedAt = [:]
         }
         for wanted in Set([ChartRange.day, range]) {
             if let stamp = fetchedAt[wanted], Date.now.timeIntervalSince(stamp) < 300 { continue }
+            let observations = await PortfolioBalanceHistory.points(snapshot: snapshot, range: wanted)
+            guard key == signature else { return }
+            recorded[wanted] = observations
             do {
                 let built = try await Self.build(snapshot: snapshot, range: wanted)
                 guard key == signature else { return }
@@ -77,6 +82,7 @@ nonisolated struct PerformanceSeries: Sendable {
 
     @concurrent private static func build(snapshot: PortfolioSnapshot, range: ChartRange) async throws -> PerformanceSeries {
         let ledger = try PortfolioLedger(snapshot: snapshot, start: PortfolioLedger.start(for: range, at: .now))
+        if let limitation = ledger.limitation { throw PortfolioHistoryError.unavailable(limitation) }
         let prices = try await withThrowingTaskGroup(of: (String, [HistoryPoint]).self) { group in
             for symbol in ledger.symbols {
                 group.addTask { (symbol, try await MarketClient.portfolioHistory(symbol, from: ledger.start.addingTimeInterval(-7 * 86400))) }
@@ -131,6 +137,7 @@ struct PortfolioCard: View {
         .onChange(of: store.snapshot.updated) { selected = nil }
         .task(id: performance.range) { await performance.refresh(store.snapshot) }
         .task(id: store.snapshot.updated) { await performance.refresh(store.snapshot) }
+        .task(id: store.snapshot.failedItemIDs) { await performance.refresh(store.snapshot) }
     }
 
     private var compactBody: some View {
@@ -143,6 +150,9 @@ struct PortfolioCard: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Portfolio").font(.headline)
                 if connected {
+                    if store.snapshot.itemIDs.contains(where: { store.snapshot.isStale($0) }) {
+                        Text("Not fully synced").font(.caption2).foregroundStyle(.orange)
+                    }
                     Text(Money.text(today?.last ?? store.snapshot.totalValue))
                         .font(.system(.title3, design: .rounded).weight(.bold).monospacedDigit())
                         .lineLimit(1).minimumScaleFactor(0.6)
@@ -206,6 +216,9 @@ struct PortfolioCard: View {
         let current = performance.series[shown]
         let value = selected?.value ?? today?.last ?? store.snapshot.totalValue
         return VStack(alignment: .leading, spacing: 3) {
+            if store.snapshot.itemIDs.contains(where: { store.snapshot.isStale($0) }) {
+                Text("Not fully synced · showing cached values").font(.caption).foregroundStyle(.orange)
+            }
             HStack(alignment: .firstTextBaseline) {
                 Text(Money.text(value))
                     .font(.system(.title, design: .rounded).weight(.bold).monospacedDigit())
@@ -223,7 +236,10 @@ struct PortfolioCard: View {
                 if shown != .day, let current {
                     changeLine(current.change, percent: current.percent, label: shown.caption)
                 }
-                if today == nil { Text(performance.errors[shown] ?? "Loading performance…").font(.subheadline).foregroundStyle(.secondary) }
+                if today == nil {
+                    Text(performance.recorded[shown]?.isEmpty == false ? "Recorded balances · Includes funding" : performance.errors[shown] ?? "Loading performance…")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }
             }
         }
         .accessibilityElement(children: .combine)
@@ -241,30 +257,34 @@ struct PortfolioCard: View {
 
     @ViewBuilder
     private var chart: some View {
-        if let current = performance.series[shown], current.points.count > 1 {
-            let tint = Money.tint(current.change)
-            let values = current.points.map(\.value) + [current.baseline]
+        let current = performance.series[shown]
+        let points = current?.points ?? performance.recorded[shown] ?? []
+        if points.count > 1 {
+            let tint = current.map { Money.tint($0.change) } ?? Color.wireAccent
+            let values = points.map(\.value) + (current.map { [$0.baseline] } ?? [])
             let low = values.min() ?? 0, high = values.max() ?? 1
             let pad = max((high - low) * 0.08, 0.01)
             Chart {
-                ForEach(current.points) { point in
+                ForEach(points) { point in
                     AreaMark(x: .value("Time", point.id), yStart: .value("Low", low - pad), yEnd: .value("Value", point.value))
                         .foregroundStyle(LinearGradient(colors: [tint.opacity(0.28), tint.opacity(0)], startPoint: .top, endPoint: .bottom))
                     LineMark(x: .value("Time", point.id), y: .value("Value", point.value))
                         .foregroundStyle(tint)
                         .lineStyle(StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
                 }
-                RuleMark(y: .value("Baseline", current.baseline))
-                    .foregroundStyle(.secondary.opacity(0.5))
-                    .lineStyle(StrokeStyle(lineWidth: 0.75, dash: [2, 3]))
+                if let current {
+                    RuleMark(y: .value("Baseline", current.baseline))
+                        .foregroundStyle(.secondary.opacity(0.5))
+                        .lineStyle(StrokeStyle(lineWidth: 0.75, dash: [2, 3]))
+                }
                 if let selected {
                     RuleMark(x: .value("Selected", selected.id)).foregroundStyle(.secondary.opacity(0.6))
                     PointMark(x: .value("Selected", selected.id), y: .value("Value", selected.value)).foregroundStyle(tint).symbolSize(40)
-                } else if let last = current.points.last {
+                } else if let last = points.last {
                     PointMark(x: .value("Time", last.id), y: .value("Value", last.value)).foregroundStyle(tint).symbolSize(28)
                 }
             }
-            .chartXScale(domain: 0...max(current.points.count - 1, 1))
+            .chartXScale(domain: 0...max(points.count - 1, 1))
             .chartYScale(domain: (low - pad)...(high + pad))
             .chartXAxis(.hidden)
             .chartYAxis(.hidden)
@@ -280,7 +300,7 @@ struct PortfolioCard: View {
                                     guard case .second(true, let drag?) = value, let frame = proxy.plotFrame else { return }
                                     let x = drag.location.x - geometry[frame].origin.x
                                     guard let index: Int = proxy.value(atX: x) else { return }
-                                    let point = current.points[min(max(index, 0), current.points.count - 1)]
+                                    let point = points[min(max(index, 0), points.count - 1)]
                                     if point != selected { selected = point }
                                 }
                                 .onEnded { _ in selected = nil }
@@ -288,9 +308,13 @@ struct PortfolioCard: View {
                 }
             }
             .sensoryFeedback(.selection, trigger: selected?.id) { _, new in new != nil }
-            .accessibilityLabel("Portfolio value chart, \(shown.caption)")
+            .accessibilityLabel("\(current == nil ? "Recorded brokerage balances, includes funding" : "Portfolio value chart"), \(shown.caption)")
         } else {
-            if let error = performance.errors[shown] {
+            if !points.isEmpty {
+                Text(compact ? "Recording balances" : "Recording account values. A graph will appear after another successful sync.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: compact ? 54 : 86)
+            } else if let error = performance.errors[shown] {
                 Text(compact ? "Performance unavailable" : error)
                     .font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: compact ? 54 : 86)

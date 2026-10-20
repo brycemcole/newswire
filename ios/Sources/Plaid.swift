@@ -123,6 +123,15 @@ nonisolated struct Position: Codable, Identifiable, Sendable, Hashable {
     var costEstimated = false
     var manualCost: Double?
 
+    func totalCost(averageCost text: String) -> Double? {
+        let cleaned = text.replacingOccurrences(of: ",", with: "").replacingOccurrences(of: "$", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let multiplier = option.map { 100 * abs($0.contracts) } ?? abs(quantity)
+        guard let average = Double(cleaned), average.isFinite, average >= 0, multiplier.isFinite, multiplier > 0 else { return nil }
+        let sign = (option?.contracts ?? quantity) < 0 ? -1.0 : 1.0
+        let total = sign * average * multiplier
+        return total.isFinite ? total : nil
+    }
+
     var costBasis: Double? { manualCost ?? reportedCost }
     var isEstimated: Bool { manualCost == nil && costEstimated }
     var gain: Double? { value.flatMap { value in costBasis.map { value - $0 } } }
@@ -150,6 +159,7 @@ nonisolated struct BrokerageBalance: Codable, Sendable {
     let value: Double?
     var cashValue: Double?
     var holdingsComplete: Bool?
+    var cashMethodVersion: Int?
 }
 
 nonisolated struct PortfolioSnapshot: Codable, Sendable {
@@ -159,6 +169,33 @@ nonisolated struct PortfolioSnapshot: Codable, Sendable {
     var costMethodVersion: Int?
     var accountBalances: [BrokerageBalance]?
     var histories: [InvestmentHistory]?
+    var balanceHistory: [PortfolioBalanceSample]?
+    // Per-brokerage time of the last successful sync (nil for caches written before this field existed).
+    var itemSyncedAt: [String: Date]?
+    // Brokerages whose most recent refresh failed; their values are retained from the last success.
+    var failedItemIDs: [String]?
+
+    var itemIDs: Set<String> {
+        Set(positions.map(\.itemID)).union(accountBalances?.map(\.itemID) ?? []).union(cashByItem.keys)
+            .union(failedItemIDs ?? []).union(itemSyncedAt.map { Array($0.keys) } ?? [])
+    }
+    var aggregateSyncedAt: Date? {
+        let ids = itemIDs
+        guard !ids.isEmpty, let times = itemSyncedAt else { return nil }
+        let synced = ids.compactMap { times[$0] }
+        return synced.count == ids.count ? synced.min() : nil
+    }
+    func syncedAt(item: String) -> Date? { itemSyncedAt?[item] }
+    func itemScope(_ item: String) -> PortfolioSnapshot {
+        PortfolioSnapshot(positions: positions.filter { $0.itemID == item }, cashByItem: cashByItem.filter { $0.key == item },
+                          updated: syncedAt(item: item), costMethodVersion: costMethodVersion,
+                          accountBalances: accountBalances?.filter { $0.itemID == item }, histories: histories?.filter { $0.itemID == item },
+                          balanceHistory: balanceHistory, itemSyncedAt: itemSyncedAt?.filter { $0.key == item },
+                          failedItemIDs: failedItemIDs?.filter { $0 == item })
+    }
+    func isStale(_ item: String) -> Bool {
+        failedItemIDs?.contains(item) == true || itemSyncedAt?[item] == nil
+    }
 
     var cash: Double { cashByItem.values.reduce(0, +) }
     var reportedValue: Double? {
@@ -177,10 +214,51 @@ nonisolated struct PortfolioSnapshot: Codable, Sendable {
     func positions(for symbol: String) -> [Position] {
         positions.filter { $0.symbol == symbol.uppercased() }
     }
+
+    static func merging(_ previous: PortfolioSnapshot, outcomes: [String: PortfolioItemSync], syncedAt: Date) -> PortfolioSnapshot {
+        var positions: [Position] = []
+        var cash: [String: Double] = [:]
+        var fresh: [BrokerageBalance] = []
+        var histories: [InvestmentHistory] = []
+        var itemSyncedAt = (previous.itemSyncedAt ?? [:]).filter { outcomes[$0.key] != nil }
+        var failed = Set<String>()
+        for (id, outcome) in outcomes.sorted(by: { $0.key < $1.key }) {
+            switch outcome {
+            case let .synced(parsed):
+                positions += parsed.positions
+                fresh += parsed.accountBalances
+                if let history = parsed.history { histories.append(history) }
+                cash[id] = parsed.cash
+                itemSyncedAt[id] = syncedAt
+            case .failed:
+                failed.insert(id)
+            }
+        }
+        let received = Set(histories.map(\.itemID))
+        histories += (previous.histories ?? []).filter { !received.contains($0.itemID) && failed.contains($0.itemID) }
+        let balances = fresh + (previous.accountBalances ?? []).filter { failed.contains($0.itemID) }
+        let kept = previous.positions.filter { failed.contains($0.itemID) }
+        for id in failed { cash[id] = previous.cashByItem[id] }
+        let sorted = (positions + kept).sorted {
+            ($0.symbol, $0.option == nil ? 0 : 1, $0.option?.expiration ?? .distantPast, $0.option?.strike ?? 0)
+                < ($1.symbol, $1.option == nil ? 0 : 1, $1.option?.expiration ?? .distantPast, $1.option?.strike ?? 0)
+        }
+        let balanceHistory = PortfolioBalanceHistory.recording(fresh, at: syncedAt, previous: previous.balanceHistory ?? [])
+        return PortfolioSnapshot(positions: sorted, cashByItem: cash,
+                                 updated: failed.count == outcomes.count ? previous.updated : syncedAt,
+                                 costMethodVersion: 2, accountBalances: balances, histories: histories, balanceHistory: balanceHistory,
+                                 itemSyncedAt: itemSyncedAt, failedItemIDs: failed.sorted())
+    }
+}
+
+nonisolated enum PortfolioItemSync: Sendable {
+    case synced(HoldingsResponse.Parsed)
+    case failed
 }
 
 nonisolated struct PlaidClient: Sendable {
     let credentials: PlaidCredentials
+    var session: URLSession = .shared
     static let redirectURI = "https://bryce-newswire.bryce-e19.workers.dev/plaid/oauth"
 
     private struct Failure: Decodable {
@@ -199,7 +277,7 @@ nonisolated struct PlaidClient: Sendable {
         request.timeoutInterval = 30
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
@@ -285,7 +363,7 @@ nonisolated struct PlaidClient: Sendable {
             guard !page.investmentTransactions.isEmpty || all.count >= page.totalInvestmentTransactions else {
                 throw PlaidError.api(code: "INCOMPLETE_HISTORY", message: "Plaid returned an incomplete transaction history. Try syncing again.")
             }
-            cashSecurityIDs.formUnion((page.securities ?? []).filter { $0.type == "cash" && $0.tickerSymbol?.uppercased() == "USD" }.map(\.securityId))
+            cashSecurityIDs.formUnion((page.securities ?? []).filter { $0.type == "cash" && ["USD", "CUR:USD"].contains($0.tickerSymbol?.uppercased() ?? "") }.map(\.securityId))
             for security in page.securities ?? [] { securities[security.securityId] = security }
             all += page.investmentTransactions
             if all.count >= page.totalInvestmentTransactions { break }
@@ -379,15 +457,11 @@ nonisolated struct HoldingsResponse: Decodable, Sendable {
     func positions(item: PlaidItem) -> Parsed {
         let securities = Dictionary(securities.map { ($0.securityId, $0) }, uniquingKeysWith: { first, _ in first })
         let accounts = Dictionary(accounts.map { ($0.accountId, $0) }, uniquingKeysWith: { first, _ in first })
-        var cash = 0.0
         var positions: [Position] = []
         for holding in holdings {
             if let type = accounts[holding.accountId]?.type, !["investment", "brokerage"].contains(type) { continue }
             guard let security = securities[holding.securityId] else { continue }
-            if security.type == "cash" {
-                cash += holding.institutionValue ?? holding.quantity
-                continue
-            }
+            if security.type == "cash" { continue }
             var option: OptionDetail?
             var symbol = security.tickerSymbol?.uppercased() ?? ""
             if let contract = security.optionContract, let expiration = Self.date(contract.expirationDate) {
@@ -417,11 +491,24 @@ nonisolated struct HoldingsResponse: Decodable, Sendable {
                 return (security.isoCurrencyCode.map { $0 == "USD" } ?? true) &&
                     (security.type == "cash" || positions.contains { $0.id == "\(account.accountId)|\(holding.securityId)" })
             }
+            let cashHoldings = held.filter { securities[$0.securityId]?.type == "cash" }
+            var accountCash = cashHoldings.reduce(0) { $0 + ($1.institutionValue ?? $1.quantity) }
+            if complete, let value = account.balances?.current, value.isFinite {
+                let invested = held.filter { securities[$0.securityId]?.type != "cash" }.compactMap(\.institutionValue).reduce(0, +)
+                let residual = value - invested
+                let tolerance = max(1, abs(value) * 0.001)
+                let soFiMargin = item.institution.caseInsensitiveCompare("SoFi") == .orderedSame &&
+                    accountCash > 0 && residual < 0 && abs(residual + accountCash) < tolerance
+                // Some brokers omit cash holdings; SoFi can report a margin debit as positive cash.
+                if cashHoldings.isEmpty || abs(residual - accountCash) < tolerance || soFiMargin {
+                    accountCash = residual
+                }
+            }
             return BrokerageBalance(accountID: account.accountId, itemID: item.id, institution: item.institution,
                              name: account.mask.map { "\(account.name) ••\($0)" } ?? account.name, value: account.balances?.current,
-                             cashValue: held.filter { securities[$0.securityId]?.type == "cash" }.compactMap(\.institutionValue).reduce(0, +),
-                             holdingsComplete: complete)
+                             cashValue: accountCash, holdingsComplete: complete, cashMethodVersion: 1)
         }
+        let cash = balances.compactMap(\.cashValue).reduce(0, +)
         return Parsed(positions: positions, cash: cash, accountBalances: balances)
     }
 }
@@ -429,7 +516,7 @@ nonisolated struct HoldingsResponse: Decodable, Sendable {
 @Observable final class PortfolioStore {
     static let shared = PortfolioStore()
 
-    var credentials = PlaidCredentials.load()
+    var credentials: PlaidCredentials
     var items: [PlaidItem] = []
     var snapshot = PortfolioSnapshot()
     var syncing = false
@@ -439,13 +526,23 @@ nonisolated struct HoldingsResponse: Decodable, Sendable {
     var needsRelink: Set<String> = []
     @ObservationIgnored private var handler: (any Handler)?
 
-    private static let cacheURL = URL.applicationSupportDirectory.appending(path: "portfolio-v3.json")
+    private let cacheURL: URL
+    private let defaults: UserDefaults
     private static let overridesKey = "portfolioCostOverrides"
-    private var overrides = UserDefaults.standard.dictionary(forKey: PortfolioStore.overridesKey) as? [String: Double] ?? [:]
+    private var overrides: [String: Double]
 
-    init() {
+    convenience init() {
+        self.init(defaults: .standard, cacheURL: URL.applicationSupportDirectory.appending(path: "portfolio-v3.json"))
+        credentials = PlaidCredentials.load()
         items = Self.loadItems()
-        if let data = try? Data(contentsOf: Self.cacheURL),
+    }
+
+    init(defaults: UserDefaults, cacheURL: URL) {
+        self.defaults = defaults
+        self.cacheURL = cacheURL
+        credentials = PlaidCredentials(clientID: "", secret: "", environment: .sandbox)
+        overrides = defaults.dictionary(forKey: Self.overridesKey) as? [String: Double] ?? [:]
+        if let data = try? Data(contentsOf: cacheURL),
            let cached = try? JSONDecoder().decode(PortfolioSnapshot.self, from: data) { snapshot = applyingOverrides(cached) }
     }
 
@@ -462,8 +559,9 @@ nonisolated struct HoldingsResponse: Decodable, Sendable {
     }
 
     func setCost(_ position: Position, total: Double?) {
+        guard total?.isFinite != false else { return }
         overrides[position.id] = total
-        UserDefaults.standard.set(overrides, forKey: Self.overridesKey)
+        defaults.set(overrides, forKey: Self.overridesKey)
         snapshot = applyingOverrides(snapshot)
         persistSnapshot()
     }
@@ -481,15 +579,15 @@ nonisolated struct HoldingsResponse: Decodable, Sendable {
 
     private func persistSnapshot() {
         do {
-            try FileManager.default.createDirectory(at: .applicationSupportDirectory, withIntermediateDirectories: true)
-            try JSONEncoder().encode(snapshot).write(to: Self.cacheURL, options: [.atomic, .completeFileProtection])
+            try FileManager.default.createDirectory(at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try JSONEncoder().encode(snapshot).write(to: cacheURL, options: [.atomic, .completeFileProtection])
         } catch {}
     }
 
     func reloadFromKeychain() {
         credentials = PlaidCredentials.load()
         items = Self.loadItems()
-        if let data = try? Data(contentsOf: Self.cacheURL),
+        if let data = try? Data(contentsOf: cacheURL),
            let cached = try? JSONDecoder().decode(PortfolioSnapshot.self, from: data) {
             snapshot = applyingOverrides(cached)
         }
@@ -559,11 +657,7 @@ nonisolated struct HoldingsResponse: Decodable, Sendable {
         defer { syncing = false }
         error = nil
         let client = client
-        var positions: [Position] = []
-        var cash: [String: Double] = [:]
-        var balances: [BrokerageBalance] = []
-        var histories: [InvestmentHistory] = []
-        var failed = Set<String>()
+        var outcomes: [String: PortfolioItemSync] = [:]
         await withTaskGroup(of: (PlaidItem, Result<HoldingsResponse.Parsed, Error>).self) { group in
             for item in activeItems {
                 group.addTask { (item, await Result { try await client.holdings(item) }) }
@@ -571,14 +665,11 @@ nonisolated struct HoldingsResponse: Decodable, Sendable {
             for await (item, result) in group {
                 switch result {
                 case let .success(parsed):
-                    positions += parsed.positions
-                    balances += parsed.accountBalances
-                    if let history = parsed.history { histories.append(history) }
-                    cash[item.id] = parsed.cash
+                    outcomes[item.id] = .synced(parsed)
                     itemErrors[item.id] = parsed.historyError.map { "Transaction history unavailable: " + $0 }
                     needsRelink.remove(item.id)
                 case let .failure(failure):
-                    failed.insert(item.id)
+                    outcomes[item.id] = .failed
                     let code = (failure as? PlaidError)?.code
                     if code == "ITEM_LOGIN_REQUIRED" || code == "PENDING_EXPIRATION" || code == "PENDING_DISCONNECT" { needsRelink.insert(item.id) }
                     itemErrors[item.id] = code == "PRODUCT_NOT_READY"
@@ -587,17 +678,7 @@ nonisolated struct HoldingsResponse: Decodable, Sendable {
                 }
             }
         }
-        let receivedHistory = Set(histories.map(\.itemID))
-        histories += (snapshot.histories ?? []).filter { history in !receivedHistory.contains(history.itemID) && failed.contains(history.itemID) }
-        balances += (snapshot.accountBalances ?? []).filter { failed.contains($0.itemID) }
-        let kept = applyingOverrides(snapshot).positions.filter { failed.contains($0.itemID) }
-        for id in failed { cash[id] = snapshot.cashByItem[id] }
-        let sorted = (positions + kept).sorted {
-            ($0.symbol, $0.option == nil ? 0 : 1, $0.option?.expiration ?? .distantPast, $0.option?.strike ?? 0)
-                < ($1.symbol, $1.option == nil ? 0 : 1, $1.option?.expiration ?? .distantPast, $1.option?.strike ?? 0)
-        }
-        snapshot = applyingOverrides(PortfolioSnapshot(positions: sorted, cashByItem: cash,
-                                                       updated: failed.count == activeItems.count ? snapshot.updated : .now, costMethodVersion: 2, accountBalances: balances, histories: histories))
+        snapshot = applyingOverrides(PortfolioSnapshot.merging(applyingOverrides(snapshot), outcomes: outcomes, syncedAt: .now))
         persistSnapshot()
         await PushDelegate.syncStockAlerts()
     }
@@ -611,6 +692,13 @@ nonisolated struct HoldingsResponse: Decodable, Sendable {
         snapshot.cashByItem[item.id] = nil
         snapshot.accountBalances?.removeAll { $0.itemID == item.id }
         snapshot.histories?.removeAll { $0.itemID == item.id }
+        snapshot.itemSyncedAt?[item.id] = nil
+        snapshot.failedItemIDs?.removeAll { $0 == item.id }
+        snapshot.balanceHistory = snapshot.balanceHistory?.compactMap { sample in
+            var sample = sample
+            sample.balances.removeAll { $0.itemID == item.id }
+            return sample.balances.isEmpty ? nil : sample
+        }
         persistSnapshot()
         await PushDelegate.syncStockAlerts()
     }

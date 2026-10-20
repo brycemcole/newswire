@@ -74,10 +74,12 @@ nonisolated struct PortfolioHolding: Identifiable {
 
 struct PortfolioHoldingRow: View {
     let holding: PortfolioHolding
+    let store: PortfolioStore
     @State private var expanded = false
 
-    init(holding: PortfolioHolding) {
+    init(holding: PortfolioHolding, store: PortfolioStore = .shared) {
         self.holding = holding
+        self.store = store
         #if DEBUG
         _expanded = State(initialValue: CommandLine.arguments.contains("-portfolioExpanded") && ["AAPL", "NVDA"].contains(holding.symbol))
         #endif
@@ -90,7 +92,9 @@ struct PortfolioHoldingRow: View {
                     Text("\(account.institution) · \(account.name)")
                         .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     ForEach(account.positions) { position in
-                        NavigationLink(value: MarketSymbol(id: holding.symbol)) {
+                        NavigationLink {
+                            PortfolioPositionDetail(position: position, store: store)
+                        } label: {
                             PositionRow(position: position, showsAccount: false)
                         }
                     }
@@ -102,24 +106,28 @@ struct PortfolioHoldingRow: View {
                     .font(.subheadline)
             }
         } label: {
-            HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(holding.symbol).font(.headline)
-                    Text(holding.name).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    Text(composition).font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 0)
-                VStack(alignment: .trailing, spacing: 4) {
-                    Text(holding.value.map { (holding.partialValue ? "Known " : "") + Money.text($0) } ?? "Unavailable")
-                        .font(.body.weight(.semibold)).monospacedDigit()
-                        .numericTextTransition(value: holding.value)
-                    if let gain = holding.gain {
-                        Text((holding.estimated ? "≈" : "") + Money.signed(gain))
-                            .font(.caption.weight(.medium)).monospacedDigit().foregroundStyle(Money.tint(gain))
-                        Text(holding.partialGain ? "Partial unrealized" : "Unrealized")
-                            .font(.caption2).foregroundStyle(.secondary)
-                    } else {
-                        Text("Cost unavailable").font(.caption2).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(holding.symbol).font(.headline).lineLimit(1).minimumScaleFactor(0.8)
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(holding.name).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        Text(composition).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                    VStack(alignment: .trailing, spacing: 4) {
+                        Text(holding.value.map { (holding.partialValue ? "Known " : "") + Money.text($0) } ?? "Unavailable")
+                            .font(.body.weight(.semibold)).monospacedDigit()
+                            .numericTextTransition(value: holding.value)
+                        if let gain = holding.gain {
+                            Text((holding.estimated ? "≈" : "") + Money.signed(gain))
+                                .font(.caption.weight(.medium)).monospacedDigit().foregroundStyle(Money.tint(gain))
+                            Text(holding.partialGain ? "Partial unrealized" : "Unrealized")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        } else {
+                            Text("Unrealized unavailable").font(.caption2).foregroundStyle(.secondary)
+                            Text(holding.positions.contains { $0.costBasis == nil } ? "Cost unavailable" : "Value unavailable")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
                     }
                 }
             }
@@ -153,12 +161,13 @@ struct PortfolioOverview: View {
 
     private var range: ChartRange { performance.range }
     private var series: PerformanceSeries? { performance.series[range] }
+    private var recorded: [PerformancePoint] { performance.recorded[range] ?? [] }
     private var confirmedFunding: AccountFunding? { funding.combined(for: accounts) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 5) {
-                Text(selected == nil ? "\(title) · \(snapshot.reportedValue == nil ? "holdings value" : "brokerage value")" : "Estimated value at selected date")
+                Text(selected == nil ? "\(title) · \(snapshot.reportedValue == nil ? "holdings value" : "brokerage value")" : (series == nil ? "Recorded value at selected sync" : "Estimated value at selected date"))
                     .font(.subheadline).foregroundStyle(.secondary)
                 Text(Money.text(selected?.value ?? snapshot.totalValue))
                     .font(.system(.largeTitle, design: .rounded).weight(.bold)).monospacedDigit()
@@ -200,7 +209,15 @@ struct PortfolioOverview: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
+            if series == nil, let first = recorded.first {
+                Text("Recorded balances · Since \(first.date.formatted(.dateTime.month(.abbreviated).day()))")
+                    .font(.caption.weight(.medium)).foregroundStyle(.secondary)
+            }
             chart
+            if series == nil, !recorded.isEmpty {
+                Text("Includes deposits and withdrawals, not just investment gains. Earlier history is unavailable.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             if let series {
                 let change = selected.map { series.change(at: $0) } ?? series.change
                 let percent = selected.flatMap { series.percent(at: $0) } ?? (selected == nil ? series.percent : nil)
@@ -221,18 +238,23 @@ struct PortfolioOverview: View {
                     .font(.subheadline)
             }
             Button { explainingHistory = true } label: {
-                Label("Transaction-based performance", systemImage: "info.circle")
+                Label(series == nil && !recorded.isEmpty ? "About recorded balances" : "Transaction-based performance", systemImage: "info.circle")
                     .font(.caption).foregroundStyle(.secondary)
             }
             .buttonStyle(.borderless)
             .alert("About this chart", isPresented: $explainingHistory) {
                 Button("OK", role: .cancel) {}
             } message: {
-                Text("Daily values reconstruct holdings and cash from recorded trades, including positions sold in full. Dollar gain excludes external deposits and withdrawals and includes income and fees. Percentage uses Modified Dietz, weighting funding by time invested. Order dates are used when available, otherwise posting dates; flows are treated as end-of-day. Values end at the latest brokerage sync. Missing history, option prices or unresolved corporate actions make performance unavailable.")
+                if series == nil, !recorded.isEmpty {
+                    Text("These are brokerage-reported account values saved during successful syncs, including cash and options. Plaid's underlying values may be delayed. Only recorded observations are shown; missing earlier dates are not reconstructed. Deposits and withdrawals affect these values, so this is not an investment-return chart.\n\n" + (performance.errors[range] ?? "Complete trade-based performance is unavailable."))
+                } else {
+                    Text("Daily values reconstruct holdings and cash from recorded trades, including positions sold in full. Dollar gain excludes external deposits and withdrawals and includes income and fees. Percentage uses Modified Dietz, weighting funding by time invested. Order dates are used when available, otherwise posting dates; flows are treated as end-of-day. Values end at the latest brokerage sync. Missing history, option prices or unresolved corporate actions make performance unavailable.")
+                }
             }
         }
         .task(id: range) { await refresh() }
         .task(id: snapshot.updated) { await refresh() }
+        .task(id: snapshot.failedItemIDs) { await refresh() }
         .task(id: phase) {
             guard phase == .active else { return }
             while !Task.isCancelled {
@@ -242,10 +264,15 @@ struct PortfolioOverview: View {
         }
         .onChange(of: range) { selected = nil }
         .onChange(of: snapshot.positions) { selected = nil }
+        .onChange(of: snapshot.updated) { selected = nil }
     }
 
     private func refresh() async {
         #if DEBUG
+        if CommandLine.arguments.contains("-portfolioRecordedPreview") || CommandLine.arguments.contains("-portfolioPartialSync") {
+            await performance.refresh(snapshot)
+            return
+        }
         if CommandLine.arguments.contains("-portfolioLedgerPreview") {
             do {
                 let built = try PortfolioLedger(snapshot: snapshot, start: LedgerPreview.day(-4)).build(prices: LedgerPreview.prices)
@@ -285,21 +312,28 @@ struct PortfolioOverview: View {
     }
 
     @ViewBuilder private var chart: some View {
-        if let series, series.points.count > 1 {
-            let values = series.points.map(\.value) + [series.baseline]
+        let points = series?.points ?? recorded
+        if points.count > 1 {
+            let values = points.map(\.value) + (series.map { [$0.baseline] } ?? [])
             let low = values.min() ?? 0
             let high = values.max() ?? 1
             let pad = max((high - low) * 0.1, 1)
-            let tint = Money.tint(series.change)
+            let tint = series.map { Money.tint($0.change) } ?? Color.wireAccent
             Chart {
-                ForEach(series.points) { point in
+                ForEach(points) { point in
                     AreaMark(x: .value("Date", point.date), yStart: .value("Floor", low - pad), yEnd: .value("Value", point.value))
                         .foregroundStyle(LinearGradient(colors: [tint.opacity(0.22), tint.opacity(0)], startPoint: .top, endPoint: .bottom))
                     LineMark(x: .value("Date", point.date), y: .value("Value", point.value))
                         .foregroundStyle(tint).lineStyle(StrokeStyle(lineWidth: 2))
+                    if series == nil {
+                        PointMark(x: .value("Date", point.date), y: .value("Value", point.value))
+                            .foregroundStyle(tint).symbolSize(12)
+                    }
                 }
-                RuleMark(y: .value("Baseline", series.baseline))
-                    .foregroundStyle(.secondary.opacity(0.4)).lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 4]))
+                if let series {
+                    RuleMark(y: .value("Baseline", series.baseline))
+                        .foregroundStyle(.secondary.opacity(0.4)).lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 4]))
+                }
                 if let selected {
                     RuleMark(x: .value("Selected time", selected.date)).foregroundStyle(.secondary)
                     PointMark(x: .value("Date", selected.date), y: .value("Value", selected.value)).foregroundStyle(tint)
@@ -316,16 +350,19 @@ struct PortfolioOverview: View {
                             .onChanged { value in
                                 guard case .second(true, let drag?) = value, let frame = proxy.plotFrame,
                                       let date: Date = proxy.value(atX: drag.location.x - geometry[frame].origin.x) else { return }
-                                selected = series.points.min { abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date)) }
+                                selected = points.min { abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date)) }
                             }
                             .onEnded { _ in selected = nil })
                 }
             }
             .sensoryFeedback(.selection, trigger: selected?.id)
-            .accessibilityLabel("Estimated portfolio value, \(range.caption)")
+            .accessibilityLabel("\(series == nil ? "Recorded brokerage balances" : "Estimated portfolio value"), \(range.caption)")
         } else {
             VStack(spacing: 8) {
-                if refreshing { ProgressView(); Text("Loading performance…") }
+                if series == nil, !recorded.isEmpty {
+                    Image(systemName: "chart.xyaxis.line")
+                    Text("Recording account values. A graph will appear after another successful sync.")
+                } else if refreshing { ProgressView(); Text("Loading performance…") }
                 else { Image(systemName: "chart.xyaxis.line"); Text(performance.errors[range] ?? "Performance unavailable") }
             }
             .font(.subheadline).foregroundStyle(.secondary)

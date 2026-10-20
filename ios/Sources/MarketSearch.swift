@@ -25,6 +25,27 @@ nonisolated enum MoverList: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+enum FinancialFreshnessPreview {
+    static var active: Bool {
+        #if DEBUG
+        CommandLine.arguments.contains("-financialFreshnessPreview")
+        #else
+        false
+        #endif
+    }
+
+    /// Fixed clock for the DEBUG preview: Monday 2026-10-19 15:00 UTC, inside the regular session.
+    static let now = ISO8601DateFormatter().date(from: "2026-10-19T15:00:00Z")!
+
+    static var expired: Bool {
+        #if DEBUG
+        CommandLine.arguments.contains("-financialFreshnessExpired")
+        #else
+        false
+        #endif
+    }
+}
+
 enum MarketLoadState: Equatable {
     case loading
     case loaded
@@ -67,6 +88,38 @@ enum MarketSearchRecovery {
     }
 }
 
+nonisolated enum QuoteFreshness: Equatable, Sendable {
+    /// App policy: a source timestamp this old during an expected-live window counts as delayed.
+    static let liveWindow: TimeInterval = 20 * 60
+
+    case live
+    case closed
+    case delayed(minutes: Int)
+    case unavailable
+    case unknown
+
+    struct Notice: Equatable {
+        let symbol: String
+        let text: String
+        let tint: Color
+    }
+
+    var notice: Notice? {
+        switch self {
+        case .delayed(let minutes): Notice(symbol: "clock.badge.exclamationmark", text: "Delayed \(minutes)m", tint: .orange)
+        case .unavailable: Notice(symbol: "exclamationmark.triangle.fill", text: "Update failed", tint: .orange)
+        case .unknown: Notice(symbol: "clock.badge.questionmark", text: "Source time unknown", tint: .secondary)
+        case .live, .closed: nil
+        }
+    }
+}
+
+nonisolated enum QuoteFetchStatus: Equatable, Sendable {
+    case ok
+    case missing
+    case failed
+}
+
 nonisolated struct MarketQuote: Sendable, Hashable, Identifiable {
     let symbol: String
     let name: String
@@ -81,6 +134,8 @@ nonisolated struct MarketQuote: Sendable, Hashable, Identifiable {
     let extendedPercent: Double?
     let earnings: Date?
     let earningsEstimated: Bool
+    /// Source timestamp of the selected price (pre, post or regular session), not a fetch time.
+    let observedAt: Date?
 
     var id: String { symbol }
 
@@ -106,6 +161,7 @@ nonisolated struct MarketQuote: Sendable, Hashable, Identifiable {
             changePercent = value["preMarketChangePercent"]?.raw ?? (pre - price) / price * 100
             extendedLabel = "Pre"
             extendedPercent = changePercent
+            observedAt = value["preMarketTime"]?.date
         } else if state.hasPrefix("POST") || state == "CLOSED", let post, post > 0,
                   (value["postMarketTime"]?.raw ?? 0) >= regularTime {
             self.price = post
@@ -113,12 +169,14 @@ nonisolated struct MarketQuote: Sendable, Hashable, Identifiable {
             changePercent = value["postMarketChangePercent"]?.raw ?? (post - price) / price * 100
             extendedLabel = "After"
             extendedPercent = changePercent
+            observedAt = value["postMarketTime"]?.date
         } else {
             self.price = price
             change = minor("regularMarketChange") ?? 0
             changePercent = value["regularMarketChangePercent"]?.raw ?? 0
             extendedLabel = nil
             extendedPercent = nil
+            observedAt = value["regularMarketTime"]?.date
         }
         earnings = value["earningsTimestampStart"]?.date ?? value["earningsTimestamp"]?.date
         if case .bool(true)? = value["isEarningsDateEstimate"] { earningsEstimated = true } else { earningsEstimated = false }
@@ -143,6 +201,27 @@ nonisolated struct MarketQuote: Sendable, Hashable, Identifiable {
         let hour = calendar.component(.hour, from: earnings)
         return hour > 0 && hour < 10 ? "Before open" : hour >= 16 ? "After close" : nil
     }
+
+    func freshness(at now: Date) -> QuoteFreshness {
+        guard let observedAt else { return .unknown }
+        guard expectsLiveTrading(at: now) else { return .closed }
+        let age = now.timeIntervalSince(observedAt)
+        if age < -60 { return .unknown }
+        if age <= QuoteFreshness.liveWindow { return .live }
+        return .delayed(minutes: Int(age / 60))
+    }
+
+    private func expectsLiveTrading(at now: Date) -> Bool {
+        switch type {
+        case "CRYPTOCURRENCY": return true
+        case "FUTURE", "CURRENCY": return MarketClock.futuresScheduled(now)
+        case "INDEX": return MarketClock.session(on: now)?.contains(now) ?? false
+        case "MUTUALFUND": return false
+        default:
+            guard MarketClock.session(on: now) != nil else { return false }
+            return (4..<20).contains(MarketClock.calendar.component(.hour, from: now))
+        }
+    }
 }
 
 @Observable final class MarketBoard {
@@ -159,23 +238,79 @@ nonisolated struct MarketQuote: Sendable, Hashable, Identifiable {
     private(set) var sparks: [String: Spark] = [:]
     private(set) var movers: [MoverList: [MarketQuote]] = [:]
     private(set) var moversState = Dictionary(uniqueKeysWithValues: MoverList.allCases.map { ($0, MarketLoadState.loading) })
+    private(set) var quoteStatus: [String: QuoteFetchStatus] = [:]
     private var quotedAt: [String: Date] = [:]
     private var sparkedAt: [String: Date] = [:]
     private var moversAt: [MoverList: Date] = [:]
+    @ObservationIgnored private let fetchQuotes: ([String]) async throws -> [MarketQuote]
+    @ObservationIgnored private let fetchSparks: ([String]) async throws -> [String: Spark]
+    @ObservationIgnored private let clock: () -> Date
+
+    init(
+        fetchQuotes: @escaping ([String]) async throws -> [MarketQuote] = { try await MarketClient.quotes($0) },
+        fetchSparks: @escaping ([String]) async throws -> [String: Spark] = { try await MarketClient.sparks($0) },
+        clock: @escaping () -> Date = { .now }
+    ) {
+        self.fetchQuotes = fetchQuotes
+        self.fetchSparks = fetchSparks
+        self.clock = clock
+    }
 
     private func stale(_ stamp: Date?, _ limit: TimeInterval) -> Bool {
-        stamp.map { Date.now.timeIntervalSince($0) > limit } ?? true
+        stamp.map { clock().timeIntervalSince($0) > limit } ?? true
+    }
+
+    #if DEBUG
+    func seedFreshnessPreview(now: Date) {
+        func quote(_ symbol: String, _ name: String, price: Double, minutesAgo: Double?) -> MarketQuote? {
+            let stamp = minutesAgo.map { ",\"regularMarketTime\":\(Int(now.addingTimeInterval(-$0 * 60).timeIntervalSince1970))" } ?? ""
+            let json = #"{"symbol":"\#(symbol)","longName":"\#(name)","quoteType":"ETF","regularMarketPrice":\#(price)\#(stamp),"regularMarketChange":1.2,"regularMarketChangePercent":0.45,"marketState":"REGULAR"}"#
+            return (try? JSONDecoder().decode(YValue.self, from: Data(json.utf8))).flatMap(MarketQuote.init)
+        }
+        let fresh: [(String, String, Double, Double?)] = [
+            ("SPY", "SPDR S&P 500", 681.2, 45), ("^VIX", "CBOE Volatility Index", 15.2, 2), ("NVDA", "NVIDIA", 182.4, nil),
+        ]
+        for (symbol, name, price, minutes) in fresh {
+            if let item = quote(symbol, name, price: price, minutesAgo: minutes) { quotes[symbol] = item; quoteStatus[symbol] = .ok }
+        }
+        if let qqq = quote("QQQ", "Invesco QQQ Trust", price: 612.4, minutesAgo: 10) {
+            quotes[qqq.symbol] = qqq
+            quoteStatus["QQQ"] = .failed
+        }
+        quoteStatus["IWM"] = .failed
+    }
+    #endif
+
+    /// Freshness of the cached quote for a symbol, or nil when the board has never been asked for it.
+    func freshness(of symbol: String, now: Date = .now) -> QuoteFreshness? {
+        switch quoteStatus[symbol] {
+        case .failed?, .missing?: return .unavailable
+        case .ok?, nil: return quotes[symbol]?.freshness(at: now)
+        }
     }
 
     func refresh(quotes wanted: [String], sparks sparkWanted: [String]) async {
         let needQuotes = Array(Set(wanted.filter { stale(quotedAt[$0], 25) }))
         let needSparks = Array(Set(sparkWanted.filter { stale(sparkedAt[$0], 90) }).prefix(20))
-        async let foundQuotes = try? MarketClient.quotes(needQuotes)
-        async let foundSparks = try? MarketClient.sparks(needSparks)
-        let (q, s) = await (foundQuotes, foundSparks)
+        let quoteResult: Result<[MarketQuote], Error>
+        if needQuotes.isEmpty {
+            quoteResult = .success([])
+        } else {
+            do { quoteResult = .success(try await fetchQuotes(needQuotes)) } catch { quoteResult = .failure(error) }
+        }
+        var s: [String: Spark]?
+        if !needSparks.isEmpty { s = try? await fetchSparks(needSparks) }
         guard !Task.isCancelled else { return }
-        for quote in q ?? [] { quotes[quote.symbol] = quote; quotedAt[quote.symbol] = .now }
-        for (symbol, spark) in s ?? [:] { sparks[symbol] = spark; sparkedAt[symbol] = .now }
+        switch quoteResult {
+        case .success(let found):
+            let returned = Set(found.map(\.symbol))
+            let stamp = clock()
+            for quote in found { quotes[quote.symbol] = quote; quotedAt[quote.symbol] = stamp; quoteStatus[quote.symbol] = .ok }
+            for symbol in needQuotes where !returned.contains(symbol) { quoteStatus[symbol] = .missing }
+        case .failure:
+            for symbol in needQuotes { quoteStatus[symbol] = .failed }
+        }
+        for (symbol, spark) in s ?? [:] { sparks[symbol] = spark; sparkedAt[symbol] = clock() }
     }
 
     func refresh(movers list: MoverList, force: Bool = false) async {
@@ -186,17 +321,18 @@ nonisolated struct MarketQuote: Sendable, Hashable, Identifiable {
             found = try await MarketClient.movers(list)
             guard !Task.isCancelled else { return }
             movers[list] = found
-            moversAt[list] = .now
+            moversAt[list] = clock()
             moversState[list] = .loaded
         } catch {
             guard !Task.isCancelled else { return }
             moversState[list] = .unavailable
             return
         }
-        for quote in found { quotes[quote.symbol] = quote; quotedAt[quote.symbol] = .now }
+        let stamp = clock()
+        for quote in found { quotes[quote.symbol] = quote; quotedAt[quote.symbol] = stamp; quoteStatus[quote.symbol] = .ok }
         let symbols = found.prefix(6).map(\.symbol).filter { stale(sparkedAt[$0], 90) }
         guard !symbols.isEmpty, let lines = try? await MarketClient.sparks(symbols) else { return }
-        for (symbol, spark) in lines { sparks[symbol] = spark; sparkedAt[symbol] = .now }
+        for (symbol, spark) in lines { sparks[symbol] = spark; sparkedAt[symbol] = clock() }
     }
 
     var upcomingEarnings: [MarketQuote] {

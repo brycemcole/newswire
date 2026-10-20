@@ -16,10 +16,16 @@ struct HoldingSection: View {
             QuoteSection("Your Position") {
                 VStack(alignment: .leading, spacing: 22) {
                     ForEach(positions) { position in
-                        PositionCard(symbol: symbol, position: position, spot: spot, store: store)
+                        VStack(alignment: .leading, spacing: 6) {
+                            PositionCard(symbol: symbol, position: position, spot: spot, store: store)
+                            if store.snapshot.isStale(position.itemID) {
+                                Text("Brokerage not refreshed · showing cached values")
+                                    .font(.caption).foregroundStyle(.orange)
+                            }
+                        }
                     }
-                    if let updated = store.snapshot.updated {
-                        Text("Brokerage values as of \(updated.formatted(.relative(presentation: .named))). ≈ means cost is estimated from trade history. Estimates use Black-Scholes with the option's implied volatility.")
+                    if let updated = store.snapshot.aggregateSyncedAt {
+                        Text("Brokerages last synced \(updated.formatted(.relative(presentation: .named))). ≈ means cost is estimated from trade history. Estimates use Black-Scholes with the option's implied volatility.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -58,11 +64,12 @@ private struct StatRows: View {
     }
 }
 
-private struct PositionCard: View {
+struct PositionCard: View {
     let symbol: String
     let position: Position
     let spot: (label: String, price: Double)?
     let store: PortfolioStore
+    var requestsOptionQuote = true
     @State private var quote: OptionQuote?
     @State private var scenario: Double?
     @State private var editingCost = false
@@ -71,7 +78,6 @@ private struct PositionCard: View {
 
     private var estimated: String { position.isEstimated ? "≈" : "" }
     private var multiplier: Double { position.option.map { 100 * abs($0.contracts) } ?? abs(position.quantity) }
-    private var sign: Double { (position.option?.contracts ?? position.quantity) < 0 ? -1 : 1 }
     private var estimate: OptionEstimate? {
         guard let quote, let option = position.option else { return nil }
         return OptionEstimate(quote: quote, option: option)
@@ -94,23 +100,31 @@ private struct PositionCard: View {
             }
             .font(.footnote.weight(.semibold))
             .buttonStyle(.borderless)
+            .disabled(multiplier == 0 || !multiplier.isFinite)
+            if position.manualCost != nil {
+                Text("Using your verified cost override").font(.caption).foregroundStyle(.secondary)
+            } else if position.costBasis == nil {
+                Text("Cost basis unavailable from brokerage and reconciled trade history. Unrealized gain is unavailable, not zero.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
         .alert(position.option == nil ? "Average cost per share" : "Premium paid per share", isPresented: $editingCost) {
             TextField("0.00", text: $costText).keyboardType(.decimalPad)
             Button("Save") {
-                if let perShare = Double(costText.replacingOccurrences(of: ",", with: "").replacingOccurrences(of: "$", with: "")), perShare >= 0 {
-                    store.setCost(position, total: sign * perShare * multiplier)
+                if let total = position.totalCost(averageCost: costText) {
+                    store.setCost(position, total: total)
                 }
             }
+            .disabled(position.totalCost(averageCost: costText) == nil)
             if position.manualCost != nil {
                 Button("Use Brokerage Cost", role: .destructive) { store.setCost(position, total: nil) }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text(position.option == nil ? "Overrides the cost from your trade history." : "The price per share, before the ×100 multiplier.")
+            Text(position.option == nil ? "Enter the average cost verified with your brokerage, not the current price. This local override calculates unrealized gain, not daily change. It does not change your brokerage account." : "The price per share, before the ×100 multiplier. This local override does not change your brokerage account.")
         }
         .task(id: phase == .active) {
-            guard let option = position.option, phase == .active else { return }
+            guard requestsOptionQuote, let option = position.option, phase == .active else { return }
             while !Task.isCancelled {
                 if let fresh = try? await OptionChain.quote(symbol: symbol, option: option) { quote = fresh }
                 do { try await Task.sleep(for: .seconds(quote?.liveMarket == true ? 20 : 120)) } catch { return }
@@ -130,7 +144,7 @@ private struct PositionCard: View {
         guard let cost = position.costBasis else { return nil }
         let gain = value - cost
         let percent = cost != 0 ? " (\(Money.percent(gain / abs(cost))))" : ""
-        return Stat(label: "Gain", value: estimated + Money.signed(gain) + percent, tint: Money.tint(gain))
+        return Stat(label: "Unrealized gain", value: estimated + Money.signed(gain) + percent, tint: Money.tint(gain))
     }
 
     private var stockStats: [Stat] {
@@ -144,6 +158,7 @@ private struct PositionCard: View {
             stats.append(Stat(label: "Avg cost", value: estimated + Money.text(cost / position.quantity)))
         }
         if let value, let gain = gain(value) { stats.append(gain) }
+        else { stats.append(Stat(label: "Unrealized gain", value: "Unavailable")) }
         return stats
     }
 

@@ -129,7 +129,7 @@ struct CompactPortfolioTicker: View {
         let today = performance.series[.day]
         var result = [PortfolioTicker.Item(id: "portfolio",
             title: connected ? Money.text(today?.last ?? store.snapshot.totalValue) : "Portfolio",
-            change: connected ? today?.percent.map(Money.percent) ?? "—" : "Connect",
+            change: connected ? (store.snapshot.itemIDs.contains(where: { store.snapshot.isStale($0) }) ? "Sync needed" : today?.percent.map(Money.percent) ?? "—") : "Connect",
             tint: today.map { Money.tint($0.change) } ?? .secondary, action: openPortfolio)]
         result += watchlist.symbols.map { symbol in
             let quote = board.quotes[symbol]
@@ -155,6 +155,7 @@ struct CompactPortfolioTicker: View {
                 }
             }
             .task(id: store.snapshot.updated) { await performance.refresh(store.snapshot) }
+            .task(id: store.snapshot.failedItemIDs) { await performance.refresh(store.snapshot) }
     }
 }
 

@@ -20,6 +20,9 @@ struct PortfolioView: View {
         if CommandLine.arguments.contains("-portfolioAccount") {
             _account = State(initialValue: PortfolioAccount.ID(item: "fidelity", name: "ira"))
         }
+        if CommandLine.arguments.contains("-portfolioPartialSync") && !CommandLine.arguments.contains("-portfolioAllAccounts") {
+            _account = State(initialValue: PortfolioAccount.ID(item: "sofi", name: "invest"))
+        }
         if CommandLine.arguments.contains("-portfolioSearch") {
             _search = State(initialValue: "NVDA")
         }
@@ -37,8 +40,29 @@ struct PortfolioView: View {
         guard let account, let entry = accounts.first(where: { $0.id == account }) else { return store.snapshot }
         let balances = store.snapshot.accountBalances?.filter { $0.itemID == account.item && $0.accountID == account.name }
         let residual = entry.reportedValue.map { $0 - entry.positions.compactMap(\.value).reduce(0, +) }
-        return PortfolioSnapshot(positions: entry.positions, cashByItem: residual.map { [account.item: $0] } ?? [:],
-                                 updated: store.snapshot.updated, costMethodVersion: store.snapshot.costMethodVersion, accountBalances: balances, histories: store.snapshot.histories)
+        var scoped = store.snapshot.itemScope(account.item)
+        scoped.positions = entry.positions
+        scoped.cashByItem = residual.map { [account.item: $0] } ?? [:]
+        scoped.accountBalances = balances
+        return scoped
+    }
+
+    private var staleItems: [PlaidItem] { store.activeItems.filter { store.snapshot.isStale($0.id) } }
+
+    private var syncWarning: String? {
+        let scope = staleItems.filter { account == nil || $0.id == account?.item }
+        guard !scope.isEmpty else { return nil }
+        let known = scope.compactMap { item in store.snapshot.syncedAt(item: item.id).map { (item.institution, $0) } }
+        let unknown = scope.filter { store.snapshot.syncedAt(item: $0.id) == nil }.map(\.institution)
+        var parts: [String] = []
+        if let oldest = known.map(\.1).min() {
+            let names = known.map(\.0).joined(separator: ", ")
+            parts.append("\(names) didn't refresh. Oldest retained values are from the last successful sync, \(oldest.formatted(.relative(presentation: .named))).")
+        }
+        if !unknown.isEmpty {
+            parts.append("\(unknown.joined(separator: ", ")) has no recorded successful sync time.")
+        }
+        return parts.joined(separator: " ")
     }
 
     private var holdings: [PortfolioHolding] {
@@ -82,6 +106,12 @@ struct PortfolioView: View {
                         }
                         .accessibilityLabel("Filter holdings by account")
 
+                    }
+                    if let syncWarning {
+                        Section {
+                            Label(syncWarning, systemImage: "exclamationmark.triangle.fill")
+                                .font(.footnote).foregroundStyle(.orange)
+                        }
                     }
                     Section {
                         PortfolioOverview(snapshot: overviewSnapshot, title: account == nil ? "All accounts" : accounts.first { $0.id == account }?.institution ?? "Account", accounts: account.flatMap { id in accounts.first { $0.id == id }.map { [$0] } } ?? accounts)
@@ -188,7 +218,7 @@ struct PortfolioView: View {
                 if CommandLine.arguments.contains("-portfolioPreview") || CommandLine.arguments.contains("-portfolioAudit") { return }
                 #endif
                 store.reloadFromKeychain()
-                if store.snapshot.accountBalances == nil || store.snapshot.histories == nil || store.snapshot.histories?.contains(where: { $0.cashSecurityIDs == nil || $0.version != 1 }) == true || store.snapshot.costMethodVersion != 2 || (store.snapshot.updated ?? .distantPast).timeIntervalSinceNow < -300 { await store.sync() }
+                if store.snapshot.accountBalances == nil || store.snapshot.accountBalances?.contains(where: { $0.cashMethodVersion != 1 }) == true || store.snapshot.histories == nil || store.snapshot.histories?.contains(where: { $0.cashSecurityIDs == nil || $0.version != 1 }) == true || store.snapshot.costMethodVersion != 2 || store.snapshot.itemSyncedAt == nil || (store.snapshot.updated ?? .distantPast).timeIntervalSinceNow < -300 { await store.sync() }
             }
             .onOpenURL { url in
                 if url.path.hasPrefix("/plaid") { store.resume(from: url) }
@@ -198,8 +228,17 @@ struct PortfolioView: View {
 
     private var subtitle: String {
         if store.syncing { return "Syncing…" }
-        guard let updated = store.snapshot.updated else { return "" }
-        return "Updated " + updated.formatted(.relative(presentation: .named))
+        if let account {
+            guard let synced = store.snapshot.syncedAt(item: account.item) else { return "Sync time unknown" }
+            let text = "Synced " + synced.formatted(.relative(presentation: .named))
+            return store.snapshot.isStale(account.item) ? text + " · not refreshed" : text
+        }
+        guard let oldest = store.snapshot.aggregateSyncedAt else { return store.snapshot.itemIDs.isEmpty ? "" : "Sync time unknown" }
+        var text = "Synced " + oldest.formatted(.relative(presentation: .named))
+        if !staleItems.isEmpty { text += " · \(staleItems.count) not refreshed" }
+        let times = Set(store.activeItems.compactMap { store.snapshot.syncedAt(item: $0.id) })
+        if times.count > 1 { text += " · mixed sync times" }
+        return text
     }
 
     private var connectButton: some View {
@@ -236,6 +275,11 @@ struct PositionRow: View {
                     Text(gainText(gain))
                         .font(.subheadline.monospacedDigit())
                         .foregroundStyle(Money.tint(gain))
+                    Text("Unrealized").font(.caption2).foregroundStyle(.secondary)
+                } else {
+                    Text("Unrealized unavailable").font(.caption2).foregroundStyle(.secondary)
+                    Text(position.costBasis == nil ? "Cost unavailable" : "Value unavailable")
+                        .font(.caption2).foregroundStyle(.secondary)
                 }
             }
         }

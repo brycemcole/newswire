@@ -4,7 +4,16 @@ import WidgetKit
 
 struct WidgetGallery: View {
     let page: String
-    private let sample = WidgetPortfolio.sample
+    private var sample: WidgetPortfolio {
+        var sample = WidgetPortfolio.sample
+        if CommandLine.arguments.contains("-widgetPartialSync") {
+            sample.syncIncomplete = true
+            sample.updated = .distantPast
+            sample.day = []
+            sample.dayBaseline = nil
+        }
+        return sample
+    }
 
     var body: some View {
         ScrollView {

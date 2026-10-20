@@ -22,6 +22,7 @@ nonisolated struct InvestmentCashFlows {
         let records = InvestmentActivity.active(history.transactions).filter { $0.accountId == accountID }
         var contributed = 0.0, withdrawn = 0.0, buys = 0.0, sells = 0.0
         var unknown = 0
+        let cashIDs = Set(history.cashSecurityIDs ?? []).union((history.securities ?? []).filter { $0.type == "cash" }.map(\.securityId))
         for transaction in records {
             guard transaction.amount.isFinite else { unknown += 1; continue }
             let subtype = transaction.subtype?.lowercased() ?? ""
@@ -43,6 +44,9 @@ nonisolated struct InvestmentCashFlows {
                 if transaction.amount >= 0 { contributed += transaction.amount } else { unknown += 1 }
             } else if transaction.type == "sell", subtype == "distribution" {
                 if transaction.amount <= 0 { withdrawn -= transaction.amount } else { unknown += 1 }
+            } else if ["buy", "sell"].contains(transaction.type),
+                      transaction.securityId.map({ cashIDs.contains($0) }) == true {
+                continue
             } else if transaction.type == "buy" {
                 buys += abs(transaction.amount)
             } else if transaction.type == "sell" {

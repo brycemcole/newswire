@@ -203,3 +203,17 @@ test('neutral predictions retain outcomes but do not count as directional misses
   assert.equal(research.performance.horizons.open_to_close.scored, 0);
   assert.equal(research.performance.horizons.open_to_close.hit_rate, null);
 });
+
+test('market groups sum to the legacy market contribution and keep the base score unchanged', () => {
+  const inputs = [{ id: 'futures', status: 'live', points: -3.27 }, { id: 'oil', status: 'live', points: -3.32 }, { id: 'copper', status: 'live', points: -0.95 },
+    { id: 'vix', status: 'stale', points: 4 }, { id: 'dollar', status: 'live', points: -1.22 }, { id: 'premarket', status: 'live', points: 2 }];
+  const market = { status: 'available', points: -8.76 + 2, inputs };
+  const features = model.makeFeatures({ pulse: { status: 'available', score: 40, research_score: 40, components: { news: { status: 'available', points: -1.83 }, market, calendar: { points: 0 } } } });
+  const groupSum = ['futures_points', 'rates_points', 'volatility_points', 'overseas_points', 'commodity_points', 'market_other_points'].reduce((s, k) => s + features[k], 0);
+  assert.ok(Math.abs(groupSum - features.market_points) < 1e-9);
+  assert.ok(Math.abs(features.futures_points - (-3.27 + 2) / 40) < 1e-9);
+  assert.ok(Math.abs(features.market_other_points) < 1e-9);
+  assert.equal(model.forecastTilt(features).score, Math.round((50 + 25 * (-1.83 / 25) + 40 * (-6.76 / 40)) * 100) / 100);
+  const legacy = { score_available: 1, news_points: -1.83 / 25, market_points: -6.76 / 40, calendar_points: 0, earnings_points: 0 };
+  assert.equal(model.forecastTilt(legacy).score, model.forecastTilt(features).score);
+});

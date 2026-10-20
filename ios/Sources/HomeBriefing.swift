@@ -219,7 +219,7 @@ struct MarketStatusLine: View {
             }
             HStack(spacing: 0) {
                 ForEach(symbols, id: \.symbol) { item in
-                    Button { onQuote(item.symbol) } label: { chip(item.symbol, label: item.label) }
+                    Button { onQuote(item.symbol) } label: { chip(item.symbol, label: item.label, now: now) }
                         .buttonStyle(.plain)
                 }
             }
@@ -228,7 +228,7 @@ struct MarketStatusLine: View {
         .homeCard()
         .sheet(isPresented: $alerts) { SessionAlertsView() }
         .task(id: "\(phase.usesFutures)-\(scenePhase == .active)") {
-            guard scenePhase == .active else { return }
+            guard scenePhase == .active, !FinancialFreshnessPreview.active else { return }
             while !Task.isCancelled {
                 await board.refresh(quotes: symbols.map(\.symbol) + HomeSymbols.held, sparks: [])
                 do { try await Task.sleep(for: .seconds(30)) } catch { return }
@@ -236,8 +236,9 @@ struct MarketStatusLine: View {
         }
     }
 
-    private func chip(_ symbol: String, label: String) -> some View {
+    private func chip(_ symbol: String, label: String, now: Date) -> some View {
         let quote = board.quotes[symbol]
+        let notice = board.freshness(of: symbol, now: now)?.notice
         let value: String
         var tint = HomeFormat.tint(quote?.changePercent)
         switch symbol {
@@ -252,8 +253,14 @@ struct MarketStatusLine: View {
         }
         return VStack(alignment: .leading, spacing: 2) {
             Text(label).font(.caption2).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.75)
-            Text(value).font(.system(.subheadline, design: .rounded, weight: .semibold)).monospacedDigit()
-                .foregroundStyle(quote == nil ? Color.secondary : tint).lineLimit(1).minimumScaleFactor(0.7)
+            HStack(spacing: 4) {
+                Text(value).font(.system(.subheadline, design: .rounded, weight: .semibold)).monospacedDigit()
+                    .foregroundStyle(quote == nil ? Color.secondary : tint).lineLimit(1).minimumScaleFactor(0.7)
+                if let notice {
+                    Image(systemName: notice.symbol).font(.caption2).foregroundStyle(notice.tint)
+                        .accessibilityLabel(notice.text)
+                }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(.rect)
@@ -632,6 +639,7 @@ struct TodayEventsCard: View {
 // MARK: Outlook
 
 struct OutlookLine: View {
+    var now: Date?
     @State private var store = PulseStore.shared
     @State private var macro = MacroStore.shared
     @State private var showing = false
@@ -653,7 +661,16 @@ struct OutlookLine: View {
                     }
                 }
                 if let pulse = store.current {
-                    Text(pulse.call?.headline ?? "Outlook unavailable").font(.subheadline).foregroundStyle(pulse.tint).lineLimit(1)
+                    TimelineView(.everyMinute) { context in
+                        let note = pulse.outlookNote(at: now ?? context.date, refreshFailed: store.failed, fetchedAt: store.fetchedAt(store.symbol))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(pulse.call?.headline ?? "Outlook unavailable").font(.subheadline)
+                                .foregroundStyle(note.standing == .current ? pulse.tint : Color.secondary).lineLimit(1)
+                            Text(note.text).font(.caption2)
+                                .foregroundStyle(note.refreshFailed || note.standing == .expired ? Color.orange : Color.secondary)
+                                .lineLimit(2)
+                        }
+                    }
                 } else {
                     Text(store.failed ? "Outlook unavailable" : "Loading outlook…").font(.subheadline).foregroundStyle(.secondary)
                 }
@@ -667,7 +684,7 @@ struct OutlookLine: View {
         .accessibilityHint("Shows what is moving the market")
         .sheet(isPresented: $showing) { PulseDetail() }
         .task(id: "\(store.symbol)-\(phase == .active)") {
-            guard phase == .active else { return }
+            guard phase == .active, !FinancialFreshnessPreview.active else { return }
             await macro.refresh()
             await loadRecord()
             while !Task.isCancelled {
@@ -680,11 +697,44 @@ struct OutlookLine: View {
     private func loadRecord() async {
         guard let baseURL = NewswireAPI.validatedURL(FeedStore.shared.serverURL),
               let response = try? await NewswireAPI(baseURL: baseURL).marketResearch(symbol: store.symbol),
-              let overall = response.agent?.performance.overall else { return }
-        hitRate = overall.hitRate
-        graded = overall.scored
+              !Task.isCancelled else { return }
+        let directional = response.recent.filter { $0.horizon == "opening_gap" && ["up", "down"].contains($0.tilt) && ($0.outcome?.direction ?? 0) != 0 }
+        guard !directional.isEmpty else {
+            if let overall = response.agent?.performance.overall { hitRate = overall.hitRate; graded = overall.scored }
+            return
+        }
+        hitRate = Double(directional.filter { $0.outcome?.direction == ($0.tilt == "up" ? 1 : -1) }.count) / Double(directional.count)
+        graded = directional.count
     }
 }
+
+#if DEBUG
+struct FinancialFreshnessPreviewScreen: View {
+    init() {
+        MarketBoard.shared.seedFreshnessPreview(now: FinancialFreshnessPreview.now)
+        PulseStore.shared.seedFreshnessPreview(now: FinancialFreshnessPreview.now, expired: FinancialFreshnessPreview.expired)
+    }
+
+    var body: some View {
+        let now = FinancialFreshnessPreview.now
+        ScrollView {
+            VStack(spacing: 12) {
+                MarketStatusLine(now: now, onQuote: { _ in })
+                OutlookLine(now: now)
+                VStack(spacing: 0) {
+                    CompactWatchlistQuote(symbol: "SPY", quote: MarketBoard.shared.quotes["SPY"], now: now)
+                    CompactWatchlistQuote(symbol: "QQQ", quote: MarketBoard.shared.quotes["QQQ"], now: now)
+                    CompactWatchlistQuote(symbol: "NVDA", quote: MarketBoard.shared.quotes["NVDA"], now: now)
+                    CompactWatchlistQuote(symbol: "IWM", quote: nil, now: now)
+                    CompactWatchlistQuote(symbol: "^VIX", quote: MarketBoard.shared.quotes["^VIX"], now: now)
+                }
+                .homeCard()
+            }
+            .padding(16)
+        }
+    }
+}
+#endif
 
 // MARK: Price alert
 

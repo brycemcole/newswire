@@ -41,6 +41,17 @@ struct WidgetPortfolioTests {
         #expect(tomorrow.dayChange == nil && tomorrow.dayPercent == nil && tomorrow.day.isEmpty)
     }
 
+    @Test func quoteRefreshCannotClearIncompleteBrokerageSync() throws {
+        var portfolio = WidgetPortfolio(holdings: [], cash: 100, other: 0, value: 100, updated: .distantPast,
+            accountingVersion: 1, measuredDayChange: 20, measuredDayPercent: 0.2, syncIncomplete: true)
+        portfolio = portfolio.refreshed(day: [:], month: [:])
+        #expect(portfolio.syncIncomplete == true)
+        #expect(portfolio.updated == .distantPast)
+        #expect(portfolio.dayChange == nil && portfolio.dayPercent == nil)
+        let decoded = try JSONDecoder().decode(WidgetPortfolio.self, from: JSONEncoder().encode(portfolio))
+        #expect(decoded.syncIncomplete == true)
+    }
+
     @Test func thinKeepsEndpoints() {
         let points = (0..<500).map { point(Double($0), Double($0)) }
         let thinned = WidgetPortfolio.thin(points, to: 60)

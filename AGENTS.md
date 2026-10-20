@@ -4,6 +4,17 @@
 
 Never commit tokens, API keys, Plaid credentials, or signing files. Reader/writer tokens live in Cloudflare secrets and Keychain; Plaid keys are entered in the app (see [PLAID.md](PLAID.md)). `.gitignore` already excludes `.env*`, `.dev.vars`, `.secrets/`, `*.p8`, `*.p12`.
 
+## Financial-data integrity
+
+- Keep source observation time, fetch time, and computation time distinct. A successful request does not establish data freshness.
+- Preserve the distinction between unavailable, stale, partial, estimated, and valid zero/neutral values. Do not substitute one for another silently.
+- Aggregate completeness and freshness must reflect all included components. A partial refresh must not imply that retained components were refreshed.
+- Cached financial data must retain its provenance and applicable session/horizon. Surface material age or refresh failure where the value is consumed.
+- Count an input as usable only when the data required for its calculation is present and temporally valid, not merely because its latest price is recent. Prefer the newest valid observation, not a source whose priority ignores observation time.
+- Reuse the existing exchange-session calendar for session boundaries, holidays, and early closes rather than implementing another calendar.
+
+For changes to quote, portfolio, or forecast data behavior, state the relevant invariants and acceptance criteria before editing. Test applicable degraded states: partial provider failure, successful responses containing old data, missing comparison baselines, cached forecasts crossing their target horizon, holidays/early closes, conflicting source timestamps, and recovery. Assert status and timestamps as well as values, and verify the user-visible interpretation. Reuse or extend regression tests and fixtures; report which cases were checked and which remain unverified. Keep checks proportional to the change; unrelated formatting changes do not require a full financial-data audit.
+
 ## Look at UI changes before you call them done
 
 Type checks and unit tests do not tell you whether a screen looks right. For any change to what a user sees, produce a screenshot, look at it (open the PNG), and fix what is wrong. Screenshots go in `screenshots/` (gitignored). Do not commit them; attach or describe them in the PR instead.

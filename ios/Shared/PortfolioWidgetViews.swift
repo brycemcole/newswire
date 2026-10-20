@@ -25,9 +25,9 @@ struct PortfolioWidgetView: View {
 
 private extension WidgetPortfolio {
     var direction: Double { dayChange ?? 0 }
-    var tint: Color { Money.tint(direction) }
-    var arrow: String { direction >= 0 ? "arrowtriangle.up.fill" : "arrowtriangle.down.fill" }
-    var dayPercentText: String { dayPercent.map(Money.percent2) ?? "—" }
+    var tint: Color { syncIncomplete == true ? .secondary : Money.tint(direction) }
+    var arrow: String { syncIncomplete == true ? "exclamationmark.triangle" : direction >= 0 ? "arrowtriangle.up.fill" : "arrowtriangle.down.fill" }
+    var dayPercentText: String { syncIncomplete == true ? "Sync needed" : dayPercent.map(Money.percent2) ?? "—" }
     var stamp: Date { updated }
 }
 
@@ -49,7 +49,7 @@ private struct UpdatedLabel: View {
     let date: Date
 
     var body: some View {
-        Text(Calendar.current.isDateInToday(date) ? date.formatted(date: .omitted, time: .shortened) : date.formatted(.dateTime.month(.abbreviated).day()))
+        Text(date == .distantPast ? "Sync unknown" : Calendar.current.isDateInToday(date) ? date.formatted(date: .omitted, time: .shortened) : date.formatted(.dateTime.month(.abbreviated).day()))
             .font(.caption2.monospacedDigit())
             .foregroundStyle(.tertiary)
     }

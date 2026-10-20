@@ -37,6 +37,47 @@ struct PlaidTests {
         #expect(Calendar.current.dateComponents([.year, .month, .day], from: expiration) == DateComponents(year: 2026, month: 11, day: 20))
     }
 
+    @Test(arguments: ["SoFi", "Fidelity"])
+    func includesCashOmittedFromHoldings(institution: String) throws {
+        let parsed = try parseBalances(institution: institution, balance: 82.36, holding: 57.28, cash: nil)
+        #expect(abs(parsed.cash - 25.08) < 1e-9)
+        #expect(parsed.accountBalances[0].cashValue == parsed.cash)
+        #expect(parsed.accountBalances[0].holdingsComplete == true)
+    }
+
+    @Test func reconcilesSoFiMarginCashSignAgainstNetAccountValue() throws {
+        let parsed = try parseBalances(institution: "SoFi", balance: 1936.28, holding: 4110.592876, cash: 2175.43)
+        #expect(abs(parsed.cash + 2174.312876) < 1e-9)
+        #expect(parsed.accountBalances[0].cashValue == parsed.cash)
+    }
+
+    @Test func absorbsSmallValuationRoundingButNotUnexplainedCashGaps() throws {
+        let rounding = try parseBalances(institution: "SoFi", balance: 381.88, holding: 347.368272126, cash: 34.89)
+        #expect(abs(rounding.cash - (381.88 - 347.368272126)) < 1e-9)
+        let unexplained = try parseBalances(institution: "SoFi", balance: 1000, holding: 1500, cash: 100)
+        #expect(unexplained.cash == 100)
+        let other = try parseBalances(institution: "Fidelity", balance: 1936.28, holding: 4110.592876, cash: 2175.43)
+        #expect(other.cash == 2175.43)
+    }
+
+    @Test func missingSecurityDoesNotBecomeInferredCash() throws {
+        let parsed = try parseBalances(institution: "SoFi", balance: 1000, holding: 500, cash: nil, includeSecurity: false)
+        #expect(parsed.accountBalances[0].holdingsComplete == false)
+        #expect(parsed.cash == 0)
+    }
+
+    private func parseBalances(institution: String, balance: Double, holding: Double, cash: Double?, includeSecurity: Bool = true) throws -> HoldingsResponse.Parsed {
+        let json = """
+        {"accounts":[{"account_id":"a","name":"Brokerage","type":"investment","balances":{"current":\(balance),"iso_currency_code":"USD"}}],
+         "holdings":[{"account_id":"a","security_id":"stock","quantity":1,"institution_value":\(holding)}\(cash.map { ",{\"account_id\":\"a\",\"security_id\":\"usd\",\"quantity\":\($0),\"institution_value\":\($0)}" } ?? "")],
+         "securities":[\(includeSecurity ? "{\"security_id\":\"stock\",\"ticker_symbol\":\"AAA\",\"type\":\"equity\"}," : ""){"security_id":"usd","ticker_symbol":"USD","type":"cash"}]}
+        """
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(HoldingsResponse.self, from: Data(json.utf8))
+            .positions(item: PlaidItem(id: "item", accessToken: "preview", institution: institution, environment: .sandbox))
+    }
+
     @Test func estimatesCostFromTrades() throws {
         let json = """
         [{"account_id":"a","security_id":"s","type":"sell","quantity":-1,"amount":-300,"date":"2026-03-01"},

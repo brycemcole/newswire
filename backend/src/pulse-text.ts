@@ -9,7 +9,6 @@ export interface Driver {
 
 const names: Record<string, string> = { SPY: 'stocks', QQQ: 'tech stocks', XLE: 'energy stocks', DAL: 'airline stocks' };
 const pct = (v: number | null, digits = 1) => v === null ? '' : `${v > 0 ? 'up' : 'down'} ${Math.abs(v).toFixed(digits)}%`;
-const bp = (v: number | null) => v === null ? '' : `${v > 0 ? 'up' : 'down'} ${Math.abs(Math.round(v))} basis points`;
 const signedPct = (v: number | null) => v === null ? '—' : `${v > 0 ? '+' : v < 0 ? '−' : ''}${Math.abs(v).toFixed(2)}%`;
 const money = (v: number | null, prefix = '') => v === null ? '—' : prefix + v.toLocaleString('en-US', { maximumFractionDigits: v >= 1000 ? 0 : 2, minimumFractionDigits: v >= 1000 ? 0 : 2 });
 
@@ -24,9 +23,14 @@ function priceStory(i: Input, symbol: string): Pick<Driver, 'title' | 'detail' |
       stat: { label: 'WTI crude, per barrel', value: money(i.price, '$'), change: signedPct(i.change_day) } };
     case 'vix': return { title: up ? 'Investors are buying protection' : 'Fear is fading', detail: `The VIX "fear gauge" is ${pct(d)}. ${up ? 'Traders expect bigger swings ahead.' : 'Traders expect calmer trading.'}`, stat: { label: 'VIX', value: money(i.price), change: signedPct(i.change_day) } };
     case 'yen': return { title: up ? 'The yen is weakening' : 'The yen is jumping', detail: up ? 'A weak yen keeps cheap yen borrowing flowing into stocks.' : 'Investors who borrowed cheap yen to buy stocks may have to sell to pay it back.', stat: { label: 'Yen per dollar', value: money(i.price), change: signedPct(i.change_day) } };
-    case 'yield': return { title: `Bond yields are ${bp(d)}`, detail: up ? 'Higher borrowing costs make stocks, especially tech, look pricier.' : 'Lower borrowing costs make stocks look cheaper by comparison.', stat: { label: '10-year Treasury yield', value: i.price === null ? '—' : `${i.price.toFixed(2)}%`, change: i.change_day === null ? '—' : `${i.change_day > 0 ? '+' : '−'}${Math.abs(Math.round(i.change_day))} bp` } };
+    case 'yield': return { title: `10-year Treasury futures are ${pct(d)} overnight`, detail: up ? 'Bond prices rising means yields are falling, easing pressure on stock valuations.' : 'Bond prices falling means yields are rising, tightening borrowing costs and pressuring stocks, especially tech.', stat: { label: '10-year Treasury note futures', value: money(i.price), change: signedPct(i.change_day) } };
     case 'credit': return { title: up ? 'Lenders are relaxed' : 'Lenders are getting nervous', detail: `Junk bonds are ${pct(d, 2)}. ${up ? 'Easy credit supports company spending.' : 'When risky debt sells off, stocks often follow.'}`, stat: { label: 'High-yield bond fund (HYG)', value: money(i.price, '$'), change: signedPct(i.change_day) } };
     case 'dollar': return { title: `The dollar is ${pct(d, 2)}`, detail: up ? 'A stronger dollar shrinks US companies\' overseas sales.' : 'A weaker dollar boosts US companies\' overseas sales.', stat: { label: 'Dollar index', value: money(i.price), change: signedPct(i.change_day) } };
+    case 'vix_term': { const ratio = i.price ?? 1, inverted = ratio > 1; return { title: inverted ? 'Short-term fear is above longer-term fear' : 'Volatility curve is calm',
+      detail: inverted ? 'Traders are paying more for protection now than for protection three months out, a common stress signal.' : 'Near-term fear sits below longer-term fear, which usually means steadier trading.',
+      stat: { label: 'VIX / 3-month VIX', value: money(i.price), change: signedPct(i.change_day) } }; }
+    case 'drawdown': return { title: `Stocks are ${pct(i.change_day, 2)} over 3 sessions`, detail: (i.change_day ?? 0) < 0 ? 'Sharp drops often see partial rebounds, though selloffs can keep going.' : 'Stocks have bounced after recent weakness.',
+      stat: { label: 'S&P 500 ETF, 3 sessions', value: money(i.price, '$'), change: signedPct(i.change_day) } };
     case 'europe': return { title: `European stocks closed ${pct(d)}`, detail: 'Europe trades first, and the US often follows its lead.', stat: { label: 'Euro Stoxx 50', value: money(i.price), change: signedPct(i.change_day) } };
     case 'asia': return { title: `Japanese stocks are ${pct(d)}`, detail: 'Asia sets the overnight mood before Europe and the US open.', stat: { label: 'Nikkei 225', value: money(i.price), change: signedPct(i.change_day) } };
     case 'nasdaq': return { title: `Nasdaq futures are ${pct(d)} overnight`, detail: up ? 'Tech-heavy futures are pointing higher.' : 'Tech-heavy futures are pointing lower.', stat: { label: 'Nasdaq 100 futures', value: money(i.price), change: signedPct(i.change_day) } };
@@ -35,6 +39,11 @@ function priceStory(i: Input, symbol: string): Pick<Driver, 'title' | 'detail' |
     case 'germany': return { title: `German stocks are ${pct(d)}`, detail: 'Germany is Europe\'s most cyclical market and often leads the US open.', stat: { label: 'DAX', value: money(i.price), change: signedPct(i.change_day) } };
     case 'gold': return { title: `Gold is ${pct(d)}`, detail: up ? 'Investors are seeking safety.' : 'Less demand for safe havens.', stat: { label: 'Gold, per ounce', value: money(i.price, '$'), change: signedPct(i.change_day) } };
     case 'copper': return { title: `Copper is ${pct(d)}`, detail: up ? 'Copper demand rises when factories and builders are busy.' : 'Falling copper hints at slowing global demand.', stat: { label: 'Copper, per pound', value: money(i.price, '$'), change: signedPct(i.change_day) } };
+    case 'premarket': {
+      const movers = [...(i.members ?? [])].sort((a, b) => Math.abs((b.weight ?? 0) * b.change) - Math.abs((a.weight ?? 0) * a.change)).slice(0, 2);
+      return { title: `Big stocks are ${pct(d)} before the open`, detail: movers.length ? `Led by ${movers.map(m => `${m.name} ${signedPct(m.change)}`).join(', ')}` : 'Trading in the largest companies before the bell sets the early tone for the open.',
+        stat: { label: 'Bellwethers, pre-market', value: `${i.members?.length ?? 0} stocks`, change: signedPct(i.change_day) } };
+    }
     default: return { title: `Bitcoin is ${pct(d)}`, detail: up ? 'Crypto rallies usually mean investors want more risk.' : 'Crypto selloffs usually mean investors want less risk.', stat: { label: 'Bitcoin', value: money(i.price, '$'), change: signedPct(i.change_day) } };
   }
 }

@@ -143,6 +143,67 @@ nonisolated struct MarketPulse: Decodable, Sendable {
     }
 }
 
+nonisolated enum PulseValidity: Equatable {
+    case current
+    case expired
+    case unknown
+}
+
+extension MarketPulse {
+    /// The moment the call's horizon is reached. Backend horizons are "next open" (closed market) and "rest of session" (open market).
+    var horizonEnd: Date? {
+        switch horizon {
+        case "next open": MarketClock.nextOpen(after: asOf)
+        case "rest of session": MarketClock.session(on: asOf)?.end ?? asOf
+        default: nil
+        }
+    }
+
+    func validity(at now: Date) -> PulseValidity {
+        guard let end = horizonEnd else { return .unknown }
+        return now < end ? .current : .expired
+    }
+
+    func outlookNote(at now: Date, refreshFailed: Bool, fetchedAt: Date?) -> PulseOutlookNote {
+        let time = { (date: Date) in
+            Calendar.current.isDate(date, inSameDayAs: now)
+                ? date.formatted(date: .omitted, time: .shortened)
+                : date.formatted(.dateTime.month(.abbreviated).day().hour().minute())
+        }
+        let standing: PulseOutlookNote.Standing
+        let standingText: String
+        if let end = horizonEnd {
+            if now < end {
+                standing = .current
+                standingText = "Valid until \(time(end))"
+            } else {
+                standing = .expired
+                standingText = "Outlook for \(horizon ?? "the session") has passed"
+            }
+        } else {
+            standing = .cached
+            standingText = "Cached · horizon unverified"
+        }
+        var parts = [standingText, "Computed \(time(asOf))"]
+        if refreshFailed {
+            parts.append(fetchedAt.map { "Refresh failed · last fetched \(time($0))" } ?? "Refresh failed")
+        }
+        return PulseOutlookNote(standing: standing, text: parts.joined(separator: " · "), refreshFailed: refreshFailed)
+    }
+}
+
+nonisolated struct PulseOutlookNote: Equatable, Sendable {
+    enum Standing: Equatable, Sendable {
+        case current
+        case expired
+        case cached
+    }
+
+    let standing: Standing
+    let text: String
+    let refreshFailed: Bool
+}
+
 extension NewswireAPI {
     @concurrent func marketPulse(symbol: String, historyHours: Int = 12) async throws -> MarketPulse {
         var components = URLComponents(url: baseURL.appending(path: "v1/market-pulse"), resolvingAgainstBaseURL: false)
@@ -165,15 +226,31 @@ extension NewswireAPI {
         didSet { UserDefaults.standard.set(symbol, forKey: "pulseSymbol") }
     }
     private(set) var snapshots: [String: MarketPulse] = [:]
-    private(set) var failed = false
-    private var loadedAt: [String: Date] = [:]
+    private(set) var loadedAt: [String: Date] = [:]
+    private(set) var failedSymbols: Set<String> = []
+    @ObservationIgnored private let fetch: (String) async throws -> MarketPulse
+    @ObservationIgnored private let clock: () -> Date
+
+    init(
+        fetch: @escaping (String) async throws -> MarketPulse = { symbol in
+            guard let url = NewswireAPI.validatedURL(FeedStore.shared.serverURL) else { throw WireError.configuration }
+            return try await NewswireAPI(baseURL: url).marketPulse(symbol: symbol)
+        },
+        clock: @escaping () -> Date = { .now }
+    ) {
+        self.fetch = fetch
+        self.clock = clock
+    }
 
     var current: MarketPulse? { snapshots[symbol] }
+    /// True while the most recent refresh of the selected symbol failed; a cached snapshot may still be shown.
+    var failed: Bool { failedSymbols.contains(symbol) }
 
     /// Prices move by the minute, so a snapshot older than about a minute is refetched; the server caches bars for 60 seconds.
     func refresh(force: Bool = false) async {
         let symbol = symbol
         #if DEBUG
+        if FinancialFreshnessPreview.active { return }
         if CommandLine.arguments.contains("-predictionHistoryPreview") {
             if let data = try? Data(contentsOf: URL.documentsDirectory.appending(path: "prediction-pulse.json")),
                let pulse = try? NewswireAPI.decoder().decode(MarketPulse.self, from: data) { snapshots[symbol] = pulse }
@@ -181,17 +258,33 @@ extension NewswireAPI {
         }
         if CommandLine.arguments.contains("-pulseSample") { loadSample(symbol); return }
         #endif
-        if !force, let at = loadedAt[symbol], at.timeIntervalSinceNow > -55 { return }
-        guard let url = NewswireAPI.validatedURL(FeedStore.shared.serverURL) else { return }
+        let now = clock()
+        if !force, let at = loadedAt[symbol], now.timeIntervalSince(at) < 55 { return }
         do {
-            let pulse = try await NewswireAPI(baseURL: url).marketPulse(symbol: symbol)
+            let pulse = try await fetch(symbol)
+            guard !Task.isCancelled else { return }
             snapshots[symbol] = pulse
-            loadedAt[symbol] = .now
-            failed = false
+            loadedAt[symbol] = clock()
+            failedSymbols.remove(symbol)
         } catch {
-            if !Task.isCancelled { failed = snapshots[symbol] == nil }
+            guard !Task.isCancelled else { return }
+            failedSymbols.insert(symbol)
         }
     }
+
+    func fetchedAt(_ symbol: String) -> Date? { loadedAt[symbol] }
+
+    #if DEBUG
+    func seedFreshnessPreview(now: Date, expired: Bool) {
+        let symbol = symbol
+        let asOf = expired ? ISO8601DateFormatter().date(from: "2026-10-16T20:00:00Z")! : now.addingTimeInterval(-30 * 60)
+        let stamp = ISO8601DateFormatter().string(from: asOf)
+        let json = #"{"symbol":"\#(symbol)","status":"available","confidence":"medium","as_of":"\#(stamp)","horizon":"next open","predictive":true,"score":12,"components":{"news":{"status":"available","points":0}},"factors":[],"coverage":{"headline_stories":10,"matched_stories":2},"call":{"headline":"Expect a lower open","tone":"negative","strength":2}}"#
+        snapshots[symbol] = try? NewswireAPI.decoder().decode(MarketPulse.self, from: Data(json.utf8))
+        loadedAt[symbol] = now.addingTimeInterval(-2 * 60)
+        failedSymbols.insert(symbol)
+    }
+    #endif
 
     #if DEBUG
     private func loadSample(_ symbol: String) {
@@ -420,7 +513,15 @@ struct PulseDetail: View {
                     .listRowInsets(EdgeInsets())
                 }
                 if let pulse = store.current {
-                    Section { hero(pulse) }
+                    Section {
+                        TimelineView(.everyMinute) { context in
+                            let note = pulse.outlookNote(at: FinancialFreshnessPreview.active ? FinancialFreshnessPreview.now : context.date,
+                                refreshFailed: store.failed, fetchedAt: store.fetchedAt(store.symbol))
+                            Text(note.text).font(.caption)
+                                .foregroundStyle(note.refreshFailed || note.standing != .current ? Color.orange : Color.secondary)
+                        }
+                        hero(pulse)
+                    }
                     PredictionHistorySection(symbol: store.symbol).id("predictionHistory")
                     if let learning = pulse.learning {
                         Section {
@@ -499,7 +600,7 @@ struct PulseDetail: View {
             .sheet(isPresented: $showingResearch) { MarketResearchView() }
             .refreshable { await store.refresh(force: true) }
             .task(id: "\(store.symbol)-\(phase == .active)") {
-                guard phase == .active else { return }
+                guard phase == .active, !FinancialFreshnessPreview.active else { return }
                 while !Task.isCancelled {
                     await store.refresh()
                     await macro.refresh()
@@ -629,7 +730,7 @@ struct PulseDetail: View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(input.label).font(.subheadline)
-                Text(input.status == "live" ? PulseFormat.price(input) : input.status == "stale" ? "Closed · last \(PulseFormat.price(input))" : "No data")
+                Text(input.status == "live" ? PulseFormat.price(input) : input.status == "stale" ? "Stale · last \(PulseFormat.price(input))" : "No usable signal")
                     .font(.caption).foregroundStyle(.secondary).monospacedDigit()
             }
             Spacer()

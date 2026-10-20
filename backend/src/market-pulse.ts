@@ -7,45 +7,52 @@ export interface PulseStory {
 type Factor = 'energy' | 'trade' | 'rates' | 'growth' | 'credit';
 
 export interface MarketInput {
-  id: string; label: string; symbol: string; unit: 'pct' | 'bp';
+  id: string; label: string; symbol: string; unit: 'pct' | 'ratio';
   price: number | null; price_at: string | null; change_day: number | null; change_hour: number | null; status: 'live' | 'stale' | 'unavailable';
+  members?: { symbol: string; name: string; change: number; weight?: number }[];
 }
 
 // Deterministic price inputs. A move of one "typical" 24-hour size gives about three quarters of the input's points;
 // the 1-hour move uses a third of that size so a sudden spike registers before the day's change catches up.
 const instruments = [
-  { id: 'futures', label: 'S&P 500 futures', symbol: 'ES=F', unit: 'pct', typical: 0.6, points: 16, direction: 1, up: 1, down: 1, stale: 3, reason: 'Overnight futures are the best single read on the next open and already price in recent headlines',
+  { kind: 'change', id: 'futures', label: 'S&P 500 futures', symbol: 'ES=F', unit: 'pct', typical: 0.6, points: 16, direction: 1, up: 1, down: 1, stale: 3, baseline: 'cash_close', reason: 'Overnight futures are the best single read on the next open and already price in recent headlines',
     exposure: { SPY: 1, QQQ: 1.1, XLE: 0.6, DAL: 1.1 } },
-  { id: 'nasdaq', label: 'Nasdaq 100 futures', symbol: 'NQ=F', unit: 'pct', typical: 0.9, points: 6, direction: 1, up: 1, down: 1, stale: 3, reason: 'Tech-heavy futures confirm or contradict the S&P move',
+  { kind: 'change', id: 'nasdaq', label: 'Nasdaq 100 futures', symbol: 'NQ=F', unit: 'pct', typical: 0.9, points: 6, direction: 1, up: 1, down: 1, stale: 3, baseline: 'cash_close', reason: 'Tech-heavy futures confirm or contradict the S&P move',
     exposure: { SPY: 1, QQQ: 1.3, XLE: 0.4, DAL: 0.8 } },
-  { id: 'smallcaps', label: 'Russell 2000 futures', symbol: 'RTY=F', unit: 'pct', typical: 1, points: 4, direction: 1, up: 1, down: 1, stale: 3, reason: 'Small caps show how broad the overnight move is',
+  { kind: 'change', id: 'smallcaps', label: 'Russell 2000 futures', symbol: 'RTY=F', unit: 'pct', typical: 1, points: 4, direction: 1, up: 1, down: 1, stale: 3, baseline: 'cash_close', reason: 'Small caps show how broad the overnight move is',
     exposure: { SPY: 0.9, QQQ: 0.7, XLE: 1, DAL: 1.2 } },
-  { id: 'oil', label: 'WTI crude', symbol: 'CL=F', unit: 'pct', typical: 2.5, points: 8, direction: -1, up: 1, down: 1, stale: 3, reason: 'Rising crude raises costs; falling crude eases them',
+  { kind: 'change', id: 'oil', label: 'WTI crude', symbol: 'CL=F', unit: 'pct', typical: 2.5, points: 8, direction: -1, up: 1, down: 1, stale: 3, reason: 'Rising crude raises costs; falling crude eases them',
     exposure: { SPY: 1, QQQ: 0.8, XLE: -1.5, DAL: 1.8 } },
-  { id: 'vix', label: 'VIX', symbol: '^VIX', unit: 'pct', typical: 8, points: 8, direction: -1, up: 1, down: 0.7, stale: 3, reason: 'Rising implied volatility reflects demand for protection',
+  { kind: 'change', id: 'vix', label: 'VIX', symbol: '^VIX', unit: 'pct', typical: 8, points: 8, direction: -1, up: 1, down: 0.7, stale: 3, reason: 'Rising implied volatility reflects demand for protection',
     exposure: { SPY: 1, QQQ: 1.1, XLE: 0.8, DAL: 1.2 } },
-  { id: 'yen', label: 'USD/JPY', symbol: 'JPY=X', unit: 'pct', typical: 0.7, points: 6, direction: 1, up: 0, down: 1, stale: 3, reason: 'A fast yen rally signals carry-trade unwinding and risk reduction',
+  { kind: 'change', id: 'yen', label: 'USD/JPY', symbol: 'JPY=X', unit: 'pct', typical: 0.7, points: 6, direction: 1, up: 0, down: 1, stale: 3, reason: 'A fast yen rally signals carry-trade unwinding and risk reduction',
     exposure: { SPY: 1, QQQ: 1.2, XLE: 0.6, DAL: 0.8 } },
-  { id: 'yield', label: 'US 10Y yield', symbol: '^TNX', unit: 'bp', typical: 7, points: 6, direction: -1, up: 1, down: 0.7, stale: 3, reason: 'Rising long yields tighten financial conditions and pressure valuations',
+  { kind: 'change', id: 'yield', label: '10-year Treasury futures', symbol: 'ZN=F', unit: 'pct', typical: 0.35, points: 6, direction: 1, up: 0.7, down: 1, stale: 3, reason: 'Rising Treasury prices mean falling yields, which ease pressure on valuations; falling prices do the opposite',
     exposure: { SPY: 1, QQQ: 1.4, XLE: 0.3, DAL: 0.8 } },
-  { id: 'credit', label: 'High-yield bonds (HYG)', symbol: 'HYG', unit: 'pct', typical: 0.4, points: 6, direction: 1, up: 0.6, down: 1, stale: 3, reason: 'Falling junk-bond prices signal credit stress',
+  { kind: 'change', id: 'credit', label: 'High-yield bonds (HYG)', symbol: 'HYG', unit: 'pct', typical: 0.4, points: 6, direction: 1, up: 0.6, down: 1, stale: 3, reason: 'Falling junk-bond prices signal credit stress',
     exposure: { SPY: 1, QQQ: 1, XLE: 0.9, DAL: 1.2 } },
-  { id: 'dollar', label: 'US dollar index', symbol: 'DX-Y.NYB', unit: 'pct', typical: 0.5, points: 4, direction: -1, up: 1, down: 0.7, stale: 3, reason: 'A sharply stronger dollar tightens global financial conditions and hurts overseas earnings',
+  { kind: 'change', id: 'dollar', label: 'US dollar index', symbol: 'DX-Y.NYB', unit: 'pct', typical: 0.5, points: 4, direction: -1, up: 1, down: 0.7, stale: 3, reason: 'A sharply stronger dollar tightens global financial conditions and hurts overseas earnings',
     exposure: { SPY: 1, QQQ: 1, XLE: 0.8, DAL: 0.5 } },
-  { id: 'europe', label: 'Euro Stoxx 50', symbol: '^STOXX50E', unit: 'pct', typical: 1, points: 4, direction: 1, up: 1, down: 1, stale: 18, reason: "Europe's session leads the US open",
+  { kind: 'change', id: 'europe', label: 'Euro Stoxx 50', symbol: '^STOXX50E', unit: 'pct', typical: 1, points: 4, direction: 1, up: 1, down: 1, stale: 18, reason: "Europe's session leads the US open",
     exposure: { SPY: 1, QQQ: 0.9, XLE: 0.8, DAL: 1 } },
-  { id: 'asia', label: 'Nikkei 225', symbol: '^N225', unit: 'pct', typical: 1.3, points: 3, direction: 1, up: 1, down: 1, stale: 18, reason: "Asia's session sets the overnight tone",
+  { kind: 'change', id: 'asia', label: 'Nikkei 225', symbol: '^N225', unit: 'pct', typical: 1.3, points: 3, direction: 1, up: 1, down: 1, stale: 18, reason: "Asia's session sets the overnight tone",
     exposure: { SPY: 1, QQQ: 1.1, XLE: 0.6, DAL: 0.8 } },
-  { id: 'china', label: 'Hang Seng', symbol: '^HSI', unit: 'pct', typical: 1.3, points: 3, direction: 1, up: 1, down: 1, stale: 18, reason: "Hong Kong trades through Asia's day and reflects China and global risk appetite",
+  { kind: 'change', id: 'china', label: 'Hang Seng', symbol: '^HSI', unit: 'pct', typical: 1.3, points: 3, direction: 1, up: 1, down: 1, stale: 18, reason: "Hong Kong trades through Asia's day and reflects China and global risk appetite",
     exposure: { SPY: 1, QQQ: 1.1, XLE: 0.8, DAL: 0.7 } },
-  { id: 'germany', label: 'DAX', symbol: '^GDAXI', unit: 'pct', typical: 1, points: 3, direction: 1, up: 1, down: 1, stale: 18, reason: 'Germany is the most cyclical large European market and leads the US open',
+  { kind: 'change', id: 'germany', label: 'DAX', symbol: '^GDAXI', unit: 'pct', typical: 1, points: 3, direction: 1, up: 1, down: 1, stale: 18, reason: 'Germany is the most cyclical large European market and leads the US open',
     exposure: { SPY: 1, QQQ: 0.9, XLE: 0.8, DAL: 1 } },
-  { id: 'gold', label: 'Gold', symbol: 'GC=F', unit: 'pct', typical: 1, points: 3, direction: -1, up: 0.7, down: 0.5, stale: 3, reason: 'A sharp rush into gold signals demand for safety',
+  { kind: 'change', id: 'gold', label: 'Gold', symbol: 'GC=F', unit: 'pct', typical: 1, points: 3, direction: -1, up: 0.7, down: 0.5, stale: 3, reason: 'A sharp rush into gold signals demand for safety',
     exposure: { SPY: 1, QQQ: 0.9, XLE: 0.4, DAL: 0.8 } },
-  { id: 'copper', label: 'Copper', symbol: 'HG=F', unit: 'pct', typical: 1.5, points: 3, direction: 1, up: 1, down: 1, stale: 3, reason: 'Copper tracks expectations for global industrial demand',
+  { kind: 'change', id: 'copper', label: 'Copper', symbol: 'HG=F', unit: 'pct', typical: 1.5, points: 3, direction: 1, up: 1, down: 1, stale: 3, reason: 'Copper tracks expectations for global industrial demand',
     exposure: { SPY: 1, QQQ: 0.8, XLE: 1.2, DAL: 0.8 } },
-  { id: 'bitcoin', label: 'Bitcoin', symbol: 'BTC-USD', unit: 'pct', typical: 3, points: 3, direction: 1, up: 1, down: 1, stale: 3, reason: 'Trades around the clock, so it carries risk appetite through weekends',
+  { kind: 'change', id: 'bitcoin', label: 'Bitcoin', symbol: 'BTC-USD', unit: 'pct', typical: 3, points: 3, direction: 1, up: 1, down: 1, stale: 3, reason: 'Trades around the clock, so it carries risk appetite through weekends',
     exposure: { SPY: 1, QQQ: 1.3, XLE: 0.5, DAL: 0.8 } },
+  { kind: 'ratio', id: 'vix_term', label: 'VIX term structure', symbol: '^VIX', denominator: '^VIX3M', unit: 'ratio', stale: 72, reason: 'A short-term VIX above the 3-month VIX (backwardation) means fear is concentrated now; a calm curve supports stocks',
+    exposure: { SPY: 1, QQQ: 1.1, XLE: 0.8, DAL: 1.2 } },
+  { kind: 'drawdown', id: 'drawdown', label: 'S&P 500 ETF, 3 sessions', symbol: 'SPY', unit: 'pct', sessions: 3, stale: 96, reason: 'Sharp multi-day selloffs tend to see partial rebounds, so a deep drop adds a little support',
+    exposure: { SPY: 1, QQQ: 1, XLE: 0.6, DAL: 0.8 } },
+  { kind: 'basket', id: 'premarket', label: 'Bellwether stocks, pre-market', symbol: 'basket', unit: 'pct', direction: 1, points: 6, typical: 1, stale: 0.5, reason: 'Pre-market trades in the largest companies give the first read on the open, before futures settle',
+    exposure: { SPY: 1, QQQ: 1, XLE: 1, DAL: 1 } },
 ] as const;
 export interface Impact {
   id: string; title: string; source: string; url: string; published_at: string; received_at: string;
@@ -127,6 +134,9 @@ export const bellwethers: Record<string, { name: string; weight: [number, number
   CVX: { name: 'Chevron', weight: [0.3, 0.1, 1.2, 0] }, DAL: { name: 'Delta', weight: [0.2, 0.1, 0.1, 1.6] },
   UAL: { name: 'United Airlines', weight: [0.1, 0.1, 0.1, 1.2] },
 };
+// Column order of each bellwether's weight tuple.
+export const profileOrder = ['SPY', 'QQQ', 'XLE', 'DAL'];
+export const basketSymbols = Object.keys(bellwethers).filter(symbol => Math.max(...bellwethers[symbol].weight) >= 0.8);
 
 export interface EarningsEvent { symbol: string; at: string; estimate: number | null; actual: number | null; surprise: number | null }
 export interface EarningsFeed { events: EarningsEvent[]; loaded: number; requested: number; error?: string }
@@ -155,18 +165,47 @@ export function pulseHorizon(now: number) {
   return open ? { horizon: 'rest of session', predictive: false } : { horizon: 'next open', predictive: true };
 }
 
-export const marketInstruments = instruments.map(({ id, label, symbol, unit, stale }) => ({ id, label, symbol, unit, stale }));
+export const marketInstruments = instruments.map(spec => ({ id: spec.id, label: spec.label, symbol: spec.symbol, unit: spec.unit, stale: spec.stale, kind: spec.kind,
+  baseline: 'baseline' in spec ? spec.baseline : undefined,
+  denominator: 'denominator' in spec ? spec.denominator : undefined,
+  sessions: 'sessions' in spec ? spec.sessions : undefined }));
+
+// Ratio levels score against a fixed neutral point; drawdowns are contrarian, so a deep drop adds support.
+function instrumentPoints(spec: (typeof instruments)[number], input: MarketInput | undefined, exposure: number): number {
+  if (spec.kind === 'basket') return 0;
+  if (spec.kind === 'ratio') return input?.status === 'live' && input.price !== null ? -4 * Math.tanh((input.price - 0.92) / 0.08) * exposure : 0;
+  if (spec.kind === 'drawdown') return input?.status === 'live' && input.change_day !== null ? -3 * Math.tanh(input.change_day / 3) * exposure : 0;
+  const usable = input?.status === 'live' && input.change_day !== null;
+  const signal = usable ? 0.7 * Math.tanh(input!.change_day! / spec.typical) + 0.3 * Math.tanh((input!.change_hour ?? 0) / (spec.typical / 3)) : 0;
+  const weight = (spec.up + spec.down) / 2;
+  return spec.direction * weight * signal * spec.points * exposure;
+}
+
+// A live quote without the value its type needs (a missing baseline) cannot describe a move, so it is not counted as live.
+// Zero is a real value and stays live.
+function hasSignal(spec: (typeof instruments)[number], input: MarketInput | undefined): boolean {
+  if (spec.kind === 'ratio') return input?.price !== null && input?.price !== undefined;
+  return input?.change_day !== null && input?.change_day !== undefined;
+}
+
+function withSignal(status: MarketInput['status'], usable: boolean): MarketInput['status'] {
+  return status === 'live' && !usable ? 'unavailable' : status;
+}
 
 export function scoreMarket(inputs: MarketInput[] | undefined, symbol: string) {
   if (!inputs) return null;
   const scored = instruments.map(spec => {
     const input = inputs.find(i => i.id === spec.id);
-    const usable = input?.status === 'live' && input.change_day !== null;
-    const signal = usable ? 0.7 * Math.tanh(input!.change_day! / spec.typical) + 0.3 * Math.tanh((input!.change_hour ?? 0) / (spec.typical / 3)) : 0;
-    const weight = (spec.up + spec.down) / 2;
     const exposure = spec.exposure[symbol as keyof typeof spec.exposure];
-    return { ...(input ?? { id: spec.id, label: spec.label, symbol: spec.symbol, unit: spec.unit, price: null, price_at: null, change_day: null, change_hour: null, status: 'unavailable' as const }),
-      exposure, reason: spec.reason, points: round(spec.direction * weight * signal * spec.points * exposure) };
+    const base = input ?? { id: spec.id, label: spec.label, symbol: spec.symbol, unit: spec.unit, price: null, price_at: null, change_day: null, change_hour: null, status: 'unavailable' as const };
+    if (spec.kind === 'basket') {
+      const column = profileOrder.indexOf(symbol);
+      const members = input?.status === 'live' ? (input.members ?? []).map(m => ({ ...m, weight: bellwethers[m.symbol]?.weight[column] ?? 0 })).filter(m => m.weight > 0) : [];
+      const total = members.reduce((sum, m) => sum + m.weight, 0);
+      const change = total > 0 ? round(members.reduce((sum, m) => sum + m.weight * m.change, 0) / total) : null;
+      return { ...base, status: withSignal(base.status, change !== null), exposure, reason: spec.reason, change_day: change, members, points: change === null ? 0 : round(spec.direction * spec.points * Math.tanh(change / spec.typical) * exposure) };
+    }
+    return { ...base, status: withSignal(base.status, hasSignal(spec, input)), exposure, reason: spec.reason, points: round(instrumentPoints(spec, input, exposure)) };
   });
   const live = scored.filter(i => i.status === 'live').length;
   return { status: live >= 3 ? 'available' as const : 'unavailable' as const, live_inputs: live,

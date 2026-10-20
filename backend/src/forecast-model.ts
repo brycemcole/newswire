@@ -14,6 +14,24 @@ export type Features = Record<string, number>;
 const clamp = (x: number, low: number, high: number) => Math.max(low, Math.min(high, x));
 const sigmoid = (x: number) => 1 / (1 + Math.exp(-clamp(x, -30, 30)));
 
+export const marketGroups: Record<string, string[]> = {
+  futures_points: ['futures', 'nasdaq', 'smallcaps', 'premarket'],
+  rates_points: ['yield', 'credit', 'dollar', 'yen'],
+  volatility_points: ['vix', 'vix_term'],
+  overseas_points: ['europe', 'germany', 'asia', 'china'],
+  commodity_points: ['oil', 'copper', 'gold', 'bitcoin'],
+};
+export const marketGroupKeys = [...Object.keys(marketGroups), 'market_other_points'];
+
+function marketFeatures(market: any, available: boolean): Features {
+  const inputs: any[] = Array.isArray(market?.inputs) ? market.inputs : [];
+  const groups: Features = Object.fromEntries(Object.entries(marketGroups).map(([key, ids]) => [key, available
+    ? inputs.filter(input => input?.status === 'live' && ids.includes(input.id)).reduce((sum, input) => sum + (Number(input.points) || 0), 0) / 40
+    : 0]));
+  const total = available ? Number(market.points ?? 0) / 40 : 0;
+  return { ...groups, market_other_points: available ? total - Object.values(groups).reduce((sum, value) => sum + value, 0) : 0 };
+}
+
 export function makeFeatures(snapshot: any): Features {
   const pulse = snapshot?.pulse ?? {};
   const market = pulse.components?.market;
@@ -21,24 +39,28 @@ export function makeFeatures(snapshot: any): Features {
   const calendar = pulse.components?.calendar;
   const valid = pulse.status === 'available';
   const score = valid ? (Number.isFinite(pulse.research_score) ? pulse.research_score : pulse.score) : null;
+  const marketOn = valid && market?.status === 'available';
   return {
+    ...marketFeatures(market, marketOn),
     score_delta: Number.isFinite(score) ? (score - 50) / 50 : 0,
     score_available: Number.isFinite(score) ? 1 : 0,
     news_points: valid && news?.status === 'available' ? Number(news.points ?? 0) / 25 : 0,
     news_available: valid && news?.status === 'available' ? 1 : 0,
-    market_points: valid && market?.status === 'available' ? Number(market.points ?? 0) / 40 : 0,
-    market_available: valid && market?.status === 'available' ? 1 : 0,
+    market_points: marketOn ? Number(market.points ?? 0) / 40 : 0,
+    market_available: marketOn ? 1 : 0,
     earnings_points: Number(pulse.components?.earnings?.points ?? 0) / 10,
     calendar_points: Number(calendar?.points ?? 0) / 10,
     story_count: Math.log1p(Math.max(0, Number(pulse.coverage?.headline_stories ?? 0))) / 5,
-    market_coverage: Math.max(0, Math.min(1, Number(market?.live_inputs ?? 0) / 16)),
+    market_coverage: Math.max(0, Math.min(1, Number(market?.live_inputs ?? 0) / 19)),
   };
 }
 
 export function forecastTilt(features: Features): { score: number | null; tilt: 'up' | 'down' | 'neutral' | 'unavailable'; probabilities: null } {
   const available = features.score_available || features.news_available || features.market_available;
   if (!available) return { score: null, tilt: 'unavailable', probabilities: null };
-  const score = Math.max(0, Math.min(100, Math.round((50 + 25 * (features.news_points ?? 0) + 40 * (features.market_points ?? 0) + 10 * (features.calendar_points ?? 0) + 10 * (features.earnings_points ?? 0)) * 100) / 100));
+  const hasGroups = marketGroupKeys.some(key => key in features);
+  const marketPoints = hasGroups ? marketGroupKeys.reduce((sum, key) => sum + (features[key] ?? 0), 0) : (features.market_points ?? 0);
+  const score = Math.max(0, Math.min(100, Math.round((50 + 25 * (features.news_points ?? 0) + 40 * marketPoints + 10 * (features.calendar_points ?? 0) + 10 * (features.earnings_points ?? 0)) * 100) / 100));
   const tilt = score >= 55 ? 'up' : score <= 45 ? 'down' : 'neutral';
   return { score, tilt, probabilities: null };
 }

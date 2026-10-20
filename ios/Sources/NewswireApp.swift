@@ -11,7 +11,9 @@ import SwiftUI
     var body: some Scene {
         WindowGroup {
             #if DEBUG
-            if CommandLine.arguments.contains("-marketSessionPreview") {
+            if CommandLine.arguments.contains("-financialFreshnessPreview") {
+                NavigationStack { FinancialFreshnessPreviewScreen() }
+            } else if CommandLine.arguments.contains("-marketSessionPreview") {
                 MarketSessionPreview()
             } else if CommandLine.arguments.contains("-sessionAlertsPreview") {
                 SessionAlertsView(preview: true)

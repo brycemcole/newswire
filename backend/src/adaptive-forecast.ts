@@ -1,10 +1,15 @@
-import { forecastTilt, makeFeatures, type Features, type Horizon } from './forecast-model';
+import { forecastTilt, makeFeatures, marketGroupKeys, type Features, type Horizon } from './forecast-model';
 
 export const adaptiveVersion = 'forecast-adaptive-v2';
-const coefficients: Record<string, number> = { news_points: 25, market_points: 40, calendar_points: 10, earnings_points: 10 };
+const coefficients: Record<string, number> = { news_points: 25, ...Object.fromEntries(marketGroupKeys.map(key => [key, 40])), calendar_points: 10, earnings_points: 10 };
 export type LearningOutcome = { id: string; session_date: string; horizon: Horizon; available_at: string; direction: number; return_pct: number; forecast_at: string; features: Features };
 const round = (value: number) => Math.round(value * 100) / 100;
 const bounded = (value: number, limit: number) => Math.max(-limit, Math.min(limit, value));
+// Rows saved before the market split carry only market_points; their whole market contribution goes to the residual group.
+export function normalizeFeatures(features: Features): Features {
+  if (marketGroupKeys.some(key => key in features)) return features;
+  return { ...features, ...Object.fromEntries(marketGroupKeys.map(key => [key, key === 'market_other_points' ? features.market_points ?? 0 : 0])) };
+}
 
 export async function learningOutcomes(db: D1Database, symbol: string, asOf: string, horizon?: Horizon): Promise<LearningOutcome[]> {
   if (!['SPY', 'QQQ'].includes(symbol)) return [];
@@ -15,13 +20,14 @@ export async function learningOutcomes(db: D1Database, symbol: string, asOf: str
   return results.flatMap(row => {
     try {
       const features = JSON.parse(row.features_json);
-      return features && Object.values(features).every(value => typeof value === 'number' && Number.isFinite(value)) ? [{ ...row, features }] : [];
+      return features && Object.values(features).every(value => typeof value === 'number' && Number.isFinite(value)) ? [{ ...row, features: normalizeFeatures(features) }] : [];
     } catch { return []; }
   });
 }
 
-export function adaptiveForecast(features: Features, rows: LearningOutcome[], horizon: Horizon, asOf: string) {
-  const base = forecastTilt(features);
+export function adaptiveForecast(liveFeatures: Features, allRows: LearningOutcome[], horizon: Horizon, asOf: string) {
+  const features = normalizeFeatures(liveFeatures), base = forecastTilt(features);
+  const rows = allRows.map(row => ({ ...row, features: normalizeFeatures(row.features) }));
   const unique = new Map(rows.filter(row => row.horizon === horizon && row.available_at <= asOf
     && Number.isFinite(row.return_pct) && Object.values(row.features).every(Number.isFinite)
     && forecastTilt(row.features).score !== null).map(row => [row.session_date, row]));
@@ -58,7 +64,9 @@ export function adaptiveForecast(features: Features, rows: LearningOutcome[], ho
       rhs[k] -= factor * rhs[i];
     }
   }
-  const weights = Object.fromEntries(keys.map((key, i) => [key, round(coefficients[key] + rhs[i])]));
+  const weights: Record<string, number> = Object.fromEntries(keys.map((key, i) => [key, round(coefficients[key] + rhs[i])]));
+  const marketWeights = marketGroupKeys.map(key => weights[key]);
+  weights.market_points = round(marketWeights.reduce((sum, value) => sum + value, 0) / marketWeights.length);
   const adjustment = base.score === null ? 0 : round(bounded(keys.reduce((sum, key, i) => sum + rhs[i] * bounded(features[key] ?? 0, 1), 0), 12));
   const score = base.score === null ? null : round(Math.max(0, Math.min(100, base.score + adjustment)));
   return { model: adaptiveVersion, score, tilt: score === null ? 'unavailable' : score >= 55 ? 'up' : score <= 45 ? 'down' : 'neutral',
