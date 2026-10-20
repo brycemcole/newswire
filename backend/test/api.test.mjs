@@ -232,7 +232,7 @@ test('data layer: tool catalog, wire full-text search, retraction filter and MCP
   assert.equal((await request('/v1/data/tools.json', null)).status, 401);
   const catalog = await (await request('/v1/data/tools.json')).json();
   const names = catalog.tools.map(t => t.name);
-  for (const name of ['macro', 'series', 'series_search', 'calendar', 'fed_odds', 'yield_curve', 'board', 'quote', 'screener', 'wire_search', 'sec_filings', 'insider_trades', 'holders', 'contracts', 'chokepoints', 'world_economy']) assert.ok(names.includes(name), name);
+  for (const name of ['macro', 'series', 'series_search', 'calendar', 'fed_odds', 'yield_curve', 'board', 'quote', 'screener', 'stock_screens', 'wire_search', 'sec_filings', 'insider_trades', 'holders', 'contracts', 'chokepoints', 'world_economy']) assert.ok(names.includes(name), name);
   assert.deepEqual(catalog.tools.find(t => t.name === 'series').parameters.required, ['id']);
   const story = { ...base, external_id: 'fts-1', url: 'https://example.com/fts-1', title: 'Powell signals patience on rate cuts', summary: 'The Federal Reserve chair spoke on inflation.', published_at: new Date(Date.now() - 3600000).toISOString() };
   const created = await (await post(story)).json();

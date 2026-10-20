@@ -135,6 +135,7 @@ nonisolated struct TerminalFunction: Identifiable, Sendable {
         case "WIRP", "GC", "GCEU", "GCJP", "CRED", "WB", "BTMM": "Rates"
         case "SHIP", "MAPS": "Shipping"
         case "INST", "FLOW", "PTR": "Institutions"
+        case "SCRM", "SCRE", "SCRA": "Screens"
         default: "Economy"
         }
     }
@@ -147,6 +148,7 @@ nonisolated struct TerminalFunction: Identifiable, Sendable {
         case "WEO": .cyan
         case "SHIP", "MAPS": .teal
         case "INST", "FLOW", "PTR": .indigo
+        case "SCRM", "SCRE", "SCRA": .mint
         default: .gray
         }
     }
@@ -173,6 +175,9 @@ nonisolated struct TerminalFunction: Identifiable, Sendable {
         TerminalFunction(code: "INST", title: "13F filers", symbol: "building.2.fill", route: DataRoute("sec/institution-search"), summary: "What BlackRock, Berkshire and other managers hold"),
         TerminalFunction(code: "FLOW", title: "Institutional flow", symbol: "arrow.up.arrow.down", route: DataRoute("finviz/institutional-flow", ["side": "buying"]), summary: "Stocks where institutions added or cut the most"),
         TerminalFunction(code: "PTR", title: "House trades", symbol: "person.text.rectangle.fill", route: DataRoute("congress/ptrs", ["days": "90"]), summary: "Stock trades disclosed by House members"),
+        TerminalFunction(code: "SCRM", title: "Up over 3 months", symbol: "chart.line.uptrend.xyaxis", route: DataRoute("screens", ["preset": "momentum_3m"]), summary: "Large US stocks with the biggest 3-month price gains"),
+        TerminalFunction(code: "SCRE", title: "Earnings ahead", symbol: "calendar.badge.clock", route: DataRoute("screens", ["preset": "earnings_soon", "days": "14"]), summary: "Large US companies reporting in the next two weeks"),
+        TerminalFunction(code: "SCRA", title: "Analyst buys", symbol: "hand.thumbsup.fill", route: DataRoute("screens", ["preset": "analyst_buy"]), summary: "Large US companies analysts rate Buy or Strong Buy"),
     ]
 }
 
@@ -1574,7 +1579,7 @@ struct TerminalExploreView: View {
     @State private var visibility = TerminalExploreVisibility.shared
     @State private var query = ""
 
-    private let categories = ["Markets", "Rates", "Economy", "Institutions", "Shipping"]
+    private let categories = ["Markets", "Screens", "Rates", "Economy", "Institutions", "Shipping"]
     private var matches: [TerminalFunction] {
         TerminalFunction.all.filter { function in
             query.isEmpty || "\(function.title) \(function.code) \(function.category) \(function.summary)".localizedCaseInsensitiveContains(query)
