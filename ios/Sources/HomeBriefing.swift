@@ -316,7 +316,15 @@ struct SinceVisitCard: View {
 
         for symbol in HomeSymbols.tracked {
             guard let quote = board.quotes[symbol], quote.price > 0 else { continue }
+            // With a "Since <time>" header every row must be measured from that visit. A symbol with no recorded
+            // price (added after the baseline, or never quoted then) has no baseline, so it is omitted rather than
+            // shown with its day change under a "Since" label.
             let previous = since == nil ? nil : ledger.prices[symbol]
+            if since != nil, previous == nil || previous! <= 0 { continue }
+            switch board.freshness(of: symbol, now: now) {
+            case .unavailable?, .delayed?: continue
+            default: break
+            }
             let move = previous.map { (quote.price / $0 - 1) * 100 } ?? quote.changePercent
             guard abs(move) >= 1 else { continue }
             let isHeld = held.contains(symbol)
@@ -395,7 +403,14 @@ struct SinceVisitCard: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .background {
                 let tracked = Set(HomeSymbols.tracked)
-                ledger.leave(prices: board.quotes.filter { tracked.contains($0.key) }.mapValues(\.price))
+                // Only record prices that were current when leaving; a stale quote would become a false baseline.
+                ledger.leave(prices: board.quotes.filter { key, quote in
+                    guard tracked.contains(key), quote.price > 0 else { return false }
+                    switch board.freshness(of: key, now: .now) {
+                    case .unavailable?, .delayed?: return false
+                    default: return true
+                    }
+                }.mapValues(\.price))
             }
             if phase == .active { ledger.arrive() }
         }
