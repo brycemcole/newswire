@@ -359,6 +359,7 @@ struct MarketSearchSheet: View, Equatable {
     @State private var searchFailed = false
     @State private var searchRetry = 0
     @State private var recents = MarketRecents.all
+    @State private var showAllRecents = false
     @State private var moverList = MoverList(rawValue: UserDefaults.standard.string(forKey: "marketMovers") ?? "") ?? .gainers
     @State private var board = MarketBoard.shared
     @State private var watchlist = Watchlist.shared
@@ -612,6 +613,7 @@ struct MarketSearchSheet: View, Equatable {
     private var overview: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
+                if !recents.isEmpty && searching { recentSection }
                 section("Stocks") {
                     indices
                 }
@@ -647,19 +649,7 @@ struct MarketSearchSheet: View, Equatable {
                     .padding(.horizontal, 16)
                     .accessibilityIdentifier("explore-data-tools")
                 }
-                if !recents.isEmpty {
-                    section("Recent") {
-                        ForEach(recents, id: \.self) { symbol in
-                            row(symbol)
-                                .contextMenu {
-                                    Button("Remove from Recent", systemImage: "minus.circle", role: .destructive) {
-                                        MarketRecents.remove(symbol)
-                                        withAnimation(.easeOut(duration: 0.2)) { recents = MarketRecents.all }
-                                    }
-                                }
-                        }
-                    }
-                }
+                if !recents.isEmpty && !searching { recentSection }
                 movers
                 earnings
             }
@@ -668,6 +658,28 @@ struct MarketSearchSheet: View, Equatable {
         }
         .scrollDisabled(detent == .peek)
         .scrollDismissesKeyboard(.interactively)
+    }
+
+    private var recentSection: some View {
+        let shown = showAllRecents ? recents : Array(recents.prefix(3))
+        return section("Recent", accessory: {
+            if recents.count > 3 {
+                Button(showAllRecents ? "Show less" : "Show more") {
+                    withAnimation(.easeOut(duration: 0.2)) { showAllRecents.toggle() }
+                }
+                .font(.caption.weight(.semibold)).foregroundStyle(Color.wireAccent)
+            }
+        }) {
+            ForEach(shown, id: \.self) { symbol in
+                row(symbol)
+                    .contextMenu {
+                        Button("Remove from Recent", systemImage: "minus.circle", role: .destructive) {
+                            MarketRecents.remove(symbol)
+                            withAnimation(.easeOut(duration: 0.2)) { recents = MarketRecents.all }
+                        }
+                    }
+            }
+        }
     }
 
     private var indices: some View {
