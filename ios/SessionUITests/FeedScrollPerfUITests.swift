@@ -15,8 +15,7 @@ nonisolated final class FeedScrollPerfUITests: XCTestCase {
         from.press(forDuration: 0.02, thenDragTo: to, withVelocity: .fast, thenHoldForDuration: 0)
     }
 
-    @MainActor func testHomeFeedScrollHitches() throws {
-        continueAfterFailure = false
+    @MainActor private func launchSyntheticFeed() throws -> XCUIApplication {
         let app = XCUIApplication()
         let symbols = ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "META", "GOOGL", "AMD", "INTC", "MU", "NU", "JPM", "BAC", "XOM", "CVX", "DIS", "NFLX", "PYPL", "UBER", "SHOP"]
         let stories: [[String: Any]] = (0..<120).map { index in
@@ -38,6 +37,37 @@ nonisolated final class FeedScrollPerfUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.collectionViews.firstMatch.waitForExistence(timeout: 20))
         sleep(5)
+        return app
+    }
+
+    @MainActor func testStorySwipeBackHitches() throws {
+        continueAfterFailure = false
+        let app = try launchSyntheticFeed()
+        fling(app, up: true)
+        sleep(2)
+        let headlines = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "[TEST] Headline"))
+        var hitch = 0.0, slow = 0.0, worst = 0.0
+        for index in 0..<4 {
+            let row = headlines.element(boundBy: index % 2)
+            XCTAssertTrue(row.waitForExistence(timeout: 5))
+            row.tap()
+            sleep(3)
+            let before = readFrames()
+            let edge = app.coordinate(withNormalizedOffset: CGVector(dx: 0.01, dy: 0.5))
+            edge.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)), withVelocity: .default, thenHoldForDuration: 0)
+            sleep(2)
+            let after = readFrames()
+            XCTAssertTrue(row.exists)
+            hitch += (after["hitchMs"] ?? 0) - (before["hitchMs"] ?? 0)
+            slow += (after["over25"] ?? 0) - (before["over25"] ?? 0)
+            worst = max(worst, after["worstMs"] ?? 0)
+        }
+        print("SWIPE_BACK_STATS hitchMs=\(hitch) framesOver25ms=\(slow)")
+    }
+
+    @MainActor func testHomeFeedScrollHitches() throws {
+        continueAfterFailure = false
+        let app = try launchSyntheticFeed()
         for _ in 0..<2 { fling(app, up: true) }
         sleep(2)
         let shot = XCTAttachment(screenshot: app.screenshot())

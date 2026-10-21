@@ -125,6 +125,18 @@ nonisolated enum Accent: String, CaseIterable, Identifiable {
     }
 }
 
+/// Read only inside `StorySuggestionsReader`, so a story clearing its symbols as it pops re-renders the dock, not the feed.
+@Observable final class StorySuggestions {
+    var symbols: [String] = []
+}
+
+struct StorySuggestionsReader<Content: View>: View {
+    let source: StorySuggestions
+    @ViewBuilder let content: ([String]) -> Content
+
+    var body: some View { content(source.symbols) }
+}
+
 @Observable final class ReadState {
     static let shared = ReadState()
     /// Looked up by every row on every render, so it is a set; `order` keeps the oldest-first list that is trimmed and saved.
@@ -266,7 +278,7 @@ struct FeedView: View {
     @State private var portfolioExpanded = UserDefaults.standard.bool(forKey: "portfolioExpanded")
     @State private var search = ""
     @State private var searchPresented = false
-    @State private var storyMarketSymbols: [String] = []
+    @State private var storySuggestions = StorySuggestions()
     @State private var homeClock = Date.now
     @State private var alertSymbol: MarketSymbol?
     @AppStorage("headlinesOnly") private var headlinesOnly = false
@@ -411,7 +423,7 @@ struct FeedView: View {
                 }
                 .modifier(ConditionalWireSearch(presented: $searchPresented, text: $search, filters: $store.filters))
                 .navigationDestination(for: Story.self) { story in
-                    StoryDetail(story: story) { storyMarketSymbols = $0 }
+                    StoryDetail(story: story) { [storySuggestions] in storySuggestions.symbols = $0 }
                 }
                 .navigationDestination(for: MarketSymbol.self) { QuoteDetail(symbol: $0.id).id($0.id).dockClearance() }
                 .navigationDestination(for: DataRoute.self) { route in
@@ -452,53 +464,53 @@ struct FeedView: View {
             .sheet(isPresented: $portfolio) { PortfolioView() }
             .sheet(item: $alertSymbol) { PriceAlertComposer(symbol: $0.id) }
             .sheet(item: $asking, onDismiss: { askPrompt = "" }) { AskSheet(context: $0, initialQuestion: askPrompt) }
-            .task(id: store.category + "|" + search + "|" + store.filters.map(\.id).joined(separator: "|") + "|" + store.serverURL) {
-                store.query = search.trimmingCharacters(in: .whitespacesAndNewlines)
-                store.reset()
-                // Debounce typing only; category and filter taps load immediately.
-                if !store.query.isEmpty {
-                    do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
-                }
-                await store.ready()
-                // Recent caches merge arrivals when the reader is at the top; stale caches fetch a fresh window.
-                let stale = store.lastUpdated.map { $0.timeIntervalSinceNow < -3600 } ?? true
-                await store.sync(stale ? .replace : .merge, quiet: true)
+        }
+        .task(id: store.category + "|" + search + "|" + store.filters.map(\.id).joined(separator: "|") + "|" + store.serverURL) {
+            store.query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+            store.reset()
+            // Debounce typing only; category and filter taps load immediately.
+            if !store.query.isEmpty {
+                do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
             }
-            .task(id: phase) {
-                if phase == .background {
-                    store.refreshAfterBackgrounding()
-                    FeedStore.scheduleRefresh()
-                    FeedStore.scheduleProcessing()
-                }
-                guard phase == .active else { return }
+            await store.ready()
+            // Recent caches merge arrivals when the reader is at the top; stale caches fetch a fresh window.
+            let stale = store.lastUpdated.map { $0.timeIntervalSinceNow < -3600 } ?? true
+            await store.sync(stale ? .replace : .merge, quiet: true)
+        }
+        .task(id: phase) {
+            if phase == .background {
+                store.refreshAfterBackgrounding()
+                FeedStore.scheduleRefresh()
+                FeedStore.scheduleProcessing()
+            }
+            guard phase == .active else { return }
+            homeClock = .now
+            await store.ready()
+            // Skipped when background refresh just brought the feed up to date; at launch the feed-key task
+            // above usually wins and this returns at once because a load is already in flight. After an hour
+            // away the list is re-ranked as it opens rather than gaining a block of new stories over stale ones.
+            let age = store.lastUpdated.map { -$0.timeIntervalSinceNow } ?? .infinity
+            if store.hasLoaded && age > 5 {
+                await store.sync(age > 3600 ? .replace : .merge, quiet: true)
+            }
+            PortfolioStore.shared.reloadFromKeychain()
+            await PushDelegate.syncStockAlerts()
+            if (PortfolioStore.shared.snapshot.updated ?? .distantPast).timeIntervalSinceNow < -300 {
+                await PortfolioStore.shared.sync()
+            }
+            await PriceWatchStore.shared.restoreActivities()
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(60)) } catch { return }
                 homeClock = .now
-                await store.ready()
-                // Skipped when background refresh just brought the feed up to date; at launch the feed-key task
-                // above usually wins and this returns at once because a load is already in flight. After an hour
-                // away the list is re-ranked as it opens rather than gaining a block of new stories over stale ones.
-                let age = store.lastUpdated.map { -$0.timeIntervalSinceNow } ?? .infinity
-                if store.hasLoaded && age > 5 {
-                    await store.sync(age > 3600 ? .replace : .merge, quiet: true)
-                }
-                PortfolioStore.shared.reloadFromKeychain()
+                await store.sync(.merge, quiet: true)
                 await PushDelegate.syncStockAlerts()
-                if (PortfolioStore.shared.snapshot.updated ?? .distantPast).timeIntervalSinceNow < -300 {
-                    await PortfolioStore.shared.sync()
-                }
-                await PriceWatchStore.shared.restoreActivities()
-                while !Task.isCancelled {
-                    do { try await Task.sleep(for: .seconds(60)) } catch { return }
-                    homeClock = .now
-                    await store.sync(.merge, quiet: true)
-                    await PushDelegate.syncStockAlerts()
-                }
             }
-            .task(id: phase == .active ? watchlist.symbols : []) {
-                guard phase == .active else { return }
-                while !Task.isCancelled {
-                    await board.refresh(quotes: watchlist.symbols, sparks: watchlist.symbols)
-                    do { try await Task.sleep(for: .seconds(30)) } catch { return }
-                }
+        }
+        .task(id: phase == .active ? watchlist.symbols : []) {
+            guard phase == .active else { return }
+            while !Task.isCancelled {
+                await board.refresh(quotes: watchlist.symbols, sparks: watchlist.symbols)
+                do { try await Task.sleep(for: .seconds(30)) } catch { return }
             }
         }
     }
@@ -514,22 +526,24 @@ struct FeedView: View {
         .onChange(of: portfolio) { _, _ in dock = .peek }
         .overlay {
             if !hidesMarketDock {
-                MarketDock(detent: $dock, onSelect: { symbol in
-                    if symbol == TerminalExploreView.token {
+                StorySuggestionsReader(source: storySuggestions) { suggestedSymbols in
+                    MarketDock(detent: $dock, onSelect: { symbol in
+                        if symbol == TerminalExploreView.token {
+                            withAnimation(selectionAnimation) { dock = .peek }
+                            marketDepth = nil
+                            store.path.append(FeedDestination.explore)
+                            return
+                        }
+                        withAnimation(selectionAnimation) { dock = .medium }
+                        open(quote: symbol)
+                    }, onAsk: { question in
+                        askPrompt = question
+                        asking = .markets
+                    }, onSuggestionSelect: { symbol in
                         withAnimation(selectionAnimation) { dock = .peek }
-                        marketDepth = nil
-                        store.path.append(FeedDestination.explore)
-                        return
-                    }
-                    withAnimation(selectionAnimation) { dock = .medium }
-                    open(quote: symbol)
-                }, onAsk: { question in
-                    askPrompt = question
-                    asking = .markets
-                }, onSuggestionSelect: { symbol in
-                    withAnimation(selectionAnimation) { dock = .peek }
-                    open(quote: symbol)
-                }, suggestedSymbols: storyMarketSymbols, onFrameChange: { [dockFrame] in dockFrame.value = $0 })
+                        open(quote: symbol)
+                    }, suggestedSymbols: suggestedSymbols, onFrameChange: { [dockFrame] in dockFrame.value = $0 })
+                }
             }
         }
         .environment(\.feedStore, store)
