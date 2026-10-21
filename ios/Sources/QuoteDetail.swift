@@ -1213,7 +1213,7 @@ private extension ChartRange {
         }
         // The leading bucket is usually partial and its label would sit on the plot's edge.
         let kept = starts.filter { Double($0.id) >= Double(domain) * 0.04 }
-        let step = max(1, Int((Double(kept.count) / 5).rounded(.up)))
+        let step = Swift.max(1, Int((Double(kept.count) / 5).rounded(.up)))
         return Dictionary(uniqueKeysWithValues: kept.enumerated().filter { $0.offset % step == 0 }
             .map { ($0.element.id, $0.element.date.formatted(style)) })
     }
