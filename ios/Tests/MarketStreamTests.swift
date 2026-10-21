@@ -28,6 +28,26 @@ struct MarketStreamTests {
         #expect(chart.applying(tick(105, at: start - 60)) == nil)
     }
 
+    @Test func afterHoursQuoteSurvivesTradingPeriodRollover() {
+        let open = Date(timeIntervalSince1970: 1_790_776_800)
+        let close = open + 23_400
+        let next = open + 86_400
+        func chart(post: MarketSession?, extended: Bool = true) -> MarketChart {
+            MarketChart(symbol: "TKNO", name: "Alpha", exchange: "", currency: "USD", instrument: "EQUITY", price: 7.39,
+                        previousClose: 6.8, dayHigh: nil, dayLow: nil, volume: nil, yearHigh: nil, yearLow: nil, decimals: 2,
+                        timeZone: .current,
+                        points: [PricePoint(id: 0, date: close - 300, open: 7.4, close: 7.39, extended: false, run: 0)]
+                            + (extended ? [PricePoint(id: 1, date: close + 600, open: 6.9, close: 6.82, extended: true, run: 1)] : []),
+                        slots: 10, pre: MarketSession(start: next - 18_000, end: next), regular: MarketSession(start: next, end: next + 23_400), post: post)
+        }
+        let current = MarketSession(start: close, end: close + 14_400)
+        #expect(chart(post: current).extendedQuote?.price == 6.82)
+        // currentTradingPeriod already points at the next session: post no longer contains the returned bars.
+        let rolled = chart(post: MarketSession(start: next + 23_400, end: next + 37_800))
+        #expect(rolled.extendedQuote?.label == "After hours" && rolled.extendedQuote?.price == 6.82)
+        #expect(chart(post: current, extended: false).extendedQuote == nil)
+    }
+
     private func tick(_ price: Float, at date: Date) -> MarketTick {
         var bytes: [UInt8] = [0x0a, 2] + Array("MU".utf8) + [0x15]
         withUnsafeBytes(of: price.bitPattern.littleEndian) { bytes += $0 }
