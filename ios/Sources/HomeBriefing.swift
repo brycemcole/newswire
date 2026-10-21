@@ -367,7 +367,8 @@ struct SinceVisitCard: View {
 
     private var newHeadlines: Int {
         guard let since = ledger.since else { return 0 }
-        return stories.filter { $0.receivedAt > since }.count
+        // Only headlines about held or watched symbols, matching how the rest of the home screen picks "your" news.
+        return HomeSymbols.stories(stories.filter { $0.receivedAt > since }, limit: .max).count
     }
 
     var body: some View {
@@ -378,7 +379,7 @@ struct SinceVisitCard: View {
                 VStack(alignment: .leading, spacing: 6) {
                     HomeCardHeader(title: ledger.since.map { "Since \(HomeFormat.since($0, now: now))" } ?? "Today") {
                         if newHeadlines > 0 {
-                            Text("\(newHeadlines) new headlines")
+                            Text(newHeadlines == 1 ? "1 new headline" : "\(newHeadlines) new headlines")
                         }
                     }
                     if HomeSymbols.tracked.isEmpty {
