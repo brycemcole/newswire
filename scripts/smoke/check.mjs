@@ -10,9 +10,18 @@ const origin = process.env.NEWSWIRE_URL ?? 'https://bryce-newswire.bryce-e19.wor
 const stateFile = join(homedir(), '.config', 'newswire', 'smoke-state.json');
 const hosts = { sandbox: 'https://api.sandbox.push.apple.com', production: 'https://api.push.apple.com' };
 
+export function publisherFreshness(body, now = Date.now()) {
+  const receipts = body.stories.filter(story => Array.isArray(story.tags) && story.tags.includes('headlines'))
+    .map(story => Date.parse(story.received_at)).filter(at => Number.isFinite(at) && at <= now);
+  if (!receipts.length) return 'no valid publisher receipt in latest feed';
+  const hours = (now - Math.max(...receipts)) / 3600000;
+  return hours > 6 ? `publisher feed stale: latest receipt ${hours.toFixed(1)} hours ago` : null;
+}
+
 // The same requests the app makes on launch, the home outlook and the Research screen.
 export const checks = [
   { name: 'Feed', path: '/v1/stories?limit=50', valid: body => Array.isArray(body.stories) && body.stories.length > 0 },
+  { name: 'Publisher feed', path: '/v1/stories?tag=headlines&limit=50', valid: body => Array.isArray(body.stories), freshness: publisherFreshness },
   ...['SPY', 'QQQ', 'XLE', 'DAL'].map(symbol => ({ name: `Outlook ${symbol}`, path: `/v1/market-pulse?symbol=${symbol}&history=12`,
     valid: body => body.symbol === symbol && typeof body.status === 'string' && Array.isArray(body.history) })),
   ...['SPY', 'QQQ'].map(symbol => ({ name: `Research ${symbol}`, path: `/v1/research?symbol=${symbol}`,
@@ -28,7 +37,7 @@ export async function run(fetchImpl = fetch, selected = checks) {
       const response = await fetchImpl(new URL(check.path, origin), { headers: { Authorization: `Bearer ${bearer}`, Accept: 'application/json' }, signal: AbortSignal.timeout(20000) });
       const body = await response.json().catch(() => null);
       const ms = Date.now() - started;
-      const error = !response.ok ? `HTTP ${response.status}${body?.error?.message ? `: ${body.error.message}` : ''}` : !body || !check.valid(body) ? 'unexpected response shape' : ms > 10000 ? `slow: ${ms} ms` : null;
+      const error = !response.ok ? `HTTP ${response.status}${body?.error?.message ? `: ${body.error.message}` : ''}` : !body || !check.valid(body) ? 'unexpected response shape' : check.freshness?.(body) ?? (ms > 10000 ? `slow: ${ms} ms` : null);
       results.push({ name: check.name, ok: !error, ms, ...(error ? { error } : {}) });
     } catch (error) {
       results.push({ name: check.name, ok: false, ms: Date.now() - started, error: error.name === 'TimeoutError' ? 'timed out after 20 s' : error.message });
@@ -52,14 +61,14 @@ async function alert(title, body) {
 
 // Outlook and Research routes read thousands of D1 rows per request. Every run checks the feed and one of those routes in
 // rotation, so each is still verified every 30 minutes without spending the free D1 read allowance.
-export const heavyChecks = checks.slice(1);
+export const heavyChecks = checks.slice(2);
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const noAlert = process.argv.includes('--no-alert');
   const previous = JSON.parse(await readFile(stateFile, 'utf8').catch(() => 'null')) ?? {};
   const full = process.argv.includes('--all');
   const turn = Number.isInteger(previous.turn) ? previous.turn : 0;
-  const selected = full ? checks : [checks[0], heavyChecks[turn % heavyChecks.length]];
+  const selected = full ? checks : [...checks.slice(0, 2), heavyChecks[turn % heavyChecks.length]];
   const results = await run(fetch, selected);
   const failed = results.filter(result => !result.ok);
   console.log(JSON.stringify({ at: new Date().toISOString(), failed: failed.length, results }));

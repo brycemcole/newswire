@@ -3,7 +3,8 @@ import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { token } from '../monitor/publish.mjs';
 import { notify, wake } from '../monitor/apns.mjs';
-import { complete as freeComplete, model as freeModel } from '../ai/opencode.mjs';
+import { model as freeModel } from '../ai/opencode.mjs';
+import { complete } from '../ai/completion.mjs';
 
 const origin = process.env.NEWSWIRE_URL ?? 'https://bryce-newswire.bryce-e19.workers.dev';
 const stateFile = process.env.BRAIN_SCRAPE_STATE ?? join(homedir(), '.config', 'newswire', 'brain-state.json');
@@ -92,7 +93,7 @@ async function local(messages, maxTokens) {
 
 const ai = async (model, system, user, maxTokens) => {
   const messages = [{ role: 'system', content: system }, { role: 'user', content: user }];
-  if (model === freeModel) return parseJSON((await freeComplete({ model, messages, max_tokens: maxTokens })).choices[0].message.content);
+  if (model === freeModel) return parseJSON((await complete({ model, messages, max_tokens: maxTokens })).choices[0].message.content);
   if (localAI) {
     try { return parseJSON(await local(messages, maxTokens)); } catch (error) { console.warn(`brain: ${error.message}; falling back to Workers AI`); }
   }
