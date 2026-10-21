@@ -13,6 +13,7 @@ nonisolated struct PerformanceSeries: Sendable {
     let points: [PerformancePoint]
     let baseline: Double
     var transactionBased = false
+    var estimatedFromHoldings = false
     var last: Double { points.last?.value ?? baseline }
     var change: Double { points.last?.gain ?? (last - baseline) }
     var percent: Double? { transactionBased ? points.last?.rate : (baseline > 0 ? change / baseline : nil) }
@@ -81,6 +82,55 @@ nonisolated struct PerformanceSeries: Sendable {
     }
 
     @concurrent private static func build(snapshot: PortfolioSnapshot, range: ChartRange) async throws -> PerformanceSeries {
+        do {
+            return try await buildExact(snapshot: snapshot, range: range)
+        } catch {
+            if let estimate = await estimateFromHoldings(snapshot: snapshot, range: range) { return estimate }
+            throw error
+        }
+    }
+
+    // Values today's non-option holdings at past prices; ignores trades, deposits and options, so it is flagged as an estimate.
+    private static func estimateFromHoldings(snapshot: PortfolioSnapshot, range: ChartRange) async -> PerformanceSeries? {
+        let start = PortfolioLedger.start(for: range, at: .now)
+        let held = snapshot.positions.filter { $0.option == nil && $0.value?.isFinite == true && $0.quantity.isFinite && $0.quantity != 0 }
+        var quantities: [String: Double] = [:]
+        for position in held { quantities[position.symbol, default: 0] += position.quantity }
+        guard !quantities.isEmpty else { return nil }
+        let heldValue = held.compactMap(\.value).reduce(0, +)
+        let total = snapshot.totalValue
+        let fixed = total - heldValue
+        let tracks = await withTaskGroup(of: (String, [HistoryPoint]?).self) { group in
+            for symbol in quantities.keys {
+                group.addTask { (symbol, try? await MarketClient.portfolioHistory(symbol, from: start.addingTimeInterval(-7 * 86400))) }
+            }
+            var found: [String: [HistoryPoint]] = [:]
+            for await (symbol, points) in group { if let points { found[symbol] = points.sorted { $0.date < $1.date } } }
+            return found
+        }
+        guard tracks.count == quantities.count else { return nil }
+        let calendar = PortfolioLedger.calendar
+        let end = calendar.startOfDay(for: .now)
+        var days = Set(tracks.values.flatMap { $0.map { calendar.startOfDay(for: $0.date) } }.filter { $0 >= start && $0 <= end })
+        days.insert(start)
+        var values: [(Date, Double)] = []
+        for day in days.sorted() {
+            var sum = fixed
+            var complete = true
+            for (symbol, quantity) in quantities {
+                guard let price = tracks[symbol]?.last(where: { calendar.startOfDay(for: $0.date) <= day }),
+                      day.timeIntervalSince(calendar.startOfDay(for: price.date)) < 7 * 86400,
+                      price.close.isFinite, price.close > 0 else { complete = false; break }
+                sum += quantity * price.close
+            }
+            if complete, sum.isFinite { values.append((day, day == end ? total : sum)) }
+        }
+        guard values.count > 1 else { return nil }
+        let points = values.enumerated().map { PerformancePoint(id: $0.offset, date: $0.element.0, value: $0.element.1) }
+        return PerformanceSeries(points: points, baseline: points[0].value, estimatedFromHoldings: true)
+    }
+
+    private static func buildExact(snapshot: PortfolioSnapshot, range: ChartRange) async throws -> PerformanceSeries {
         let ledger = try PortfolioLedger(snapshot: snapshot, start: PortfolioLedger.start(for: range, at: .now))
         if let limitation = ledger.limitation { throw PortfolioHistoryError.unavailable(limitation) }
         let prices = try await withThrowingTaskGroup(of: (String, [HistoryPoint]).self) { group in
@@ -232,9 +282,9 @@ struct PortfolioCard: View {
             if let selected, let current {
                 changeLine(current.change(at: selected), percent: current.percent(at: selected), label: shown == .day ? "Today" : shown.caption)
             } else {
-                if let today { changeLine(today.change, percent: today.percent, label: "Today") }
+                if let today { changeLine(today.change, percent: today.percent, label: today.estimatedFromHoldings ? "Today · est." : "Today") }
                 if shown != .day, let current {
-                    changeLine(current.change, percent: current.percent, label: shown.caption)
+                    changeLine(current.change, percent: current.percent, label: current.estimatedFromHoldings ? shown.caption + " · est. from current holdings" : shown.caption)
                 }
                 if today == nil {
                     Text(performance.recorded[shown]?.isEmpty == false ? "Recorded balances · Includes funding" : performance.errors[shown] ?? "Loading performance…")
