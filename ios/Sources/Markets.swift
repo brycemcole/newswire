@@ -112,8 +112,11 @@ nonisolated struct MarketChart: Sendable {
 
     var extendedQuote: (label: String, price: Double)? {
         guard let last = points.last, last.extended else { return nil }
-        if let post, last.date >= post.start { return ("After hours", last.close) }
         if let pre, pre.contains(last.date) { return ("Pre-market", last.close) }
+        if let post, last.date >= post.start { return ("After hours", last.close) }
+        // Yahoo rolls currentTradingPeriod to the next session once the day ends, so `post` no longer
+        // contains the bars it just returned. A trailing extended bar after the last regular bar is still after hours.
+        if let regular = points.last(where: { !$0.extended }), last.date > regular.date { return ("After hours", last.close) }
         return nil
     }
 
