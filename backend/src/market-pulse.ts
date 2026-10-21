@@ -47,6 +47,16 @@ const instruments = [
     exposure: { SPY: 1, QQQ: 0.8, XLE: 1.2, DAL: 0.8 } },
   { kind: 'change', id: 'bitcoin', label: 'Bitcoin', symbol: 'BTC-USD', unit: 'pct', typical: 3, points: 3, direction: 1, up: 1, down: 1, stale: 3, reason: 'Trades around the clock, so it carries risk appetite through weekends',
     exposure: { SPY: 1, QQQ: 1.3, XLE: 0.5, DAL: 0.8 } },
+  { kind: 'change', id: 'front_yield', label: '2-year Treasury futures', symbol: 'ZT=F', unit: 'pct', typical: 0.1, points: 4, direction: 1, up: 0.7, down: 1, stale: 3, baseline: 'cash_close', reason: 'The 2-year tracks Fed expectations, which the 10-year alone can hide',
+    exposure: { SPY: 1, QQQ: 1.3, XLE: 0.3, DAL: 0.8 } },
+  { kind: 'change', id: 'real_yield', label: 'TIPS (TIP)', symbol: 'TIP', unit: 'pct', typical: 0.3, points: 3, direction: 1, up: 0.7, down: 1, stale: 18, baseline: 'cash_close', reason: 'Falling TIPS prices mean rising real yields, which pressure valuations',
+    exposure: { SPY: 1, QQQ: 1.4, XLE: 0.3, DAL: 0.7 } },
+  { kind: 'relative', id: 'breadth', label: 'Equal-weight vs cap-weight (RSP vs SPY)', symbol: 'RSP', denominator: 'SPY', unit: 'pct', typical: 0.35, points: 3, direction: 1, stale: 18, reason: 'Equal-weight leading cap-weight means the move is broad rather than a handful of megacaps',
+    exposure: { SPY: 1, QQQ: 0.5, XLE: 0.6, DAL: 0.8 } },
+  { kind: 'relative', id: 'semis', label: 'Semiconductors vs S&P 500 (SMH vs SPY)', symbol: 'SMH', denominator: 'SPY', unit: 'pct', typical: 0.9, points: 3, direction: 1, stale: 18, reason: 'Chip leadership drives the index through its largest weights',
+    exposure: { SPY: 1, QQQ: 1.4, XLE: 0.2, DAL: 0.4 } },
+  { kind: 'ratio', id: 'vix_short', label: 'VIX9D vs VIX', symbol: '^VIX9D', denominator: '^VIX', unit: 'ratio', stale: 72, neutral: 0.97, scale: 0.08, points: 3, reason: 'Nine-day implied volatility above the 30-day means near-term event fear',
+    exposure: { SPY: 1, QQQ: 1.1, XLE: 0.8, DAL: 1.2 } },
   { kind: 'ratio', id: 'vix_term', label: 'VIX term structure', symbol: '^VIX', denominator: '^VIX3M', unit: 'ratio', stale: 72, reason: 'A short-term VIX above the 3-month VIX (backwardation) means fear is concentrated now; a calm curve supports stocks',
     exposure: { SPY: 1, QQQ: 1.1, XLE: 0.8, DAL: 1.2 } },
   { kind: 'drawdown', id: 'drawdown', label: 'S&P 500 ETF, 3 sessions', symbol: 'SPY', unit: 'pct', sessions: 3, stale: 96, reason: 'Sharp multi-day selloffs tend to see partial rebounds, so a deep drop adds a little support',
@@ -167,13 +177,17 @@ export function pulseHorizon(now: number) {
 
 export const marketInstruments = instruments.map(spec => ({ id: spec.id, label: spec.label, symbol: spec.symbol, unit: spec.unit, stale: spec.stale, kind: spec.kind,
   baseline: 'baseline' in spec ? spec.baseline : undefined,
+  neutral: 'neutral' in spec ? spec.neutral : undefined,
+  scale: 'scale' in spec ? spec.scale : undefined,
   denominator: 'denominator' in spec ? spec.denominator : undefined,
   sessions: 'sessions' in spec ? spec.sessions : undefined }));
 
 // Ratio levels score against a fixed neutral point; drawdowns are contrarian, so a deep drop adds support.
 function instrumentPoints(spec: (typeof instruments)[number], input: MarketInput | undefined, exposure: number): number {
   if (spec.kind === 'basket') return 0;
-  if (spec.kind === 'ratio') return input?.status === 'live' && input.price !== null ? -4 * Math.tanh((input.price - 0.92) / 0.08) * exposure : 0;
+  if (spec.kind === 'ratio') return input?.status === 'live' && input.price !== null
+    ? -('points' in spec ? spec.points : 4) * Math.tanh((input.price - ('neutral' in spec ? spec.neutral : 0.92)) / ('scale' in spec ? spec.scale : 0.08)) * exposure : 0;
+  if (spec.kind === 'relative') return input?.status === 'live' && input.change_day !== null ? spec.direction * spec.points * Math.tanh(input.change_day / spec.typical) * exposure : 0;
   if (spec.kind === 'drawdown') return input?.status === 'live' && input.change_day !== null ? -3 * Math.tanh(input.change_day / 3) * exposure : 0;
   const usable = input?.status === 'live' && input.change_day !== null;
   const signal = usable ? 0.7 * Math.tanh(input!.change_day! / spec.typical) + 0.3 * Math.tanh((input!.change_hour ?? 0) / (spec.typical / 3)) : 0;

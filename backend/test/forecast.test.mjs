@@ -217,3 +217,15 @@ test('market groups sum to the legacy market contribution and keep the base scor
   const legacy = { score_available: 1, news_points: -1.83 / 25, market_points: -6.76 / 40, calendar_points: 0, earnings_points: 0 };
   assert.equal(model.forecastTilt(legacy).score, model.forecastTilt(features).score);
 });
+
+test('event-risk days shrink the score toward neutral and leave other days unchanged', () => {
+  const base = { news_points: 1, market_points: 0.5, market_other_points: 0.5, score_available: 1 };
+  const plain = model.forecastTilt({ ...base, event_risk: 0 }).score;
+  const risky = model.forecastTilt({ ...base, event_risk: 1 }).score;
+  assert.equal(model.forecastTilt(base).score, plain);
+  assert.ok(Math.abs(risky - 50) < Math.abs(plain - 50));
+  assert.equal(model.eventRisk({ as_of: '2026-10-16T12:00:00Z' }), 0.5);
+  assert.equal(model.eventRisk({ as_of: '2026-09-30T12:00:00Z' }), 0.5);
+  assert.equal(model.eventRisk({ as_of: '2026-10-21T12:00:00Z', components: { calendar: { upcoming: [{ high: true }] } } }), 1);
+  assert.equal(model.eventRisk({ as_of: '2026-10-21T12:00:00Z' }), 0);
+});
