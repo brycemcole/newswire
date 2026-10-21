@@ -347,6 +347,7 @@ nonisolated struct MarketQuote: Sendable, Hashable, Identifiable {
 }
 
 struct MarketSearchSheet: View, Equatable {
+    private static let watchlistPreviewCount = 3
     private static let financeSymbols: [(String, String)] = [("^KS11", "KOSPI"), ("^N225", "NIKKEI"), ("^HSI", "HANG SENG"), ("^GDAXI", "DAX"), ("^FTSE", "FTSE"),
                                                               ("^TNX", "US 10Y"), ("DX-Y.NYB", "DOLLAR"), ("JPY=X", "USD/JPY"), ("CL=F", "WTI"), ("GC=F", "GOLD")]
     @Binding var detent: DockDetent
@@ -360,6 +361,7 @@ struct MarketSearchSheet: View, Equatable {
     @State private var searchRetry = 0
     @State private var recents = MarketRecents.all
     @State private var showAllRecents = false
+    @State private var showAllWatchlist = false
     @State private var moverList = MoverList(rawValue: UserDefaults.standard.string(forKey: "marketMovers") ?? "") ?? .gainers
     @State private var board = MarketBoard.shared
     @State private var watchlist = Watchlist.shared
@@ -617,9 +619,7 @@ struct MarketSearchSheet: View, Equatable {
                 section("Stocks") {
                     indices
                 }
-                section("Watchlist") {
-                    watchlistRows
-                }
+                watchlistSection
                 section("Global & macro") {
                     financeCards
                 }
@@ -718,6 +718,19 @@ struct MarketSearchSheet: View, Equatable {
         .scrollClipDisabled()
     }
 
+    private var watchlistSection: some View {
+        section("Watchlist", accessory: {
+            if watchlist.symbols.count > Self.watchlistPreviewCount {
+                Button(showAllWatchlist ? "Show less" : "Show more") {
+                    withAnimation(.easeOut(duration: 0.2)) { showAllWatchlist.toggle() }
+                }
+                .font(.caption.weight(.semibold)).foregroundStyle(Color.wireAccent)
+            }
+        }) {
+            watchlistRows
+        }
+    }
+
     private var watchlistRows: some View {
         let order = Dictionary(watchlist.symbols.enumerated().map { ($1, $0) }, uniquingKeysWith: min)
         let symbols = watchlist.symbols.sorted { a, b in
@@ -734,7 +747,7 @@ struct MarketSearchSheet: View, Equatable {
                     .font(.subheadline).foregroundStyle(.secondary)
                     .padding(.horizontal, 20).padding(.vertical, 12)
             } else {
-                ForEach(symbols, id: \.self) { symbol in
+                ForEach(showAllWatchlist ? symbols : Array(symbols.prefix(Self.watchlistPreviewCount)), id: \.self) { symbol in
                     row(symbol)
                 }
             }
