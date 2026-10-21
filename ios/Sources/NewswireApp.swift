@@ -423,7 +423,7 @@ struct FeedView: View {
                 }
                 .modifier(ConditionalWireSearch(presented: $searchPresented, text: $search, filters: $store.filters))
                 .navigationDestination(for: Story.self) { story in
-                    StoryDetail(story: story) { [storySuggestions] in storySuggestions.symbols = $0 }
+                    StoryDetail(story: story)
                 }
                 .navigationDestination(for: MarketSymbol.self) { QuoteDetail(symbol: $0.id).id($0.id).dockClearance() }
                 .navigationDestination(for: DataRoute.self) { route in
@@ -1001,7 +1001,6 @@ extension Date {
 
 struct StoryDetail: View {
     let story: Story
-    var onSuggestedSymbolsChange: ([String]) -> Void = { _ in }
     @Environment(\.feedStore) private var feedStore
     @State private var loading = false
     @State private var attempt = 0
@@ -1013,7 +1012,6 @@ struct StoryDetail: View {
     @State private var asking = false
     private var key: String { story.url.absoluteString }
     private var quotes: [Quote] { QuoteStore.shared.quotes(for: story) }
-    private var suggestedSymbols: [String] { Array(QuoteStore.shared.symbols(for: story).prefix(6)) }
     private var lead: String? {
         if story.isBrain && story.opensInReader && story.hasDistinctSummary { return StoryHTML.plainText(story.summary) }
         return glance == nil && !preparingGlance ? Summarizer.shared.summaries[key] : nil
@@ -1112,20 +1110,15 @@ struct StoryDetail: View {
                 relatedSection
             }.padding(20).frame(maxWidth: 760, alignment: .leading).frame(maxWidth: .infinity)
         }
-        .dockClearance(suggestions: !suggestedSymbols.isEmpty)
+        .dockClearance()
         #if DEBUG
         .defaultScrollAnchor(CommandLine.arguments.contains("-articlePreviewEnd") ? .bottom : .top)
         #endif
         .animation(.easeOut(duration: 0.2), value: excerpt)
         .animation(.easeOut(duration: 0.2), value: loading)
         .animation(.easeOut(duration: 0.2), value: quotes)
-        .onAppear {
-            onSuggestedSymbolsChange(suggestedSymbols)
-            CurrentScreen.shared.story = story
-        }
-        .onChange(of: suggestedSymbols) { _, symbols in onSuggestedSymbolsChange(symbols) }
+        .onAppear { CurrentScreen.shared.story = story }
         .onDisappear {
-            onSuggestedSymbolsChange([])
             if CurrentScreen.shared.story == story { CurrentScreen.shared.story = nil }
         }
         .task(id: story.id) {
