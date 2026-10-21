@@ -83,7 +83,18 @@ enum HomeSymbols {
     static func stories(_ stories: [Story], limit: Int = 5) -> [Story] {
         let names = Set(tracked.map(normalize))
         guard !names.isEmpty else { return [] }
-        return Array(stories.filter { story in story.tickers.contains { names.contains(normalize($0)) } }.prefix(limit))
+        let companies: [(String, String)] = positions.filter { $0.option == nil }.compactMap { position in
+            guard let name = position.name else { return nil }
+            let core = TickerNews.core(name, symbol: position.symbol).lowercased().split { !$0.isLetter && !$0.isNumber }.joined(separator: " ")
+            return core.count >= 4 ? (normalize(position.symbol), " \(core) ") : nil
+        }
+        return Array(stories.filter { story in
+            if story.tickers.contains(where: { names.contains(normalize($0)) }) { return true }
+            let text = "\(story.title)\n\(story.summary)"
+            if TickerScanner.symbols(in: text).contains(where: { names.contains(normalize($0)) }) { return true }
+            let searchable = " " + text.lowercased().split { !$0.isLetter && !$0.isNumber }.joined(separator: " ") + " "
+            return companies.contains { searchable.contains($0.1) }
+        }.prefix(limit))
     }
 }
 
