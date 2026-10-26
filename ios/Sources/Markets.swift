@@ -466,7 +466,7 @@ nonisolated enum MarketClient {
         return data
     }
 
-    private static func authed(_ path: String, _ items: [URLQueryItem]) async throws -> YValue {
+    static func authed(_ path: String, _ items: [URLQueryItem]) async throws -> YValue {
         for attempt in 0..<2 {
             let crumb = try await YahooAuth.shared.crumb(refresh: attempt > 0)
             let (data, code) = try await load(url("query2.finance.yahoo.com", path, items + [URLQueryItem(name: "crumb", value: crumb)]))

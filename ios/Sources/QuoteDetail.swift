@@ -134,6 +134,7 @@ struct QuoteDetail: View {
     @State private var holding: MarketSymbol?
     @State private var showingOptions = false
     @State private var showingFilings = false
+    @State private var showingEarnings = false
     @State private var previewFiling: URL?
     @State private var showingQuestions = false
     @State private var aboutExpanded = false
@@ -225,6 +226,9 @@ struct QuoteDetail: View {
                 .accessibilityLabel("Stock actions")
             }
         }
+        .sheet(isPresented: $showingEarnings) {
+            EarningsHistoryView(symbol: symbol, currency: summary?.text("earnings", "financialCurrency") ?? "USD")
+        }
         .sheet(isPresented: $showingQuestions) {
             AskSheet(context: AskContext(symbol: symbol, name: name, price: model.live.map { $0.money($0.price) }))
         }
@@ -240,6 +244,7 @@ struct QuoteDetail: View {
                 try? await Task.sleep(for: .seconds(1))
                 showingFilings = true
             }
+            if CommandLine.arguments.contains("-earningsHistory") { showingEarnings = true }
             if CommandLine.arguments.contains("-stockQuestions") {
                 try? await Task.sleep(for: .seconds(1))
                 showingQuestions = true
@@ -632,10 +637,23 @@ struct QuoteDetail: View {
                     ("EPS estimate", calendar?["earningsAverage"]?.text),
                     ("EPS range", span(calendar?["earningsLow"]?.text, calendar?["earningsHigh"]?.text)),
                     ("Revenue estimate", calendar?["revenueAverage"]?.text),
+                    ("Revenue range", span(calendar?["revenueLow"]?.text, calendar?["revenueHigh"]?.text)),
                 ])
                 if !upcoming.isEmpty { StatGrid(stats: upcoming) }
                 if !quarters.isEmpty { EarningsChart(quarters: quarters, currency: currency) }
                 if !years.isEmpty { AnnualChart(years: years, currency: currency) }
+                Button { showingEarnings = true } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("All earnings & estimates").font(.subheadline.weight(.semibold))
+                            Text("Quarterly, annual, revenue & EPS forecasts").font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 8)
+                        Image(systemName: "chevron.right").font(.caption.weight(.semibold))
+                    }
+                    .frame(minHeight: 44).contentShape(.rect)
+                }
+                .buttonStyle(.plain)
             }
         }
     }
