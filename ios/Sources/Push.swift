@@ -134,6 +134,14 @@ final class PushDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCen
 
     func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any]) async -> UIBackgroundFetchResult {
         let before = FeedStore.shared.stories.first?.id
+        if let raw = userInfo["url"] as? String, let url = URL(string: raw),
+           ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
+            let story = Story(id: userInfo["id"] as? String ?? url.absoluteString, externalId: url.absoluteString,
+                              title: "", summary: "", body: "", source: "", url: url,
+                              publishedAt: .now, receivedAt: .now, category: "markets", priority: "urgent",
+                              tickers: [], tags: ["headlines"], agent: "push", imageUrl: nil)
+            await Summarizer.shared.prepare([story], summarize: false)
+        }
         await FeedStore.shared.backgroundRefresh()
         return FeedStore.shared.stories.first?.id == before ? .noData : .newData
     }

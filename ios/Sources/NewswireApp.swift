@@ -1089,11 +1089,11 @@ struct StoryDetail: View {
                         }
                         .font(.body).foregroundStyle(.primary.opacity(0.85)).lineSpacing(3)
                         .transition(.opacity)
+                    } else if story.hasDistinctSummary && !story.isBrain {
+                        Text(StoryHTML.plainText(story.summary)).fixedSize(horizontal: false, vertical: true)
                     } else if loading {
                         Label("Loading article", systemImage: "doc.text").font(.subheadline).foregroundStyle(.secondary)
                             .symbolEffect(.pulse, options: .repeating)
-                    } else if story.hasDistinctSummary && !story.isBrain {
-                        Text(StoryHTML.plainText(story.summary)).fixedSize(horizontal: false, vertical: true)
                     } else {
                         Button { attempt += 1 } label: { Label("Load article", systemImage: "arrow.clockwise") }
                             .font(.subheadline.weight(.semibold)).foregroundStyle(.secondary).buttonStyle(.plain)

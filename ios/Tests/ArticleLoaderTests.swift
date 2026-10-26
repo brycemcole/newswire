@@ -80,16 +80,17 @@ struct ArticleLoaderTests {
         #expect(page?.validated == false)
     }
 
-    @Test func renderFirstPrefetchLeavesRecoveryForTheOpenArticle() async {
+    @Test func renderFirstPrefetchUsesServerWithoutAWebView() async {
         let teaser = result(opening, complete: false)
+        let full = full
         let page = await ArticleLoader.load(render: false, rendersFirst: true, fetch: { _ in teaser }, rendered: {
             Issue.record("Feed preloading must not create a browser page")
             return nil
         }, extracted: {
-            Issue.record("Render-first sources should recover when opened, not during feed preloading")
-            return nil
+            ArticlePage(text: full, image: nil, video: nil)
         })
-        #expect(page == nil)
+        #expect(page?.text == full)
+        #expect(page?.validated == true)
     }
 
     @Test func boundedRecoveryPreservesRealShortBriefsAndLongerCandidates() async {
