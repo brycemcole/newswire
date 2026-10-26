@@ -6,7 +6,7 @@ import { complete as freeComplete, model as freeModel } from './opencode.mjs';
 
 export const goModel = 'deepseek-v4.1-flash';
 
-async function goKey() {
+export async function goKey() {
   if (process.env.NEWSWIRE_GO_API_KEY?.trim()) return process.env.NEWSWIRE_GO_API_KEY.trim();
   const config = JSON.parse(await readFile(join(homedir(), '.opencodex', 'config.json'), 'utf8'));
   const key = config.providers?.['opencode-go']?.apiKey;

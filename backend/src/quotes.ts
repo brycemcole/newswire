@@ -1,3 +1,5 @@
+import { quoteStatus, twelve, type MarketDataEnv } from './market-providers';
+
 const agent = 'Mozilla/5.0 (compatible; Newswire/1.0)';
 const aliases: Record<string, string> = {
   SPX: '^GSPC', IXIC: '^IXIC', DJI: '^DJI', RUT: '^RUT', ES: 'ES=F', NQ: 'NQ=F', VIX: '^VIX', UST10Y: '^TNX',
@@ -33,6 +35,7 @@ export interface Quote {
   price: number; change: number; changePercent: number; previousClose: number; time: string;
   extended: { session: 'pre' | 'post'; price: number; change: number; changePercent: number; time: string } | null;
   points: number[]; extendedPoints: number[]; url: string;
+  source?: string; fetchedAt?: string; dataStatus?: 'current' | 'closed' | 'stale';
 }
 
 export async function cached<T>(key: string, ttl: number, load: () => Promise<T>): Promise<T> {
@@ -134,7 +137,7 @@ export function shape(chart: Chart, now = Date.now() / 1000): Omit<Quote, 'match
   const meta = chart.meta;
   const price = meta.regularMarketPrice as number;
   const previous = (meta.previousClose ?? meta.chartPreviousClose) as number;
-  if (typeof price !== 'number' || typeof previous !== 'number' || !previous) return null;
+  if (typeof price !== 'number' || !Number.isFinite(price) || price <= 0 || typeof previous !== 'number' || !Number.isFinite(previous) || previous <= 0 || typeof meta.regularMarketTime !== 'number' || !Number.isFinite(meta.regularMarketTime) || meta.regularMarketTime > now + 60) return null;
   const periods = meta.currentTradingPeriod;
   const inside = (period?: { start: number; end: number }) => !!period && now >= period.start && now < period.end;
   const state = inside(periods?.regular) ? 'regular' : inside(periods?.pre) ? 'pre' : inside(periods?.post) ? 'post' : 'closed';
@@ -173,22 +176,37 @@ export function shape(chart: Chart, now = Date.now() / 1000): Omit<Quote, 'match
     points: thin(regular).map(round),
     extendedPoints: hasExtended && extendedSession === 'post' ? thin(extended, 20).map(round) : [],
     url: `https://finance.yahoo.com/quote/${encodeURIComponent(symbol)}`,
+    source: 'Yahoo Finance', fetchedAt: new Date().toISOString(),
   };
 }
 
-export async function quote(symbol: string): Promise<Omit<Quote, 'match'> | null> {
-  const target = aliases[symbol.toUpperCase()] ?? symbol;
-  return cached(`quote/${encodeURIComponent(target)}`, 20, async () => {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(target)}?range=1d&interval=5m&includePrePost=true`;
-    const data = await yahoo(url) as { chart?: { result?: Chart[] } } | null;
-    const chart = data?.chart?.result?.[0];
-    return chart?.meta ? shape(chart) : null;
-  }).catch(() => null);
+export function newestQuote(values: (Omit<Quote, 'match'> | null)[], now = Date.now()): Omit<Quote, 'match'> | null {
+  const valid = values.filter((value): value is Omit<Quote, 'match'> => !!value && Number.isFinite(Date.parse(value.time)) && Date.parse(value.time) <= now + 60000);
+  const selected = valid.sort((a, b) => Date.parse(b.time) - Date.parse(a.time))[0];
+  if (!selected) return null;
+  const usEquity = selected.currency === 'USD' && /^[A-Z]{1,5}(?:[.-][A-Z])?$/.test(selected.symbol) && /nasdaq|nyse|nms|ngm|ncm|pcx|ase|bats|cboe/i.test(selected.exchange);
+  return { ...selected, ...(usEquity ? { dataStatus: quoteStatus(Date.parse(selected.time), now) } : {}) };
 }
 
-export async function quotes(mentions: Mention[]): Promise<Quote[]> {
+export async function quote(symbol: string, env?: MarketDataEnv): Promise<Omit<Quote, 'match'> | null> {
+  const target = aliases[symbol.toUpperCase()] ?? symbol;
+  const [original, additional] = await Promise.all([
+    cached(`quote/v2/${encodeURIComponent(target)}`, 20, async () => {
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(target)}?range=1d&interval=5m&includePrePost=true`;
+      const data = await yahoo(url) as { chart?: { result?: Chart[] } } | null;
+      const chart = data?.chart?.result?.[0];
+      const value = chart?.meta ? shape(chart) : null;
+      if (!value) throw new Error('No usable Yahoo quote');
+      return value;
+    }).catch(() => null),
+    env ? twelve(env, target) : null,
+  ]);
+  return newestQuote([original, additional]);
+}
+
+export async function quotes(mentions: Mention[], env?: MarketDataEnv): Promise<Quote[]> {
   const loaded = await Promise.all(mentions.map(async (mention): Promise<Quote | null> => {
-    const value = await quote(mention.symbol);
+    const value = await quote(mention.symbol, env);
     if (!value) return null;
     return mention.match === mention.symbol ? { ...value, symbol: mention.symbol } : { ...value, symbol: mention.symbol, match: mention.match };
   }));

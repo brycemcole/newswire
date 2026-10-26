@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { complete as freeComplete, model as freeModel } from '../ai/opencode.mjs';
+import { goKey } from '../ai/completion.mjs';
 
 // OpenCode Go is the subscription plan; Zen is pay-as-you-go on the same OpenCode account.
 const providers = {
@@ -17,7 +18,9 @@ const usage = { requests: 0, prompt_tokens: 0, completion_tokens: 0 };
 export const agentUsage = () => ({ provider, ...usage });
 
 let cached;
-async function key() {
+async function key(provider) {
+  // Go is billed to the subscription, so it prefers the dedicated Go credential the app worker already uses.
+  if (provider === 'go') { const go = await goKey().catch(() => ''); if (go) return go; }
   if (cached) return cached;
   const config = join(homedir(), '.config', 'newswire');
   const value = process.env.NEWSWIRE_OPENCODE_KEY ?? await readFile(join(config, 'opencode-key'), 'utf8').catch(() => '') ?? '';
@@ -27,9 +30,9 @@ async function key() {
   return cached;
 }
 
-async function complete(body, session, attempt = 0) {
+async function complete(body, { session, provider, timeout }, attempt = 0) {
   if (provider === 'opencode') {
-    const payload = await freeComplete(body);
+    const payload = await freeComplete(body, { timeout });
     usage.requests += 1;
     usage.prompt_tokens += payload.usage.prompt_tokens;
     usage.completion_tokens += payload.usage.completion_tokens;
@@ -37,16 +40,16 @@ async function complete(body, session, attempt = 0) {
   }
   let response;
   try {
-    response = await fetch(providers[provider], { method: 'POST', signal: AbortSignal.timeout(120000), body: JSON.stringify(body),
-      headers: { Authorization: `Bearer ${await key()}`, 'Content-Type': 'application/json', Accept: 'application/json', 'User-Agent': userAgent, 'x-opencode-session': session } });
+    response = await fetch(providers[provider], { method: 'POST', signal: AbortSignal.timeout(timeout ?? 120000), body: JSON.stringify(body),
+      headers: { Authorization: `Bearer ${await key(provider)}`, 'Content-Type': 'application/json', Accept: 'application/json', 'User-Agent': userAgent, 'x-opencode-session': session } });
   } catch (error) {
-    if (attempt < 2) { await new Promise(resolve => setTimeout(resolve, 2000 * 2 ** attempt)); return complete(body, session, attempt + 1); }
+    if (attempt < 2) { await new Promise(resolve => setTimeout(resolve, 2000 * 2 ** attempt)); return complete(body, { session, provider, timeout }, attempt + 1); }
     throw error;
   }
   const payload = await response.json().catch(() => ({}));
   if ((response.status === 429 || response.status >= 500) && attempt < 2) {
     await new Promise(resolve => setTimeout(resolve, 3000 * 2 ** attempt));
-    return complete(body, session, attempt + 1);
+    return complete(body, { session, provider, timeout }, attempt + 1);
   }
   if (!response.ok) throw new Error(`${provider} ${body.model} HTTP ${response.status}${payload.error?.type ? ` ${payload.error.type}` : ''}`);
   usage.requests += 1;
@@ -65,7 +68,8 @@ export function parseJSON(text) {
 }
 
 /** Runs a tool-calling conversation until the model returns a JSON object or the step budget runs out. */
-export async function runAgent({ model, system, prompt, tools, maxSteps = 8, maxTokens = 8000, temperature = 0.2 }) {
+export async function runAgent({ model, system, prompt, tools, maxSteps = 8, maxTokens = 8000, temperature = 0.2, provider: route = provider, timeout }) {
+  if (route !== 'opencode' && !providers[route]) throw new Error(`Unknown provider ${route}`);
   const session = randomUUID();
   const definitions = tools.map(tool => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.parameters } }));
   const byName = new Map(tools.map(tool => [tool.name, tool]));
@@ -74,7 +78,7 @@ export async function runAgent({ model, system, prompt, tools, maxSteps = 8, max
   for (let step = 0; step <= maxSteps; step++) {
     const last = step === maxSteps;
     if (last) messages.push({ role: 'user', content: 'The research budget is spent. Reply now with only the final JSON object.' });
-    const choice = await complete({ model, messages, tools: definitions, tool_choice: last ? 'none' : 'auto', max_tokens: maxTokens, temperature }, session);
+    const choice = await complete({ model, messages, tools: definitions, tool_choice: last ? 'none' : 'auto', max_tokens: maxTokens, temperature }, { session, provider: route, timeout });
     const message = Object.fromEntries(Object.entries(choice.message).filter(([, value]) => value !== null && value !== undefined));
     messages.push(message);
     const calls = message.tool_calls ?? [];

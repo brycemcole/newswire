@@ -3,7 +3,9 @@ import { bellwethers, loadPulse, pulseModel, pulseTime, type EarningsEvent } fro
 import { filingTools, readerRoute } from './filings';
 import { lastCompletedSession, parseRating, tally, upcomingEarnings, windowReturn } from './screens';
 
-export interface DataEnv { DB: D1Database; FRED_API_KEY?: string }
+import { optionContracts, providerData, type MarketDataEnv } from './market-providers';
+
+export interface DataEnv extends MarketDataEnv { FRED_API_KEY?: string }
 export { DataError } from './errors';
 import { DataError } from './errors';
 
@@ -218,15 +220,16 @@ async function latest(spec: Spec, env: DataEnv): Promise<Row> {
 
 // Yahoo
 
-async function quoteRows(symbols: [string, string][]): Promise<Row[]> {
-  const loaded = await Promise.all(symbols.map(async ([symbol, label]) => ({ label, symbol, value: await quote(symbol) })));
+async function quoteRows(symbols: [string, string][], env: DataEnv): Promise<Row[]> {
+  const loaded = await Promise.all(symbols.map(async ([symbol, label]) => ({ label, symbol, value: await quote(symbol, env) })));
   return loaded.map(({ label, symbol, value }) => value ? quoteRow(value, label) : { label, symbol, value: 'unavailable' });
 }
 function quoteRow(q: Omit<Quote, 'match'>, label?: string): Row {
   const minor = minorCurrency(q.currency);
   const price = minor ? q.price / 100 : q.price;
   return { label: label ?? q.name, symbol: q.symbol, value: `${fmt(price, price >= 1000 ? 0 : price < 10 ? 4 : 2)}${q.currency && q.currency !== 'USD' ? ` ${minor ?? q.currency}` : ''}`,
-    change: round(q.changePercent), date: q.time, points: q.points };
+    change: round(q.changePercent), date: q.time, points: q.points,
+    detail: `${q.source ?? 'Yahoo Finance'} · ${q.dataStatus ?? q.state} · observed ${q.time}${q.fetchedAt ? ` · fetched ${q.fetchedAt}` : ''}` };
 }
 export function minorCurrency(code: string): string | null {
   return ({ GBp: 'GBP', GBX: 'GBP', ILA: 'ILS', ZAc: 'ZAR', ZAC: 'ZAR' } as Record<string, string>)[code] ?? null;
@@ -808,22 +811,59 @@ const tools: Tool[] = [
   {
     name: 'board', path: 'board', description: 'Live market boards: world equity indices (Bloomberg WEI), currencies (FXC), commodities including oil, gas, metals, steel and grains, or US rates and futures. Quotes are delayed and unofficial.',
     params: { name: { type: 'string', description: 'world, fx, commodities or rates', enum: Object.keys(boards), required: true } },
-    async run(args) {
+    async run(args, env) {
       const name = pick(args.name, 'name', Object.keys(boards), 'world');
       const board = boards[name];
-      const sections = await Promise.all(board.sections.map(async s => ({ title: s.title, rows: await quoteRows(s.symbols) })));
-      return { title: board.title, source: 'Yahoo Finance (unofficial, delayed)', url: 'https://finance.yahoo.com/markets/', sections };
+      const sections = await Promise.all(board.sections.map(async s => ({ title: s.title, rows: await quoteRows(s.symbols, env) })));
+      return { title: board.title, source: 'Yahoo Finance / Twelve Data (per-row source and observation time)', url: 'https://finance.yahoo.com/markets/', sections };
     },
   },
   {
     name: 'quote', path: 'quote', description: 'Current quotes for up to 12 symbols, including non-US listings (7203.T Toyota, SHEL.L Shell, SAP.DE, 0700.HK Tencent, RY.TO), indices (^N225), currencies (EURUSD=X) and futures (CL=F). London prices are converted from pence.',
     params: { symbols: { type: 'string', description: 'Comma-separated Yahoo symbols', required: true } },
-    async run(args) {
+    async run(args, env) {
       const symbols = text(args.symbols, 'symbols', 200, true).split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
       if (symbols.length > 12 || symbols.some(s => !/^[A-Z0-9^=.\-]{1,20}$/.test(s))) throw new DataError(400, 'Invalid symbols');
-      const loaded = await Promise.all(symbols.map(async s => ({ s, q: await quote(s) })));
-      const rows = loaded.map(({ s, q }) => q ? { ...quoteRow(q), detail: `${q.exchange} · ${q.state}` } : { label: s, symbol: s, value: 'unavailable' });
-      return { title: 'Quotes', source: 'Yahoo Finance (unofficial, delayed)', url: 'https://finance.yahoo.com', sections: [{ title: 'Quotes', rows }] };
+      const loaded = await Promise.all(symbols.map(async s => ({ s, q: await quote(s, env) })));
+      const rows = loaded.map(({ s, q }) => q ? quoteRow(q) : { label: s, symbol: s, value: 'unavailable' });
+      return { title: 'Quotes', source: 'Yahoo Finance / Twelve Data (per-row source and observation time)', url: 'https://finance.yahoo.com', note: 'Newest usable observation wins. Stale observations remain labeled stale; a successful fetch does not mean a live price. Free-tier coverage is not consolidated exchange data.', sections: [{ title: 'Quotes', rows }] };
+    },
+  },
+  {
+    name: 'stock_profile', path: 'stock/profile', description: 'Company reference profile from Financial Modeling Prep: sector, industry, exchange, description, employees, website, beta and reported market capitalization. Not a live quote or financial statement. Source observation times are not supplied; fetch time is not data freshness.',
+    params: { symbol: { type: 'string', description: 'US stock ticker, such as AAPL', required: true } },
+    async run(args, env) {
+      const symbol = text(args.symbol, 'symbol', 8, true).toUpperCase();
+      if (!/^[A-Z]{1,5}(?:[.-][A-Z])?$/.test(symbol)) throw new DataError(400, 'Invalid US stock symbol');
+      const result = await providerData<Record<string, unknown>[]>(env, 'fmp', `profile/${symbol}`, `/stable/profile?symbol=${encodeURIComponent(symbol)}`, 86400);
+      if (!result || !Array.isArray(result.data)) throw new DataError(503, 'FMP company profile unavailable or free-tier budget reached');
+      const profile = result.data.find(p => p.symbol === symbol);
+      if (!profile) throw new DataError(404, 'No matching company profile');
+      const rows: Row[] = [['Sector', 'sector'], ['Industry', 'industry'], ['Exchange', 'exchange'], ['Country', 'country'], ['Employees', 'fullTimeEmployees'], ['Website', 'website']].flatMap(([label, key]) => profile[key] === undefined || profile[key] === null || profile[key] === '' ? [] : [{ label, value: String(profile[key]) }]);
+      for (const [label, key] of [['Reported market capitalization', 'marketCap'], ['Beta', 'beta']]) {
+        const value = profile[key];
+        if (typeof value === 'number' && Number.isFinite(value)) rows.push({ label, value: key === 'marketCap' ? `${profile.currency ?? 'currency unavailable'} ${fmt(value, 0)}` : fmt(value, 3), detail: 'Source observation time unavailable; not a live value' });
+      }
+      return { title: `${String(profile.companyName ?? symbol)} profile`, source: 'Financial Modeling Prep (company reference)', url: 'https://financialmodelingprep.com', as_of: result.fetchedAt,
+        note: `Fetched ${result.fetchedAt}. Source observation times are unavailable; this is reference data, not a live price or a newly reported financial statement.${typeof profile.description === 'string' ? `\n\n${profile.description}` : ''}`,
+        sections: [{ title: 'Company reference', rows }] };
+    },
+  },
+  {
+    name: 'stock_options', path: 'stock/options', description: 'US stock option contract reference data from Massive: expiration, strike, call/put, exercise style and contract size. Not live option prices; no bid/ask, Greeks, volume or open interest. Results may be partial. Use an expiration filter to narrow the chain.',
+    params: { symbol: { type: 'string', description: 'US underlying ticker, such as AAPL', required: true }, expiration: { type: 'string', description: 'Optional expiration date YYYY-MM-DD' } },
+    async run(args, env) {
+      const symbol = text(args.symbol, 'symbol', 8, true).toUpperCase();
+      if (!/^[A-Z]{1,5}(?:[.-][A-Z])?$/.test(symbol)) throw new DataError(400, 'Invalid US stock symbol');
+      const expiration = args.expiration;
+      if (expiration && (!/^\d{4}-\d{2}-\d{2}$/.test(expiration) || !Number.isFinite(Date.parse(`${expiration}T00:00:00Z`)) || new Date(`${expiration}T00:00:00Z`).toISOString().slice(0, 10) !== expiration)) throw new DataError(400, 'Invalid expiration date');
+      const result = await optionContracts(env, symbol, expiration);
+      if (!result) throw new DataError(503, 'Massive options reference unavailable, not entitled, or free-tier request budget reached');
+      const contracts = (result.data.results ?? []).filter(c => c.underlying_ticker === symbol && ['call', 'put'].includes(c.contract_type) && typeof c.strike_price === 'number' && Number.isFinite(c.strike_price) && /^\d{4}-\d{2}-\d{2}$/.test(c.expiration_date));
+      return { title: `${symbol} option contracts`, source: 'Massive (contract reference, not price data)', url: 'https://massive.com', as_of: result.fetchedAt,
+        note: `${result.data.next_url ? 'Partial chain: first 100 contracts only; filter by expiration. ' : ''}Reference fetched ${result.fetchedAt}; source update time is not supplied. No live prices, bid/ask, Greeks, volume or open interest are available from this endpoint.`,
+        sections: [{ title: contracts.length ? 'Listed contracts' : 'No matching contracts returned', rows: contracts.map(c => ({ label: `${c.expiration_date} ${c.contract_type.toUpperCase()} ${fmt(c.strike_price)}`, value: c.ticker,
+          detail: `${c.shares_per_contract ?? 'Unknown'} shares/contract · ${c.exercise_style ?? 'exercise style unavailable'}` })) }] };
     },
   },
   {
@@ -1208,24 +1248,39 @@ const tools: Tool[] = [
       const side = pick(args.side, 'side', ['buying', 'selling'], 'buying');
       const transactionFilter = side === 'buying' ? 'sh_insttrans_o10' : 'sh_insttrans_u10';
       const sort = side === 'buying' ? '-insttrans' : 'insttrans';
-      const filters = ['ind_stocksonly', 'cap_largeover', 'sh_price_o5', 'sh_avgvol_o500', 'sh_instown_o20', transactionFilter].join(',');
-      const url = `https://finviz.com/screener.ashx?v=131&f=${filters}&ft=4&o=${sort}`;
-      const html = await cached(`finviz/institutional-flow/v1/${side}`, 1800, () => getText(url, {
+      const filters = ['cap_largeover', 'sh_price_o5', 'sh_avgvol_o500', 'sh_instown_o20', transactionFilter].join(',');
+      const url = `https://finviz.com/screener/stocks?v=131&f=${filters}&ft=4&o=${sort}`;
+      const html = await cached(`finviz/institutional-flow/v2/${side}`, 1800, () => getText(url, {
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36', Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' }, timeout: 12000,
       }));
-      const clean = (value: string) => value.replace(/<[^>]*>/g, ' ').replace(/&nbsp;|&#160;|&#xA0;/gi, ' ').replace(/&amp;/gi, '&').replace(/&quot;/gi, '"').replace(/&#39;|&#x27;/gi, "'").replace(/&#(\d+);/g, (_, n: string) => String.fromCodePoint(Number(n))).replace(/&#x([0-9a-f]+);/gi, (_, n: string) => String.fromCodePoint(parseInt(n, 16))).replace(/\s+/g, ' ').trim();
-      const headers = [...html.matchAll(/<th\b[^>]*>([\s\S]*?)<\/th>/gi)].map(([, value]) => clean(value)).filter(Boolean);
-      const headerStart = headers.indexOf('No.');
-      const columns = headerStart >= 0 ? headers.slice(headerStart) : headers;
-      const rows = [...html.matchAll(/<tr\b[^>]*class=["'][^"']*\bstyled-row[^"']*["'][^>]*>([\s\S]*?)<\/tr>/gi)].map(([, source]) => {
-        const cells = [...source.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)].map(([, value]) => clean(value));
-        const cell = (name: string) => cells[columns.indexOf(name)] ?? '';
-        const ticker = /data-boxover-ticker=["']([^"']+)/i.exec(source)?.[1] ?? cell('Ticker');
-        const company = /data-boxover-company=["']([^"']+)/i.exec(source)?.[1] ?? '';
-        return { ticker, company: clean(company), marketCap: cell('Market Cap'), instOwn: cell('Inst Own'), instTrans: cell('Inst Trans'), price: cell('Price'), dailyChange: cell('Change %') };
+      const marker = '"data":{"rows":[';
+      const start = html.indexOf(marker) + marker.length - 1;
+      let end = -1;
+      if (start >= marker.length - 1) {
+        let depth = 0, inString = false, escaped = false;
+        for (let i = start; i < html.length; i++) {
+          const ch = html[i];
+          if (inString) { if (escaped) escaped = false; else if (ch === '\\') escaped = true; else if (ch === '"') inString = false; }
+          else if (ch === '"') inString = true;
+          else if (ch === '[') depth++;
+          else if (ch === ']' && --depth === 0) { end = i; break; }
+        }
+      }
+      type FinvizRow = { text?: { ticker?: string; company?: string; securityType?: string }; numbers?: { marketCap?: number; instOwn?: number; instTrans?: number; price?: number; change?: number } };
+      let source: FinvizRow[] = [];
+      try { if (end > start) source = JSON.parse(html.slice(start, end + 1)); } catch { /* handled below */ }
+      const rows = source.filter(row => row.text?.securityType === 'Stock').map(row => {
+        const n = row.numbers ?? {};
+        const pct = (value: number | undefined, places: number, plus: boolean) => typeof value === 'number' && Number.isFinite(value) ? `${plus && value > 0 ? '+' : value < 0 ? '−' : ''}${fmt(Math.abs(value), places)}%` : '';
+        return {
+          ticker: row.text?.ticker ?? '', company: row.text?.company ?? '',
+          marketCap: typeof n.marketCap === 'number' ? money(n.marketCap * 1e6).replace('$', '') : '',
+          instOwn: pct(n.instOwn, 2, false), instTrans: pct(n.instTrans, 2, true),
+          price: typeof n.price === 'number' ? fmt(n.price, 2) : '', dailyChange: pct(n.change, 2, true),
+        };
       }).filter(row => /^[A-Z0-9.^-]{1,12}$/.test(row.ticker) && row.instTrans.endsWith('%'));
-      if (!rows.length || !columns.includes('Ticker') || !columns.includes('Inst Trans')) throw new DataError(502, 'Finviz institutional ownership screen is temporarily unavailable');
-      const count = Number(/#\s*\d+\s*\/\s*(\d+)/.exec(html)?.[1] ?? rows.length);
+      if (!rows.length) throw new DataError(502, 'Finviz institutional ownership screen is temporarily unavailable');
+      const count = Number(/"totalCount":\s*(\d+)/.exec(html)?.[1] ?? rows.length);
       const signedText = (value: string) => {
         const parsed = Number(value.replace('%', '').replace('−', '-'));
         return `${parsed >= 0 ? '+' : '−'}${fmt(Math.abs(parsed), 1)}%`;

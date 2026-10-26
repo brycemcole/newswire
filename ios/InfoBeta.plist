@@ -7,6 +7,8 @@
 		<string>com.brycecole.newswire.refresh</string>
 		<string>com.brycecole.newswire.process</string>
 	</array>
+	<key>CADisableMinimumFrameDurationOnPhone</key>
+	<true/>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleExecutable</key>

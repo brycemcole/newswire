@@ -1,7 +1,7 @@
 import Foundation
 
 nonisolated enum ArticleQuality {
-    enum Assessment { case invalid, suspicious, usable }
+    enum Assessment: Sendable { case invalid, suspicious, usable }
 
     static func assess(_ text: String) -> Assessment {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -1,0 +1,11 @@
+[Unit]
+Description=Newswire expert desk: AI-written thematic market feature
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/newswire
+ExecStart=/usr/bin/node %h/newswire/scripts/research-service/expert.mjs
+TimeoutStartSec=1800
+UMask=0077
+Nice=10

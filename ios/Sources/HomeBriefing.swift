@@ -88,11 +88,11 @@ enum HomeSymbols {
             let core = TickerNews.core(name, symbol: position.symbol).lowercased().split { !$0.isLetter && !$0.isNumber }.joined(separator: " ")
             return core.count >= 4 ? (normalize(position.symbol), " \(core) ") : nil
         }
-        return Array(stories.filter { story in
+        return Array(stories.lazy.filter { story in
             if story.tickers.contains(where: { names.contains(normalize($0)) }) { return true }
-            let text = "\(story.title)\n\(story.summary)"
-            if TickerScanner.symbols(in: text).contains(where: { names.contains(normalize($0)) }) { return true }
-            let searchable = " " + text.lowercased().split { !$0.isLetter && !$0.isNumber }.joined(separator: " ") + " "
+            if story.textSymbols.contains(where: { names.contains(normalize($0)) }) { return true }
+            guard !companies.isEmpty else { return false }
+            let searchable = " " + "\(story.title)\n\(story.summary)".lowercased().split { !$0.isLetter && !$0.isNumber }.joined(separator: " ") + " "
             return companies.contains { searchable.contains($0.1) }
         }.prefix(limit))
     }

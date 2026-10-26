@@ -50,7 +50,7 @@ async function fetchStories(since, maxPages) {
     const response = await fetch(url, { headers: { Authorization: `Bearer ${await token()}` }, signal: AbortSignal.timeout(15000) });
     if (!response.ok) throw new Error(`recent stories ${response.status}`);
     const payload = await response.json();
-    stories.push(...(payload.stories ?? []).map(story => ({ id: story.id, title: story.title, summary: story.summary ?? '', source: story.source, url: story.url, published_at: story.published_at })));
+    stories.push(...(payload.stories ?? []).map(story => ({ id: story.id, title: story.title, summary: story.summary ?? '', source: story.source, url: story.url, published_at: story.published_at, received_at: story.received_at, tags: story.tags })));
     cursor = payload.next_cursor;
     if (!cursor) return stories;
   }

@@ -50,6 +50,20 @@ Predictions cover SPY, QQQ, IWM and DIA. They are accepted only in two windows: 
 
 `node scripts/research-service/agent.mjs --dry-run` runs both tasks without recording anything; outside the windows it rehearses late-session calls. `--only=answer` or `--only=predict` limits a run.
 
+## Expert desk
+
+`scripts/research-service/expert.mjs` writes one AI-generated feature per weekday after the close, rotating themes (Monday and Thursday: the AI trade; Tuesday: energy; Wednesday: banks and credit; Friday: the consumer). Code first fetches a price snapshot of the theme's basket (quote, day change, one-month and year-to-date returns) through the data tools; quotes older than four days are marked stale, and the run stops if fewer than half are current. The model then researches drivers with the same tools as the research agent plus screens, positioning and filings, and returns structured JSON. The story body is assembled by code: an AI-generated disclosure, key points, sections, what to watch, the deterministic price board and cited sources. The model never supplies the board's numbers.
+
+It calls OpenCode Go (`deepseek-v4.1-flash`) with `NEWSWIRE_GO_API_KEY` or the OpenCodex Go credential, falling back to the research-agent key. `NEWSWIRE_EXPERT_PROVIDER=opencode` uses the free runtime; `NEWSWIRE_EXPERT_MODEL` overrides the model. Stories use `agent: newswire-expert`, source `Newswire Expert (AI)`, tags `expert` and `ai-generated`, and external ID `expert:<theme>:<New York date>`; `~/.config/newswire/expert-state.json` skips a theme already published that day.
+
+```sh
+node scripts/research-service/expert.mjs --list
+node scripts/research-service/expert.mjs --theme=ai --dry-run
+node scripts/research-service/expert.mjs --topic="How the GLP-1 trade is developing" --tickers=LLY,NVO,AMGN,VKTX,HIMS --dry-run
+```
+
+`--force` reruns a theme already recorded for the day, but the server still returns the stored story for the same external ID. Custom topics accept `--key`, `--angle`, `--benchmarks` and `--category`. Install `newswire-expert.{service,timer}` with the other units.
+
 ## Operations
 
 The systemd units in `scripts/research-service/` run on the Mini:
@@ -58,6 +72,7 @@ The systemd units in `scripts/research-service/` run on the Mini:
 - `newswire-crawler.timer`: bounded discovery every ten minutes.
 - `newswire-learning.timer`: candidate training and evaluation daily at 21:30 New York time.
 - `newswire-agent.timer`: the research agent every five minutes.
+- `newswire-expert.timer`: the expert feature at 16:40 New York time on weekdays.
 
 These are separate from the minute-by-minute headline monitor. They use the existing protected writer-token mechanism. No token belongs in a unit, command argument, log or repository file. Browser dependencies are isolated under `scripts/crawler/`.
 

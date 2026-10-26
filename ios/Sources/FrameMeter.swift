@@ -1,4 +1,4 @@
-#if DEBUG && targetEnvironment(simulator)
+#if DEBUG && targetEnvironment(simulator) || PERFMETER
 import QuartzCore
 import UIKit
 
@@ -21,7 +21,7 @@ import UIKit
 
     static func startIfRequested() {
         guard let path = ProcessInfo.processInfo.environment["NEWSWIRE_FRAME_STATS"], shared == nil else { return }
-        let meter = FrameMeter(path: path)
+        let meter = FrameMeter(path: path.hasPrefix("/") ? path : URL.documentsDirectory.appending(path: path).path)
         shared = meter
         let link = CADisplayLink(target: meter, selector: #selector(tick))
         link.add(to: .main, forMode: .common)

@@ -4,7 +4,7 @@ import SwiftUI
 @main struct NewswireApp: App {
     @UIApplicationDelegateAdaptor(PushDelegate.self) private var push
 
-    #if DEBUG && targetEnvironment(simulator)
+    #if DEBUG && targetEnvironment(simulator) || PERFMETER
     init() { FrameMeter.startIfRequested() }
     #endif
 
@@ -1021,16 +1021,16 @@ struct StoryDetail: View {
         !story.isBrain && Summarizer.shared.available && (Summarizer.shared.texts[key]?.count ?? 0) >= 400
             && !Summarizer.shared.unsummarizable.contains(key)
     }
-    private var inline: [Int: [Quote]] { QuoteInline.plan([lead ?? ""] + excerpt, quotes: quotes) }
-    private func annotated(_ text: String, at index: Int) -> AttributedString {
-        QuoteInline.annotate(text, quotes: inline[index] ?? [])
-    }
     private var excerpt: [String] {
         Array((Summarizer.shared.texts[key] ?? "").split(separator: "\n").map(String.init))
     }
     var body: some View {
         // The summarizer's dictionaries are unobserved; this makes the detail (and only the detail) update live.
         let _ = Summarizer.shared.revision
+        let excerpt = self.excerpt
+        let lead = self.lead
+        let quotes = self.quotes
+        let annotated = QuoteInline.annotate([lead ?? ""] + excerpt, quotes: quotes)
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 if story.isTweet {
@@ -1072,19 +1072,19 @@ struct StoryDetail: View {
                     Divider()
                 }
                 if story.isTweet {
-                } else if story.isBrain && story.opensInReader && story.hasDistinctSummary, let lead {
-                    Text(annotated(lead, at: 0))
+                } else if story.isBrain && story.opensInReader && story.hasDistinctSummary, lead != nil {
+                    Text(annotated[0])
                         .font(.body.weight(.medium)).fixedSize(horizontal: false, vertical: true)
-                } else if let lead {
-                    Text("\(Text(Image(systemName: "text.line.3.summary")).foregroundStyle(.tertiary)) \(Text(annotated(lead, at: 0)))")
+                } else if lead != nil {
+                    Text("\(Text(Image(systemName: "text.line.3.summary")).foregroundStyle(.tertiary)) \(Text(annotated[0]))")
                         .font(.body.weight(.medium)).fixedSize(horizontal: false, vertical: true)
                 }
                 if story.isTweet {
                 } else if story.opensInReader {
                     if !excerpt.isEmpty {
                         VStack(alignment: .leading, spacing: 14) {
-                            ForEach(Array(excerpt.enumerated()), id: \.element) { index, paragraph in
-                                Text(annotated(paragraph, at: index + 1)).fixedSize(horizontal: false, vertical: true)
+                            ForEach(Array(excerpt.enumerated()), id: \.element) { index, _ in
+                                Text(annotated[index + 1]).fixedSize(horizontal: false, vertical: true)
                             }
                         }
                         .font(.body).foregroundStyle(.primary.opacity(0.85)).lineSpacing(3)
@@ -1742,9 +1742,28 @@ struct TweetCard: View {
 extension Story {
     var isTweet: Bool { tags.contains("x") && ["x.com", "twitter.com"].contains(url.host?.lowercased() ?? "") && url.path.contains("/status/") }
     var opensInReader: Bool { !isTweet && (tags.contains("headlines") || (isBrain && body.isEmpty)) && ["http", "https"].contains(url.scheme?.lowercased() ?? "") }
+    private static let topicCache = NSCache<NSString, NSArray>()
+    private static let symbolCache = NSCache<NSString, NSArray>()
+
+    /// Read for every feed story whenever a story detail or the home feed renders, so the regex result is kept per story.
     var matchedTopics: [String] {
-        guard let match = body.firstMatch(of: /Matched watchlist: ([^.]+)\./)?.1 else { return [] }
-        return match.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        let key = "\(id)|\(body.count)" as NSString
+        if let cached = Self.topicCache.object(forKey: key) as? [String] { return cached }
+        var topics: [String] = []
+        if let match = body.firstMatch(of: /Matched watchlist: ([^.]+)\./)?.1 {
+            topics = match.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        }
+        Self.topicCache.setObject(topics as NSArray, forKey: key)
+        return topics
+    }
+
+    /// Symbols written in the headline and teaser, scanned once per story rather than on every home feed render.
+    var textSymbols: [String] {
+        let key = "\(id)|\(title.count)|\(summary.count)" as NSString
+        if let cached = Self.symbolCache.object(forKey: key) as? [String] { return cached }
+        let symbols = TickerScanner.symbols(in: "\(title)\n\(summary)")
+        Self.symbolCache.setObject(symbols as NSArray, forKey: key)
+        return symbols
     }
     private static let feedSummaries = NSCache<NSString, NSString>()
 

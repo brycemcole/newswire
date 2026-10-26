@@ -1,7 +1,9 @@
 {
   "window_minutes": 30,
   "min_confidence": 0.7,
-  "max_x_per_run": 2,
+  "max_x_per_run": 1,
+  "max_x_per_hour": 2,
+  "preferred_publishers": ["Financial Times", "Bloomberg", "Semafor", "Reuters", "CNBC", "MarketWatch", "Yahoo Finance", "Federal Reserve", "Bureau of Economic Analysis", "European Central Bank", "EIA"],
   "feeds": [
     { "name": "Bellingcat", "url": "https://www.bellingcat.com/feed/", "window_minutes": 2880 },
     { "name": "UKMTO discovery", "url": "https://news.google.com/rss/search?q=site:ukmto.org+when:2d&hl=en-US&gl=US&ceid=US:en", "window_minutes": 2880 },
@@ -27,13 +29,17 @@
     { "name": "New York Times", "url": "https://rss.nytimes.com/services/xml/rss/nyt/Economy.xml" },
     { "name": "New York Times", "url": "https://rss.nytimes.com/services/xml/rss/nyt/World.xml" },
     { "name": "New York Times", "url": "https://rss.nytimes.com/services/xml/rss/nyt/Politics.xml" },
-    { "name": "Bloomberg", "url": "https://feeds.bloomberg.com/markets/news.rss" },
-    { "name": "Bloomberg", "url": "https://feeds.bloomberg.com/economics/news.rss" },
-    { "name": "Bloomberg", "url": "https://feeds.bloomberg.com/politics/news.rss" },
-    { "name": "Bloomberg", "url": "https://feeds.bloomberg.com/technology/news.rss" },
+    { "name": "Bloomberg", "url": "https://feeds.bloomberg.com/markets/news.rss", "window_minutes": 1440 },
+    { "name": "Bloomberg", "url": "https://feeds.bloomberg.com/economics/news.rss", "window_minutes": 1440 },
+    { "name": "Bloomberg", "url": "https://feeds.bloomberg.com/politics/news.rss", "window_minutes": 1440 },
+    { "name": "Bloomberg", "url": "https://feeds.bloomberg.com/technology/news.rss", "window_minutes": 1440 },
     { "name": "BBC", "url": "https://feeds.bbci.co.uk/news/business/rss.xml" },
     { "name": "Seeking Alpha", "url": "https://seekingalpha.com/market_currents.xml" },
-    { "name": "Financial Times", "url": "https://www.ft.com/rss/home" },
+    { "name": "Financial Times", "url": "https://www.ft.com/rss/home", "window_minutes": 1440 },
+    { "name": "Financial Times", "url": "https://www.ft.com/markets?format=rss", "window_minutes": 1440 },
+    { "name": "Financial Times", "url": "https://www.ft.com/companies?format=rss", "window_minutes": 1440 },
+    { "name": "Financial Times", "url": "https://www.ft.com/global-economy?format=rss", "window_minutes": 1440 },
+    { "name": "Semafor", "url": "https://www.semafor.com/rss.xml", "window_minutes": 1440 },
     { "name": "Reuters", "url": "https://news.google.com/rss/search?q=site:reuters.com+when:1h&hl=en-US&gl=US&ceid=US:en" },
     { "name": "Associated Press", "url": "https://news.google.com/rss/search?q=site:apnews.com+when:1h&hl=en-US&gl=US&ceid=US:en" },
     { "name": "Federal Reserve", "url": "https://www.federalreserve.gov/feeds/press_all.xml", "window_minutes": 120 },
@@ -66,7 +72,16 @@
       "label": "geopolitical and security developments",
       "category": "world",
       "priority": "normal",
-      "description": "A concrete, consequential international security development: military escalation or de-escalation, a new official threat of war, military deployments, attacks, ceasefire agreements or breakdowns, nuclear negotiations or inspections, sanctions, or disruption to strategic shipping routes or energy infrastructure. Include Iran, the Strait of Hormuz, the Red Sea, Ukraine and Taiwan when there is a specific new development; no stock-market reaction is required. Not historical explainers, generic geopolitical commentary, unsubstantiated social-media rumors, or routine domestic crime."
+      "description": "A concrete international development with a material economic or market channel established by the reporting: sanctions changing trade or energy exports, disruption or reopening of strategic commercial shipping routes, damage to energy production, or a major war escalation or signed peace agreement with clearly identified economic or supply consequences. A stock-market reaction is not required, but routine battlefield updates, weapons deliveries, military flights or deployments, intelligence sharing, planned diplomatic meetings, official rhetoric and incremental Ukraine, Iran or Taiwan updates without that economic evidence are off-topic. Not historical explainers, generic geopolitical commentary or unsubstantiated rumors."
+    },
+    {
+      "id": "options-flow",
+      "label": "source-reported options flow",
+      "category": "markets",
+      "priority": "normal",
+      "allow_analysis": true,
+      "allow_x_analysis": true,
+      "description": "Reporting of specific observed options transactions or positioning with quantified evidence (contracts, premium, strikes, expiries or delta exposure), attributed to a named bank, analyst, exchange or data provider, or explicitly identified as the publisher's own data. Includes a social post relaying a named source's options-flow report. Prefer this topic over market-analysis for options-flow reporting. Trade observation dates or periods may differ from publication time; missing dates must not be inferred. Not generic bullish or bearish opinions, trade recommendations, promotional unusual-activity claims without attributed figures, options education or an options-chain snapshot alone. Call buying does not establish bullish intent, opening positions or trader identity; it may reflect spreads, hedging, closing trades or dealer activity."
     },
     {
       "id": "market-analysis",
