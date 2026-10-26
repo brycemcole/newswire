@@ -1021,16 +1021,16 @@ struct StoryDetail: View {
         !story.isBrain && Summarizer.shared.available && (Summarizer.shared.texts[key]?.count ?? 0) >= 400
             && !Summarizer.shared.unsummarizable.contains(key)
     }
-    private var inline: [Int: [Quote]] { QuoteInline.plan([lead ?? ""] + excerpt, quotes: quotes) }
-    private func annotated(_ text: String, at index: Int) -> AttributedString {
-        QuoteInline.annotate(text, quotes: inline[index] ?? [])
-    }
     private var excerpt: [String] {
         Array((Summarizer.shared.texts[key] ?? "").split(separator: "\n").map(String.init))
     }
     var body: some View {
         // The summarizer's dictionaries are unobserved; this makes the detail (and only the detail) update live.
         let _ = Summarizer.shared.revision
+        let excerpt = self.excerpt
+        let lead = self.lead
+        let quotes = self.quotes
+        let annotated = QuoteInline.annotate([lead ?? ""] + excerpt, quotes: quotes)
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 if story.isTweet {
@@ -1072,19 +1072,19 @@ struct StoryDetail: View {
                     Divider()
                 }
                 if story.isTweet {
-                } else if story.isBrain && story.opensInReader && story.hasDistinctSummary, let lead {
-                    Text(annotated(lead, at: 0))
+                } else if story.isBrain && story.opensInReader && story.hasDistinctSummary, lead != nil {
+                    Text(annotated[0])
                         .font(.body.weight(.medium)).fixedSize(horizontal: false, vertical: true)
-                } else if let lead {
-                    Text("\(Text(Image(systemName: "text.line.3.summary")).foregroundStyle(.tertiary)) \(Text(annotated(lead, at: 0)))")
+                } else if lead != nil {
+                    Text("\(Text(Image(systemName: "text.line.3.summary")).foregroundStyle(.tertiary)) \(Text(annotated[0]))")
                         .font(.body.weight(.medium)).fixedSize(horizontal: false, vertical: true)
                 }
                 if story.isTweet {
                 } else if story.opensInReader {
                     if !excerpt.isEmpty {
                         VStack(alignment: .leading, spacing: 14) {
-                            ForEach(Array(excerpt.enumerated()), id: \.element) { index, paragraph in
-                                Text(annotated(paragraph, at: index + 1)).fixedSize(horizontal: false, vertical: true)
+                            ForEach(Array(excerpt.enumerated()), id: \.element) { index, _ in
+                                Text(annotated[index + 1]).fixedSize(horizontal: false, vertical: true)
                             }
                         }
                         .font(.body).foregroundStyle(.primary.opacity(0.85)).lineSpacing(3)
