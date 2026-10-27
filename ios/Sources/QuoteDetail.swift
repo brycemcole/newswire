@@ -183,8 +183,10 @@ struct QuoteDetail: View {
                         Text(byline).font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
                     }
                 }
-                hero
-                rangePicker
+                VStack(spacing: 12) {
+                    rangePicker
+                    hero
+                }
                 catalystReadout
                 HoldingSection(symbol: symbol, chart: model.live)
                 optionsLink
@@ -313,8 +315,8 @@ struct QuoteDetail: View {
                         .font(.caption2).foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(12)
-                .background(.quaternary, in: .rect(cornerRadius: 14))
+                .padding(14)
+                .glassEffect(.regular, in: .rect(cornerRadius: 22))
             } else {
                 Text(mapped.isEmpty ? "Hold and slide to inspect prices. Dated events appear when available." : "Hold and slide for events · E earnings · D dividend · S split · • news")
                     .font(.caption2).foregroundStyle(.secondary)
@@ -335,35 +337,36 @@ struct QuoteDetail: View {
             }
         }
         .frame(height: 260)
-        .padding(.top, 18)
         .animation(.easeOut(duration: 0.2), value: model.chart == nil)
     }
 
     private var rangePicker: some View {
-        GlassEffectContainer(spacing: 4) {
-            HStack(spacing: 2) {
+        GlassEffectContainer {
+            HStack(spacing: 0) {
                 ForEach(ChartRange.allCases) { range in
                     let selected = model.range == range
                     Button {
-                        withAnimation(reduceMotion ? .easeOut(duration: 0.15) : .spring(duration: 0.34, bounce: 0.2)) { model.range = range }
+                        withAnimation(reduceMotion ? .easeOut(duration: 0.15) : .spring(duration: 0.32, bounce: 0.18)) { model.range = range }
                     } label: {
                         Text(range.rawValue)
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(selected ? Theme.shared.accent.onColor : .primary)
-                            .frame(maxWidth: .infinity, minHeight: 34)
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(selected ? Color.primary : Color.secondary)
+                            .frame(maxWidth: .infinity, minHeight: 32)
                             .background {
                                 if selected {
-                                    Capsule().fill(Color.wireAccent).matchedGeometryEffect(id: "range", in: rangeNamespace)
+                                    Capsule().fill(.fill.secondary)
+                                        .matchedGeometryEffect(id: "range", in: rangeNamespace)
                                 }
                             }
                             .contentShape(.capsule)
                     }
-                    .buttonStyle(PressSpringStyle())
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(range.caption)
                     .accessibilityAddTraits(selected ? .isSelected : [])
                 }
             }
-            .padding(4)
-            .glassEffect(.regular, in: .capsule)
+            .padding(3)
+            .glassEffect(.regular.interactive(), in: .capsule)
         }
         .sensoryFeedback(.selection, trigger: model.range)
     }
@@ -371,23 +374,23 @@ struct QuoteDetail: View {
     @ViewBuilder
     private var optionsLink: some View {
         if let contract = OptionSymbol(symbol) {
-            linkRow("Underlying \(contract.underlying)", systemImage: "arrow.turn.left.up") { holding = MarketSymbol(id: contract.underlying) }
+            linkRow("Underlying \(contract.underlying)") { holding = MarketSymbol(id: contract.underlying) }
         } else if ["EQUITY", "ETF", "INDEX"].contains(summary?.text("price", "quoteType") ?? model.live?.instrument) {
-            linkRow("Options chain", systemImage: "list.bullet.rectangle") { showingOptions = true }
+            linkRow("Options chain") { showingOptions = true }
         }
     }
 
-    private func linkRow(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+    private func linkRow(_ title: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack {
-                Label(title, systemImage: systemImage).font(.body.weight(.semibold))
+                Text(title).font(.body.weight(.semibold))
                 Spacer()
                 Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
             }
-            .padding(.horizontal, 18)
+            .padding(.horizontal, 16)
             .frame(minHeight: 52)
-            .contentShape(.rect(cornerRadius: 24))
-            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 24))
+            .contentShape(.rect(cornerRadius: 22))
+            .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 22))
         }
         .buttonStyle(.plain)
     }
@@ -398,9 +401,9 @@ struct QuoteDetail: View {
                 .font(.system(size: 6))
                 .foregroundStyle(.green)
                 .symbolEffect(.pulse, options: .repeating, isActive: !reduceMotion)
-            Text("LIVE")
+            Text("Live")
         }
-        .font(.system(.caption, design: .monospaced).weight(.semibold))
+        .font(.footnote.weight(.semibold))
         .foregroundStyle(.secondary)
         .accessibilityLabel("Streaming live prices")
     }
@@ -417,8 +420,8 @@ struct QuoteDetail: View {
         case "MUTUALFUND": "Fund"
         case let other: other?.capitalized
         }
-        return Text([exchange, kind, model.live?.currency].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " / ").uppercased())
-            .font(.system(.caption, design: .monospaced).weight(.semibold))
+        return Text([exchange, kind, model.live?.currency].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
+            .font(.footnote)
             .foregroundStyle(.secondary)
     }
 
@@ -1173,7 +1176,7 @@ private struct QuoteHeader: View {
         let reference = prior ? chart.previousClose : chart.reference(for: range)
         VStack(alignment: .leading, spacing: 4) {
             Text(chart.money(price))
-                .font(.system(size: 44, weight: .bold, design: .rounded))
+                .font(.largeTitle.weight(.bold))
                 .monospacedDigit()
                 .numericTextTransition(value: price, animated: point == nil)
             if let reference {
@@ -1236,9 +1239,14 @@ private extension ChartRange {
         }
         // The leading bucket is usually partial and its label would sit on the plot's edge.
         let kept = starts.filter { Double($0.id) >= Double(domain) * 0.04 }
-        let step = Swift.max(1, Int((Double(kept.count) / 5).rounded(.up)))
-        return Dictionary(uniqueKeysWithValues: kept.enumerated().filter { $0.offset % step == 0 }
-            .map { ($0.element.id, $0.element.date.formatted(style)) })
+        let spacing = Swift.max(1, domain / 6)
+        var lastID = -spacing
+        let spaced = kept.filter { point in
+            guard point.id - lastID >= spacing else { return false }
+            lastID = point.id
+            return true
+        }
+        return Dictionary(uniqueKeysWithValues: spaced.map { ($0.id, $0.date.formatted(style)) })
     }
 
     func stampStyle(_ zone: TimeZone) -> Date.FormatStyle {
@@ -1330,7 +1338,7 @@ private struct PriceChart: View {
         .chartYScale(domain: floor...(high + pad))
         .chartXAxis {
             AxisMarks(values: ticks.keys.sorted()) { value in
-                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [2, 4])).foregroundStyle(.quaternary)
+                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5)).foregroundStyle(.quaternary)
                 AxisValueLabel {
                     if let id = value.as(Int.self), let text = ticks[id] {
                         Text(text).font(.caption2).foregroundStyle(.secondary)
@@ -1340,7 +1348,7 @@ private struct PriceChart: View {
         }
         .chartYAxis {
             AxisMarks(position: .trailing, values: .automatic(desiredCount: 4)) { value in
-                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [2, 4])).foregroundStyle(.quaternary)
+                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5)).foregroundStyle(.quaternary)
                 AxisValueLabel {
                     if let price = value.as(Double.self) {
                         Text(price.formatted(.number.precision(.fractionLength(digits))))
