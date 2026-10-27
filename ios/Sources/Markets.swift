@@ -146,6 +146,29 @@ nonisolated struct MarketChart: Sendable {
         return next
     }
 
+    func includingRecentActivity(from live: MarketChart, now: Date = .now) -> MarketChart {
+        guard symbol == live.symbol, currency == live.currency, let last = points.last,
+              let latest = live.points.last, latest.close.isFinite, latest.close > 0,
+              latest.date <= now, now.timeIntervalSince(latest.date) < 1800 else { return self }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        let additions = live.points.filter {
+            $0.date > last.date && $0.date <= latest.date && calendar.isDate($0.date, inSameDayAs: latest.date)
+                && $0.close.isFinite && $0.close > 0
+        }
+        guard !additions.isEmpty else { return self }
+        var next = self
+        let stride = max(1, Int(ceil(Double(additions.count) / 8)))
+        let sampled = additions.enumerated().filter { $0.offset % stride == 0 || $0.offset == additions.count - 1 }.map(\.element)
+        for point in sampled {
+            let previous = next.points.last!
+            next.points.append(PricePoint(id: next.points.count, date: point.date, open: point.open, close: point.close,
+                                          extended: point.extended, run: previous.run + (previous.extended == point.extended ? 0 : 1)))
+        }
+        next.slots = max(next.slots, next.points.count)
+        return next
+    }
+
     var status: String {
         let now = Date()
         if let regular, regular.contains(now) { return "Market open" }
