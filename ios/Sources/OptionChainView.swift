@@ -10,6 +10,7 @@ struct OptionChainView: View {
     @State private var watchlist = Watchlist.shared
     @Environment(\.scenePhase) private var phase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var sideNamespace
 
     private static let utc = TimeZone(identifier: "UTC")!
 
@@ -23,51 +24,61 @@ struct OptionChainView: View {
 
     var body: some View {
         ScrollViewReader { reader in
-            List {
-                if let page, !contracts.isEmpty {
-                    ForEach(Array(contracts.enumerated()), id: \.element.id) { index, option in
-                        if index == spotIndex { spotRow(page.spot) }
-                        row(option)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    if let page, !contracts.isEmpty, let spotIndex {
+                        let below = Array(contracts[..<spotIndex])
+                        let above = Array(contracts[spotIndex...])
+                        columnHeader.padding(.horizontal, 16)
+                        if !below.isEmpty { card(below) }
+                        spotChip(page.spot)
+                            .frame(maxWidth: .infinity)
+                            .id("spot")
+                            .task(id: "\(page.expiration?.timeIntervalSince1970 ?? 0)|\(calls)") {
+                                // A scroll issued during the push transition is dropped.
+                                try? await Task.sleep(for: .milliseconds(400))
+                                reader.scrollTo("spot", anchor: .center)
+                            }
+                        if !above.isEmpty { card(above) }
+                    } else if let error {
+                        ContentUnavailableView(error, systemImage: "list.bullet.rectangle")
+                    } else if page != nil {
+                        ContentUnavailableView("No Contracts", systemImage: "list.bullet.rectangle",
+                                               description: Text("Try another expiration."))
+                    } else {
+                        ProgressView().frame(maxWidth: .infinity, minHeight: 120)
                     }
-                    if spotIndex == contracts.count { spotRow(page.spot) }
-                } else if let error {
-                    ContentUnavailableView(error, systemImage: "list.bullet.rectangle")
-                        .listRowBackground(Color.clear)
-                } else if page != nil {
-                    ContentUnavailableView("No contracts", systemImage: "list.bullet.rectangle")
-                        .listRowBackground(Color.clear)
-                } else {
-                    ProgressView().frame(maxWidth: .infinity, minHeight: 120).listRowBackground(Color.clear)
                 }
+                .padding(.horizontal, 16)
+                .padding(.top, 4)
+                .frame(maxWidth: 760)
+                .frame(maxWidth: .infinity)
             }
-            .listStyle(.plain)
-            .dockClearance()
             .safeAreaBar(edge: .top) {
-                VStack(spacing: 8) {
-                    expirationPicker
-                    Picker("Side", selection: $calls) {
-                        Text("Calls").tag(true)
-                        Text("Puts").tag(false)
+                sideSwitch
+                    .padding(.bottom, 8)
+                    .frame(maxWidth: .infinity)
+                    .background {
+                        Rectangle().fill(.regularMaterial)
+                            .mask(LinearGradient(stops: [.init(color: .black, location: 0.6), .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom))
+                            .padding(.bottom, -16)
+                            .ignoresSafeArea(edges: .top)
+                            .allowsHitTesting(false)
                     }
-                    .pickerStyle(.segmented)
-                    .padding(.horizontal, 16)
-                    columnHeader.padding(.horizontal, 20)
-                }
-                .padding(.bottom, 8)
-                .background(.background)
             }
             .scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
+            .dockClearance()
             .animation(.easeOut(duration: 0.2), value: contracts)
-            .onChange(of: "\(page?.expiration?.timeIntervalSince1970 ?? 0)|\(calls)") {
-                guard let spotIndex, !contracts.isEmpty else { return }
-                reader.scrollTo(contracts[min(max(spotIndex - 1, 0), contracts.count - 1)].id, anchor: .center)
-            }
         }
         .navigationTitle("\(symbol) Options")
-        .navigationSubtitle(page.map { "Spot \(QuoteFormat.price($0.spot))" } ?? "")
+        .navigationSubtitle(subtitle)
         .navigationBarTitleDisplayMode(.inline)
         .navigationDestination(item: $contract) { QuoteDetail(symbol: $0.id) }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) { expirationMenu }
+        }
         .sensoryFeedback(.selection, trigger: calls)
+        .sensoryFeedback(.selection, trigger: expiration)
         .task(id: "\(expiration?.timeIntervalSince1970 ?? 0)|\(phase == .active)") {
             guard phase == .active else { return }
             while !Task.isCancelled {
@@ -85,99 +96,131 @@ struct OptionChainView: View {
         }
     }
 
-    private var expirationPicker: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 8) {
-                ForEach(page?.expirations ?? [], id: \.self) { date in
-                    let selected = date == page?.expiration
+    private var sideSwitch: some View {
+        GlassEffectContainer {
+            HStack(spacing: 0) {
+                ForEach([true, false], id: \.self) { side in
+                    let selected = calls == side
                     Button {
-                        withAnimation(reduceMotion ? .easeOut(duration: 0.15) : .spring(duration: 0.3, bounce: 0.15)) { expiration = date }
+                        withAnimation(reduceMotion ? .easeOut(duration: 0.15) : .spring(duration: 0.32, bounce: 0.18)) { calls = side }
                     } label: {
-                        VStack(spacing: 1) {
-                            Text(date.formatted(Date.FormatStyle(timeZone: Self.utc).month(.abbreviated).day()))
-                                .font(.subheadline.weight(.semibold))
-                            Text(daysOut(date)).font(.caption2).foregroundStyle(selected ? Theme.shared.accent.onColor.opacity(0.8) : .secondary)
-                        }
-                        .foregroundStyle(selected ? Theme.shared.accent.onColor : .primary)
-                        .padding(.horizontal, 12)
-                        .frame(minHeight: 44)
-                        .background(selected ? AnyShapeStyle(Color.wireAccent) : AnyShapeStyle(.fill.tertiary), in: .capsule)
+                        Text(side ? "Calls" : "Puts")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(selected ? Color.primary : Color.secondary)
+                            .frame(width: 64, height: 32)
+                            .background {
+                                if selected {
+                                    Capsule().fill(.fill.secondary)
+                                        .matchedGeometryEffect(id: "side", in: sideNamespace)
+                                }
+                            }
+                            .contentShape(.capsule)
                     }
-                    .buttonStyle(PressSpringStyle())
+                    .buttonStyle(.plain)
                     .accessibilityAddTraits(selected ? .isSelected : [])
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 6)
+            .padding(3)
+            .glassEffect(.regular.interactive(), in: .capsule)
         }
-        .scrollIndicators(.hidden)
-        .sensoryFeedback(.selection, trigger: expiration)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Side")
+    }
+
+    private var subtitle: String {
+        guard let page else { return "" }
+        let date = page.expiration.map { "Expires \($0.formatted(Self.dateStyle)) · \(daysOut($0))" }
+        return date ?? "Spot \(QuoteFormat.price(page.spot))"
+    }
+
+    private static let dateStyle = Date.FormatStyle(timeZone: utc).month(.abbreviated).day()
+
+    private var expirationMenu: some View {
+        Menu {
+            Picker("Expiration", selection: Binding(get: { page?.expiration }, set: { expiration = $0 })) {
+                ForEach(page?.expirations ?? [], id: \.self) { date in
+                    Text(date.formatted(Date.FormatStyle(timeZone: Self.utc).month(.abbreviated).day().year()))
+                        .badge(daysOut(date))
+                        .tag(Optional(date))
+                }
+            }
+        } label: {
+            Text(page?.expiration?.formatted(Self.dateStyle) ?? "Expiration")
+                .font(.subheadline.weight(.semibold))
+                .monospacedDigit()
+        }
+        .disabled(page?.expirations.isEmpty != false)
+        .accessibilityLabel("Expiration")
+        .accessibilityValue(page?.expiration?.formatted(Self.dateStyle) ?? "")
     }
 
     private var columnHeader: some View {
-        HStack {
-            Text("Strike").frame(width: 76, alignment: .leading)
-            Text("Mid · Bid–Ask")
+        HStack(spacing: 12) {
+            Text("Strike")
             Spacer()
-            Text("Change · IV")
+            Text("Mid")
+            Text("Change").frame(width: 76, alignment: .trailing)
         }
-        .font(.caption.weight(.semibold))
+        .font(.footnote)
         .foregroundStyle(.secondary)
     }
 
-    private func spotRow(_ spot: Double) -> some View {
-        HStack(spacing: 8) {
-            Rectangle().fill(Color.wireAccent).frame(height: 1)
-            Text("\(symbol) \(QuoteFormat.price(spot))")
-                .font(.caption.weight(.bold).monospacedDigit())
-                .foregroundStyle(Color.wireAccent)
-                .fixedSize()
-            Rectangle().fill(Color.wireAccent).frame(height: 1)
+    private func card(_ options: [OptionContract]) -> some View {
+        VStack(spacing: 0) {
+            ForEach(Array(options.enumerated()), id: \.element.id) { index, option in
+                if index > 0 { Divider().padding(.leading, 16) }
+                row(option)
+            }
         }
-        .listRowSeparator(.hidden)
-        .listRowBackground(Color.clear)
-        .accessibilityLabel("Current price \(QuoteFormat.price(spot))")
+        .glassEffect(.regular.tint(options.first?.inTheMoney == true ? Color.wireAccent.opacity(0.12) : nil), in: .rect(cornerRadius: 22))
+    }
+
+    private func spotChip(_ spot: Double) -> some View {
+        Text("\(symbol) \(QuoteFormat.price(spot))")
+            .font(.footnote.weight(.semibold).monospacedDigit())
+            .foregroundStyle(Color.wireAccent)
+            .padding(.horizontal, 12)
+            .frame(minHeight: 30)
+            .glassEffect(.regular, in: .capsule)
+            .accessibilityLabel("Current price \(QuoteFormat.price(spot))")
     }
 
     private func row(_ option: OptionContract) -> some View {
         let watching = watchlist.contains(option.symbol)
         return Button { contract = MarketSymbol(id: option.symbol) } label: {
-            HStack(spacing: 10) {
-                HStack(spacing: 4) {
-                    Text(QuoteFormat.price(option.strike)).font(.body.weight(.semibold).monospacedDigit())
-                    if watching { Image(systemName: "star.fill").font(.caption2).foregroundStyle(.yellow) }
-                }
-                .frame(width: 76, alignment: .leading)
+            HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(QuoteFormat.price(option.mark)).font(.subheadline.weight(.semibold))
-                        .numericTextTransition(value: option.mark)
-                    Text("\(QuoteFormat.price(option.bid))–\(QuoteFormat.price(option.ask))").font(.caption).foregroundStyle(.secondary)
-                        .numericTextTransition(text: "\(option.bid)–\(option.ask)")
-                }
-                Spacer(minLength: 4)
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(QuoteFormat.percent(option.changePercent))
-                        .numericTextTransition(value: option.changePercent)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(QuoteFormat.color(option.changePercent))
+                    HStack(spacing: 5) {
+                        Text(QuoteFormat.price(option.strike)).font(.headline)
+                        if watching { Image(systemName: "star.fill").font(.caption2).foregroundStyle(.yellow) }
+                    }
                     Text([option.volatility.map { $0.formatted(.percent.precision(.fractionLength(0))) + " IV" },
                           "OI " + option.openInterest.formatted(.number.notation(.compactName))].compactMap { $0 }.joined(separator: " · "))
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.footnote).foregroundStyle(.secondary)
                 }
+                Spacer(minLength: 8)
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(QuoteFormat.price(option.mark)).font(.headline)
+                        .numericTextTransition(value: option.mark)
+                    Text("\(QuoteFormat.price(option.bid)) – \(QuoteFormat.price(option.ask))").font(.footnote).foregroundStyle(.secondary)
+                        .numericTextTransition(text: "\(option.bid)–\(option.ask)")
+                }
+                Text(QuoteFormat.percent(option.changePercent))
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(option.changePercent == 0 ? Color.primary : Color.white)
+                    .numericTextTransition(value: option.changePercent)
+                    .minimumScaleFactor(0.7)
+                    .padding(.horizontal, 8)
+                    .frame(width: 76, height: 30, alignment: .trailing)
+                    .background(changeFill(option.changePercent), in: .rect(cornerRadius: 7))
             }
             .monospacedDigit()
             .lineLimit(1)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
-        .id(option.id)
-        .listRowBackground(option.inTheMoney ? Color.wireAccent.opacity(0.08) : Color.clear)
-        .swipeActions(edge: .trailing) {
-            Button { watchlist.toggle(option.symbol, price: option.mark) } label: {
-                Label(watching ? "Unwatch" : "Watch", systemImage: watching ? "star.slash" : "star")
-            }
-            .tint(.yellow)
-        }
         .contextMenu {
             Button(watching ? "Remove from Watchlist" : "Add to Watchlist", systemImage: watching ? "star.slash" : "star") {
                 watchlist.toggle(option.symbol, price: option.mark)
@@ -186,6 +229,10 @@ struct OptionChainView: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(QuoteFormat.price(option.strike)) \(calls ? "call" : "put"), mid \(QuoteFormat.price(option.mark)), \(QuoteFormat.percent(option.changePercent))\(option.inTheMoney ? ", in the money" : "")\(watching ? ", watching" : "")")
         .accessibilityAction(named: watching ? "Remove from watchlist" : "Add to watchlist") { watchlist.toggle(option.symbol, price: option.mark) }
+    }
+
+    private func changeFill(_ change: Double) -> AnyShapeStyle {
+        change > 0 ? AnyShapeStyle(Color.green) : change < 0 ? AnyShapeStyle(Color.red) : AnyShapeStyle(.fill.tertiary)
     }
 
     private func daysOut(_ date: Date) -> String {
