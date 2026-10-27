@@ -347,6 +347,7 @@ nonisolated struct MarketQuote: Sendable, Hashable, Identifiable {
 }
 
 struct MarketSearchSheet: View, Equatable {
+    private static let watchlistPreviewCount = 3
     private static let financeSymbols: [(String, String)] = [("^KS11", "KOSPI"), ("^N225", "NIKKEI"), ("^HSI", "HANG SENG"), ("^GDAXI", "DAX"), ("^FTSE", "FTSE"),
                                                               ("^TNX", "US 10Y"), ("DX-Y.NYB", "DOLLAR"), ("JPY=X", "USD/JPY"), ("CL=F", "WTI"), ("GC=F", "GOLD")]
     @Binding var detent: DockDetent
@@ -359,9 +360,12 @@ struct MarketSearchSheet: View, Equatable {
     @State private var searchFailed = false
     @State private var searchRetry = 0
     @State private var recents = MarketRecents.all
+    @State private var showAllRecents = false
+    @State private var showAllWatchlist = false
     @State private var moverList = MoverList(rawValue: UserDefaults.standard.string(forKey: "marketMovers") ?? "") ?? .gainers
     @State private var board = MarketBoard.shared
     @State private var watchlist = Watchlist.shared
+    @State private var selection: TextSelection?
     @FocusState private var searching: Bool
     @Environment(\.scenePhase) private var phase
 
@@ -396,7 +400,10 @@ struct MarketSearchSheet: View, Equatable {
         #endif
         // The keyboard covers most of the dock, so search at full height, and drop focus when it is pulled back down.
         .onChange(of: searching) { _, focused in
-            if focused { detent = .large }
+            if focused {
+                detent = .large
+                selectQuery()
+            }
         }
         .onChange(of: detent) { _, value in
             if value != .large { searching = false }
@@ -468,7 +475,7 @@ struct MarketSearchSheet: View, Equatable {
     private var searchField: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField("Search markets", text: $query)
+            TextField("Search markets", text: $query, selection: $selection)
                 .textInputAutocapitalization(.characters)
                 .autocorrectionDisabled()
                 .submitLabel(.search)
@@ -491,6 +498,16 @@ struct MarketSearchSheet: View, Equatable {
         .contentShape(.capsule)
         .onTapGesture { searching = true }
         .glassEffect(.regular.interactive(), in: .capsule)
+    }
+
+    /// Focusing a field that already holds a query selects it, so typing replaces it. Deferred a tick so the tap's own caret placement doesn't override it.
+    private func selectQuery() {
+        guard !query.isEmpty else { return }
+        Task { @MainActor in
+            await Task.yield()
+            guard searching, !query.isEmpty else { return }
+            selection = TextSelection(range: query.startIndex..<query.endIndex)
+        }
     }
 
     /// Opens the Ask sheet. Anything typed in the field is sent as the first question.
@@ -598,12 +615,11 @@ struct MarketSearchSheet: View, Equatable {
     private var overview: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
+                if !recents.isEmpty && searching { recentSection }
                 section("Stocks") {
                     indices
                 }
-                section("Watchlist") {
-                    watchlistRows
-                }
+                watchlistSection
                 section("Global & macro") {
                     financeCards
                 }
@@ -633,19 +649,7 @@ struct MarketSearchSheet: View, Equatable {
                     .padding(.horizontal, 16)
                     .accessibilityIdentifier("explore-data-tools")
                 }
-                if !recents.isEmpty {
-                    section("Recent") {
-                        ForEach(recents, id: \.self) { symbol in
-                            row(symbol)
-                                .contextMenu {
-                                    Button("Remove from Recent", systemImage: "minus.circle", role: .destructive) {
-                                        MarketRecents.remove(symbol)
-                                        withAnimation(.easeOut(duration: 0.2)) { recents = MarketRecents.all }
-                                    }
-                                }
-                        }
-                    }
-                }
+                if !recents.isEmpty && !searching { recentSection }
                 movers
                 earnings
             }
@@ -654,6 +658,28 @@ struct MarketSearchSheet: View, Equatable {
         }
         .scrollDisabled(detent == .peek)
         .scrollDismissesKeyboard(.interactively)
+    }
+
+    private var recentSection: some View {
+        let shown = showAllRecents ? recents : Array(recents.prefix(3))
+        return section("Recent", accessory: {
+            if recents.count > 3 {
+                Button(showAllRecents ? "Show less" : "Show more") {
+                    withAnimation(.easeOut(duration: 0.2)) { showAllRecents.toggle() }
+                }
+                .font(.caption.weight(.semibold)).foregroundStyle(Color.wireAccent)
+            }
+        }) {
+            ForEach(shown, id: \.self) { symbol in
+                row(symbol)
+                    .contextMenu {
+                        Button("Remove from Recent", systemImage: "minus.circle", role: .destructive) {
+                            MarketRecents.remove(symbol)
+                            withAnimation(.easeOut(duration: 0.2)) { recents = MarketRecents.all }
+                        }
+                    }
+            }
+        }
     }
 
     private var indices: some View {
@@ -692,6 +718,19 @@ struct MarketSearchSheet: View, Equatable {
         .scrollClipDisabled()
     }
 
+    private var watchlistSection: some View {
+        section("Watchlist", accessory: {
+            if watchlist.symbols.count > Self.watchlistPreviewCount {
+                Button(showAllWatchlist ? "Show less" : "Show more") {
+                    withAnimation(.easeOut(duration: 0.2)) { showAllWatchlist.toggle() }
+                }
+                .font(.caption.weight(.semibold)).foregroundStyle(Color.wireAccent)
+            }
+        }) {
+            watchlistRows
+        }
+    }
+
     private var watchlistRows: some View {
         let order = Dictionary(watchlist.symbols.enumerated().map { ($1, $0) }, uniquingKeysWith: min)
         let symbols = watchlist.symbols.sorted { a, b in
@@ -708,7 +747,7 @@ struct MarketSearchSheet: View, Equatable {
                     .font(.subheadline).foregroundStyle(.secondary)
                     .padding(.horizontal, 20).padding(.vertical, 12)
             } else {
-                ForEach(symbols, id: \.self) { symbol in
+                ForEach(showAllWatchlist ? symbols : Array(symbols.prefix(Self.watchlistPreviewCount)), id: \.self) { symbol in
                     row(symbol)
                 }
             }

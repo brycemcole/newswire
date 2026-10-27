@@ -16,11 +16,13 @@ const sigmoid = (x: number) => 1 / (1 + Math.exp(-clamp(x, -30, 30)));
 
 export const marketGroups: Record<string, string[]> = {
   futures_points: ['futures', 'nasdaq', 'smallcaps', 'premarket'],
-  rates_points: ['yield', 'credit', 'dollar', 'yen'],
-  volatility_points: ['vix', 'vix_term'],
+  rates_points: ['yield', 'front_yield', 'real_yield', 'credit', 'dollar', 'yen'],
+  volatility_points: ['vix', 'vix_term', 'vix_short'],
+  breadth_points: ['breadth', 'semis'],
   overseas_points: ['europe', 'germany', 'asia', 'china'],
   commodity_points: ['oil', 'copper', 'gold', 'bitcoin'],
 };
+const eventShrink = 0.4;
 export const marketGroupKeys = [...Object.keys(marketGroups), 'market_other_points'];
 
 function marketFeatures(market: any, available: boolean): Features {
@@ -30,6 +32,18 @@ function marketFeatures(market: any, available: boolean): Features {
     : 0]));
   const total = available ? Number(market.points ?? 0) / 40 : 0;
   return { ...groups, market_other_points: available ? total - Object.values(groups).reduce((sum, value) => sum + value, 0) : 0 };
+}
+
+// High-impact release due, monthly option expiry or quarter-end: the score shrinks toward neutral instead of calling a direction.
+export function eventRisk(pulse: any): number {
+  const high = Array.isArray(pulse?.components?.calendar?.upcoming) && pulse.components.calendar.upcoming.some((event: any) => event?.high) ? 1 : 0;
+  const at = new Date(pulse?.as_of ?? NaN);
+  if (!Number.isFinite(+at)) return high;
+  const day = at.getUTCDate(), weekday = at.getUTCDay(), month = at.getUTCMonth();
+  const opex = weekday === 5 && day >= 15 && day <= 21 ? 0.5 : 0;
+  const lastDay = new Date(Date.UTC(at.getUTCFullYear(), month + 1, 0)).getUTCDate();
+  const quarterEnd = month % 3 === 2 && day >= lastDay - 2 ? 0.5 : 0;
+  return Math.max(high, opex, quarterEnd);
 }
 
 export function makeFeatures(snapshot: any): Features {
@@ -50,8 +64,9 @@ export function makeFeatures(snapshot: any): Features {
     market_available: marketOn ? 1 : 0,
     earnings_points: Number(pulse.components?.earnings?.points ?? 0) / 10,
     calendar_points: Number(calendar?.points ?? 0) / 10,
+    event_risk: eventRisk(pulse),
     story_count: Math.log1p(Math.max(0, Number(pulse.coverage?.headline_stories ?? 0))) / 5,
-    market_coverage: Math.max(0, Math.min(1, Number(market?.live_inputs ?? 0) / 19)),
+    market_coverage: Math.max(0, Math.min(1, Number(market?.live_inputs ?? 0) / 24)),
   };
 }
 
@@ -60,7 +75,9 @@ export function forecastTilt(features: Features): { score: number | null; tilt: 
   if (!available) return { score: null, tilt: 'unavailable', probabilities: null };
   const hasGroups = marketGroupKeys.some(key => key in features);
   const marketPoints = hasGroups ? marketGroupKeys.reduce((sum, key) => sum + (features[key] ?? 0), 0) : (features.market_points ?? 0);
-  const score = Math.max(0, Math.min(100, Math.round((50 + 25 * (features.news_points ?? 0) + 40 * marketPoints + 10 * (features.calendar_points ?? 0) + 10 * (features.earnings_points ?? 0)) * 100) / 100));
+  const raw = 50 + 25 * (features.news_points ?? 0) + 40 * marketPoints + 10 * (features.calendar_points ?? 0) + 10 * (features.earnings_points ?? 0);
+  const shrunk = 50 + (raw - 50) * (1 - eventShrink * clamp(features.event_risk ?? 0, 0, 1));
+  const score = Math.max(0, Math.min(100, Math.round(shrunk * 100) / 100));
   const tilt = score >= 55 ? 'up' : score <= 45 ? 'down' : 'neutral';
   return { score, tilt, probabilities: null };
 }

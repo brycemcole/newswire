@@ -1,60 +1,16 @@
-import { readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
-import { complete as freeComplete, model as freeModel } from '../ai/opencode.mjs';
+import { complete as deepseek, model } from '../ai/deepseek.mjs';
 
-// OpenCode Go is the subscription plan; Zen is pay-as-you-go on the same OpenCode account.
-const providers = {
-  go: 'https://opencode.ai/inference/go/v1/chat/completions',
-  zen: 'https://opencode.ai/inference/v1/chat/completions',
-};
-const provider = process.env.NEWSWIRE_AGENT_PROVIDER ?? 'opencode';
-if (provider !== 'opencode' && !providers[provider]) throw new Error('Unknown NEWSWIRE_AGENT_PROVIDER');
-export { freeModel };
+export { model };
 export const userAgent = 'newswire-research-agent/1.0';
 const usage = { requests: 0, prompt_tokens: 0, completion_tokens: 0 };
-export const agentUsage = () => ({ provider, ...usage });
+export const agentUsage = () => ({ provider: 'deepseek', ...usage });
 
-let cached;
-async function key() {
-  if (cached) return cached;
-  const config = join(homedir(), '.config', 'newswire');
-  const value = process.env.NEWSWIRE_OPENCODE_KEY ?? await readFile(join(config, 'opencode-key'), 'utf8').catch(() => '') ?? '';
-  // The Jev classifier already authenticates with an OpenCode console key.
-  cached = (value.trim() || (await readFile(join(config, 'zen-key'), 'utf8').catch(() => '')).trim());
-  if (!cached) throw new Error('NEWSWIRE_OPENCODE_KEY, opencode-key or zen-key is required');
-  return cached;
-}
-
-async function complete(body, session, attempt = 0) {
-  if (provider === 'opencode') {
-    const payload = await freeComplete(body);
-    usage.requests += 1;
-    usage.prompt_tokens += payload.usage.prompt_tokens;
-    usage.completion_tokens += payload.usage.completion_tokens;
-    return payload.choices[0];
-  }
-  let response;
-  try {
-    response = await fetch(providers[provider], { method: 'POST', signal: AbortSignal.timeout(120000), body: JSON.stringify(body),
-      headers: { Authorization: `Bearer ${await key()}`, 'Content-Type': 'application/json', Accept: 'application/json', 'User-Agent': userAgent, 'x-opencode-session': session } });
-  } catch (error) {
-    if (attempt < 2) { await new Promise(resolve => setTimeout(resolve, 2000 * 2 ** attempt)); return complete(body, session, attempt + 1); }
-    throw error;
-  }
-  const payload = await response.json().catch(() => ({}));
-  if ((response.status === 429 || response.status >= 500) && attempt < 2) {
-    await new Promise(resolve => setTimeout(resolve, 3000 * 2 ** attempt));
-    return complete(body, session, attempt + 1);
-  }
-  if (!response.ok) throw new Error(`${provider} ${body.model} HTTP ${response.status}${payload.error?.type ? ` ${payload.error.type}` : ''}`);
+async function complete(body, { timeout }) {
+  const payload = await deepseek(body, { timeout });
   usage.requests += 1;
-  usage.prompt_tokens += payload.usage?.prompt_tokens ?? 0;
-  usage.completion_tokens += payload.usage?.completion_tokens ?? 0;
-  const choice = payload.choices?.[0];
-  if (!choice?.message) throw new Error(`${provider} ${body.model} returned no message`);
-  return choice;
+  usage.prompt_tokens += payload.usage.prompt_tokens;
+  usage.completion_tokens += payload.usage.completion_tokens;
+  return payload.choices[0];
 }
 
 export function parseJSON(text) {
@@ -65,8 +21,7 @@ export function parseJSON(text) {
 }
 
 /** Runs a tool-calling conversation until the model returns a JSON object or the step budget runs out. */
-export async function runAgent({ model, system, prompt, tools, maxSteps = 8, maxTokens = 8000, temperature = 0.2 }) {
-  const session = randomUUID();
+export async function runAgent({ model, system, prompt, tools, maxSteps = 8, maxTokens = 8000, temperature = 0.2, timeout }) {
   const definitions = tools.map(tool => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.parameters } }));
   const byName = new Map(tools.map(tool => [tool.name, tool]));
   const messages = [{ role: 'system', content: system }, { role: 'user', content: prompt }];
@@ -74,7 +29,7 @@ export async function runAgent({ model, system, prompt, tools, maxSteps = 8, max
   for (let step = 0; step <= maxSteps; step++) {
     const last = step === maxSteps;
     if (last) messages.push({ role: 'user', content: 'The research budget is spent. Reply now with only the final JSON object.' });
-    const choice = await complete({ model, messages, tools: definitions, tool_choice: last ? 'none' : 'auto', max_tokens: maxTokens, temperature }, session);
+    const choice = await complete({ model, messages, tools: definitions, tool_choice: last ? 'none' : 'auto', max_tokens: maxTokens, temperature }, { timeout });
     const message = Object.fromEntries(Object.entries(choice.message).filter(([, value]) => value !== null && value !== undefined));
     messages.push(message);
     const calls = message.tool_calls ?? [];

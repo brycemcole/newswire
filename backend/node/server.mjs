@@ -82,7 +82,11 @@ export async function start() {
   await migrate(DB, join(here, '..', 'migrations'));
   await migrate(BRAIN, join(here, '..', 'brain'));
   const writer = process.env.WRITER_TOKEN ?? (await readFile(join(homedir(), '.config', 'newswire', 'writer-token'), 'utf8')).trim();
-  const env = { DB, BRAIN, ASSETS: assets, WRITER_TOKEN: writer, ...(process.env.FRED_API_KEY ? { FRED_API_KEY: process.env.FRED_API_KEY } : {}) };
+  const env = { DB, BRAIN, ASSETS: assets, WRITER_TOKEN: writer,
+    ...(process.env.FRED_API_KEY ? { FRED_API_KEY: process.env.FRED_API_KEY } : {}),
+    ...(process.env.TWELVE_DATA_API_KEY ? { TWELVE_DATA_API_KEY: process.env.TWELVE_DATA_API_KEY } : {}),
+    ...(process.env.MASSIVE_API_KEY ? { MASSIVE_API_KEY: process.env.MASSIVE_API_KEY } : {}),
+    ...(process.env.FMP_API_KEY ? { FMP_API_KEY: process.env.FMP_API_KEY } : {}) };
   env.AI = { async run(model, input) {
     const response = await fetch('https://bryce-newswire.bryce-e19.workers.dev/v1/brain/ai', {
       method: 'POST', headers: { Authorization: `Bearer ${writer}`, 'Content-Type': 'application/json' },

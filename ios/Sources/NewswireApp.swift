@@ -4,7 +4,7 @@ import SwiftUI
 @main struct NewswireApp: App {
     @UIApplicationDelegateAdaptor(PushDelegate.self) private var push
 
-    #if DEBUG && targetEnvironment(simulator)
+    #if DEBUG && targetEnvironment(simulator) || PERFMETER
     init() { FrameMeter.startIfRequested() }
     #endif
 
@@ -123,6 +123,18 @@ nonisolated enum Accent: String, CaseIterable, Identifiable {
             }
         })
     }
+}
+
+/// Read only inside `StorySuggestionsReader`, so a story clearing its symbols as it pops re-renders the dock, not the feed.
+@Observable final class StorySuggestions {
+    var symbols: [String] = []
+}
+
+struct StorySuggestionsReader<Content: View>: View {
+    let source: StorySuggestions
+    @ViewBuilder let content: ([String]) -> Content
+
+    var body: some View { content(source.symbols) }
 }
 
 @Observable final class ReadState {
@@ -266,7 +278,7 @@ struct FeedView: View {
     @State private var portfolioExpanded = UserDefaults.standard.bool(forKey: "portfolioExpanded")
     @State private var search = ""
     @State private var searchPresented = false
-    @State private var storyMarketSymbols: [String] = []
+    @State private var storySuggestions = StorySuggestions()
     @State private var homeClock = Date.now
     @State private var alertSymbol: MarketSymbol?
     @AppStorage("headlinesOnly") private var headlinesOnly = false
@@ -411,7 +423,7 @@ struct FeedView: View {
                 }
                 .modifier(ConditionalWireSearch(presented: $searchPresented, text: $search, filters: $store.filters))
                 .navigationDestination(for: Story.self) { story in
-                    StoryDetail(story: story) { storyMarketSymbols = $0 }
+                    StoryDetail(story: story)
                 }
                 .navigationDestination(for: MarketSymbol.self) { QuoteDetail(symbol: $0.id).id($0.id).dockClearance() }
                 .navigationDestination(for: DataRoute.self) { route in
@@ -452,53 +464,53 @@ struct FeedView: View {
             .sheet(isPresented: $portfolio) { PortfolioView() }
             .sheet(item: $alertSymbol) { PriceAlertComposer(symbol: $0.id) }
             .sheet(item: $asking, onDismiss: { askPrompt = "" }) { AskSheet(context: $0, initialQuestion: askPrompt) }
-            .task(id: store.category + "|" + search + "|" + store.filters.map(\.id).joined(separator: "|") + "|" + store.serverURL) {
-                store.query = search.trimmingCharacters(in: .whitespacesAndNewlines)
-                store.reset()
-                // Debounce typing only; category and filter taps load immediately.
-                if !store.query.isEmpty {
-                    do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
-                }
-                await store.ready()
-                // Recent caches merge arrivals when the reader is at the top; stale caches fetch a fresh window.
-                let stale = store.lastUpdated.map { $0.timeIntervalSinceNow < -3600 } ?? true
-                await store.sync(stale ? .replace : .merge, quiet: true)
+        }
+        .task(id: store.category + "|" + search + "|" + store.filters.map(\.id).joined(separator: "|") + "|" + store.serverURL) {
+            store.query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+            store.reset()
+            // Debounce typing only; category and filter taps load immediately.
+            if !store.query.isEmpty {
+                do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
             }
-            .task(id: phase) {
-                if phase == .background {
-                    store.refreshAfterBackgrounding()
-                    FeedStore.scheduleRefresh()
-                    FeedStore.scheduleProcessing()
-                }
-                guard phase == .active else { return }
+            await store.ready()
+            // Recent caches merge arrivals when the reader is at the top; stale caches fetch a fresh window.
+            let stale = store.lastUpdated.map { $0.timeIntervalSinceNow < -3600 } ?? true
+            await store.sync(stale ? .replace : .merge, quiet: true)
+        }
+        .task(id: phase) {
+            if phase == .background {
+                store.refreshAfterBackgrounding()
+                FeedStore.scheduleRefresh()
+                FeedStore.scheduleProcessing()
+            }
+            guard phase == .active else { return }
+            homeClock = .now
+            await store.ready()
+            // Skipped when background refresh just brought the feed up to date; at launch the feed-key task
+            // above usually wins and this returns at once because a load is already in flight. After an hour
+            // away the list is re-ranked as it opens rather than gaining a block of new stories over stale ones.
+            let age = store.lastUpdated.map { -$0.timeIntervalSinceNow } ?? .infinity
+            if store.hasLoaded && age > 5 {
+                await store.sync(age > 3600 ? .replace : .merge, quiet: true)
+            }
+            PortfolioStore.shared.reloadFromKeychain()
+            await PushDelegate.syncStockAlerts()
+            if (PortfolioStore.shared.snapshot.updated ?? .distantPast).timeIntervalSinceNow < -300 {
+                await PortfolioStore.shared.sync()
+            }
+            await PriceWatchStore.shared.restoreActivities()
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(60)) } catch { return }
                 homeClock = .now
-                await store.ready()
-                // Skipped when background refresh just brought the feed up to date; at launch the feed-key task
-                // above usually wins and this returns at once because a load is already in flight. After an hour
-                // away the list is re-ranked as it opens rather than gaining a block of new stories over stale ones.
-                let age = store.lastUpdated.map { -$0.timeIntervalSinceNow } ?? .infinity
-                if store.hasLoaded && age > 5 {
-                    await store.sync(age > 3600 ? .replace : .merge, quiet: true)
-                }
-                PortfolioStore.shared.reloadFromKeychain()
+                await store.sync(.merge, quiet: true)
                 await PushDelegate.syncStockAlerts()
-                if (PortfolioStore.shared.snapshot.updated ?? .distantPast).timeIntervalSinceNow < -300 {
-                    await PortfolioStore.shared.sync()
-                }
-                await PriceWatchStore.shared.restoreActivities()
-                while !Task.isCancelled {
-                    do { try await Task.sleep(for: .seconds(60)) } catch { return }
-                    homeClock = .now
-                    await store.sync(.merge, quiet: true)
-                    await PushDelegate.syncStockAlerts()
-                }
             }
-            .task(id: phase == .active ? watchlist.symbols : []) {
-                guard phase == .active else { return }
-                while !Task.isCancelled {
-                    await board.refresh(quotes: watchlist.symbols, sparks: watchlist.symbols)
-                    do { try await Task.sleep(for: .seconds(30)) } catch { return }
-                }
+        }
+        .task(id: phase == .active ? watchlist.symbols : []) {
+            guard phase == .active else { return }
+            while !Task.isCancelled {
+                await board.refresh(quotes: watchlist.symbols, sparks: watchlist.symbols)
+                do { try await Task.sleep(for: .seconds(30)) } catch { return }
             }
         }
     }
@@ -514,22 +526,24 @@ struct FeedView: View {
         .onChange(of: portfolio) { _, _ in dock = .peek }
         .overlay {
             if !hidesMarketDock {
-                MarketDock(detent: $dock, onSelect: { symbol in
-                    if symbol == TerminalExploreView.token {
+                StorySuggestionsReader(source: storySuggestions) { suggestedSymbols in
+                    MarketDock(detent: $dock, onSelect: { symbol in
+                        if symbol == TerminalExploreView.token {
+                            withAnimation(selectionAnimation) { dock = .peek }
+                            marketDepth = nil
+                            store.path.append(FeedDestination.explore)
+                            return
+                        }
+                        withAnimation(selectionAnimation) { dock = .medium }
+                        open(quote: symbol)
+                    }, onAsk: { question in
+                        askPrompt = question
+                        asking = .markets
+                    }, onSuggestionSelect: { symbol in
                         withAnimation(selectionAnimation) { dock = .peek }
-                        marketDepth = nil
-                        store.path.append(FeedDestination.explore)
-                        return
-                    }
-                    withAnimation(selectionAnimation) { dock = .medium }
-                    open(quote: symbol)
-                }, onAsk: { question in
-                    askPrompt = question
-                    asking = .markets
-                }, onSuggestionSelect: { symbol in
-                    withAnimation(selectionAnimation) { dock = .peek }
-                    open(quote: symbol)
-                }, suggestedSymbols: storyMarketSymbols, onFrameChange: { [dockFrame] in dockFrame.value = $0 })
+                        open(quote: symbol)
+                    }, suggestedSymbols: suggestedSymbols, onFrameChange: { [dockFrame] in dockFrame.value = $0 })
+                }
             }
         }
         .environment(\.feedStore, store)
@@ -987,7 +1001,6 @@ extension Date {
 
 struct StoryDetail: View {
     let story: Story
-    var onSuggestedSymbolsChange: ([String]) -> Void = { _ in }
     @Environment(\.feedStore) private var feedStore
     @State private var loading = false
     @State private var attempt = 0
@@ -999,7 +1012,6 @@ struct StoryDetail: View {
     @State private var asking = false
     private var key: String { story.url.absoluteString }
     private var quotes: [Quote] { QuoteStore.shared.quotes(for: story) }
-    private var suggestedSymbols: [String] { Array(QuoteStore.shared.symbols(for: story).prefix(6)) }
     private var lead: String? {
         if story.isBrain && story.opensInReader && story.hasDistinctSummary { return StoryHTML.plainText(story.summary) }
         return glance == nil && !preparingGlance ? Summarizer.shared.summaries[key] : nil
@@ -1009,16 +1021,16 @@ struct StoryDetail: View {
         !story.isBrain && Summarizer.shared.available && (Summarizer.shared.texts[key]?.count ?? 0) >= 400
             && !Summarizer.shared.unsummarizable.contains(key)
     }
-    private var inline: [Int: [Quote]] { QuoteInline.plan([lead ?? ""] + excerpt, quotes: quotes) }
-    private func annotated(_ text: String, at index: Int) -> AttributedString {
-        QuoteInline.annotate(text, quotes: inline[index] ?? [])
-    }
     private var excerpt: [String] {
         Array((Summarizer.shared.texts[key] ?? "").split(separator: "\n").map(String.init))
     }
     var body: some View {
         // The summarizer's dictionaries are unobserved; this makes the detail (and only the detail) update live.
         let _ = Summarizer.shared.revision
+        let excerpt = self.excerpt
+        let lead = self.lead
+        let quotes = self.quotes
+        let annotated = QuoteInline.annotate([lead ?? ""] + excerpt, quotes: quotes)
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 if story.isTweet {
@@ -1060,28 +1072,28 @@ struct StoryDetail: View {
                     Divider()
                 }
                 if story.isTweet {
-                } else if story.isBrain && story.opensInReader && story.hasDistinctSummary, let lead {
-                    Text(annotated(lead, at: 0))
+                } else if story.isBrain && story.opensInReader && story.hasDistinctSummary, lead != nil {
+                    Text(annotated[0])
                         .font(.body.weight(.medium)).fixedSize(horizontal: false, vertical: true)
-                } else if let lead {
-                    Text("\(Text(Image(systemName: "text.line.3.summary")).foregroundStyle(.tertiary)) \(Text(annotated(lead, at: 0)))")
+                } else if lead != nil {
+                    Text("\(Text(Image(systemName: "text.line.3.summary")).foregroundStyle(.tertiary)) \(Text(annotated[0]))")
                         .font(.body.weight(.medium)).fixedSize(horizontal: false, vertical: true)
                 }
                 if story.isTweet {
                 } else if story.opensInReader {
                     if !excerpt.isEmpty {
                         VStack(alignment: .leading, spacing: 14) {
-                            ForEach(Array(excerpt.enumerated()), id: \.element) { index, paragraph in
-                                Text(annotated(paragraph, at: index + 1)).fixedSize(horizontal: false, vertical: true)
+                            ForEach(Array(excerpt.enumerated()), id: \.element) { index, _ in
+                                Text(annotated[index + 1]).fixedSize(horizontal: false, vertical: true)
                             }
                         }
                         .font(.body).foregroundStyle(.primary.opacity(0.85)).lineSpacing(3)
                         .transition(.opacity)
+                    } else if story.hasDistinctSummary && !story.isBrain {
+                        Text(StoryHTML.plainText(story.summary)).fixedSize(horizontal: false, vertical: true)
                     } else if loading {
                         Label("Loading article", systemImage: "doc.text").font(.subheadline).foregroundStyle(.secondary)
                             .symbolEffect(.pulse, options: .repeating)
-                    } else if story.hasDistinctSummary && !story.isBrain {
-                        Text(StoryHTML.plainText(story.summary)).fixedSize(horizontal: false, vertical: true)
                     } else {
                         Button { attempt += 1 } label: { Label("Load article", systemImage: "arrow.clockwise") }
                             .font(.subheadline.weight(.semibold)).foregroundStyle(.secondary).buttonStyle(.plain)
@@ -1098,20 +1110,15 @@ struct StoryDetail: View {
                 relatedSection
             }.padding(20).frame(maxWidth: 760, alignment: .leading).frame(maxWidth: .infinity)
         }
-        .dockClearance(suggestions: !suggestedSymbols.isEmpty)
+        .dockClearance()
         #if DEBUG
         .defaultScrollAnchor(CommandLine.arguments.contains("-articlePreviewEnd") ? .bottom : .top)
         #endif
         .animation(.easeOut(duration: 0.2), value: excerpt)
         .animation(.easeOut(duration: 0.2), value: loading)
         .animation(.easeOut(duration: 0.2), value: quotes)
-        .onAppear {
-            onSuggestedSymbolsChange(suggestedSymbols)
-            CurrentScreen.shared.story = story
-        }
-        .onChange(of: suggestedSymbols) { _, symbols in onSuggestedSymbolsChange(symbols) }
+        .onAppear { CurrentScreen.shared.story = story }
         .onDisappear {
-            onSuggestedSymbolsChange([])
             if CurrentScreen.shared.story == story { CurrentScreen.shared.story = nil }
         }
         .task(id: story.id) {
@@ -1735,9 +1742,28 @@ struct TweetCard: View {
 extension Story {
     var isTweet: Bool { tags.contains("x") && ["x.com", "twitter.com"].contains(url.host?.lowercased() ?? "") && url.path.contains("/status/") }
     var opensInReader: Bool { !isTweet && (tags.contains("headlines") || (isBrain && body.isEmpty)) && ["http", "https"].contains(url.scheme?.lowercased() ?? "") }
+    private static let topicCache = NSCache<NSString, NSArray>()
+    private static let symbolCache = NSCache<NSString, NSArray>()
+
+    /// Read for every feed story whenever a story detail or the home feed renders, so the regex result is kept per story.
     var matchedTopics: [String] {
-        guard let match = body.firstMatch(of: /Matched watchlist: ([^.]+)\./)?.1 else { return [] }
-        return match.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        let key = "\(id)|\(body.count)" as NSString
+        if let cached = Self.topicCache.object(forKey: key) as? [String] { return cached }
+        var topics: [String] = []
+        if let match = body.firstMatch(of: /Matched watchlist: ([^.]+)\./)?.1 {
+            topics = match.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        }
+        Self.topicCache.setObject(topics as NSArray, forKey: key)
+        return topics
+    }
+
+    /// Symbols written in the headline and teaser, scanned once per story rather than on every home feed render.
+    var textSymbols: [String] {
+        let key = "\(id)|\(title.count)|\(summary.count)" as NSString
+        if let cached = Self.symbolCache.object(forKey: key) as? [String] { return cached }
+        let symbols = TickerScanner.symbols(in: "\(title)\n\(summary)")
+        Self.symbolCache.setObject(symbols as NSArray, forKey: key)
+        return symbols
     }
     private static let feedSummaries = NSCache<NSString, NSString>()
 

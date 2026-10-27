@@ -1,0 +1,10 @@
+[Unit]
+Description=Newswire monitor run
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/newswire
+ExecStart=%h/.local/node/bin/node %h/newswire/scripts/monitor/run.mjs
+TimeoutStartSec=300
+UMask=0077

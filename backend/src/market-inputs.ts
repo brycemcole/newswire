@@ -67,6 +67,16 @@ export function inputsAt(all: Bars[], t: number, live = false): MarketInput[] {
       const fresh = t - top.time <= spec.stale * hour && t - bottom.time <= spec.stale * hour;
       return { ...empty, price: Math.round(top.price / bottom.price * 1000) / 1000, price_at: new Date(Math.min(top.time, bottom.time)).toISOString(), status: fresh ? 'live' : 'stale' };
     }
+    if (spec.kind === 'relative') {
+      const denominator = all.find(s => s.symbol === spec.denominator);
+      const top = closeAt(series, t, live), bottom = denominator ? closeAt(denominator, t, live) : null;
+      const cash = lastCashClose(t), topBase = closeAt(series, cash, false), bottomBase = denominator ? closeAt(denominator, cash, false) : null;
+      if (!top || !bottom || !topBase || !bottomBase || topBase.price <= 0 || bottomBase.price <= 0) return empty;
+      const move = (top.price / topBase.price - bottom.price / bottomBase.price) * 100;
+      const oldest = Math.min(top.time, bottom.time);
+      return { ...empty, price: Math.round(top.price * 10000) / 10000, price_at: new Date(oldest).toISOString(), change_day: Math.round(move * 100) / 100,
+        status: t - oldest > spec.stale * hour || oldest <= cash ? 'stale' : 'live' };
+    }
     if (spec.kind === 'drawdown') {
       const latest = closeAt(series, t, live);
       let baselineClose = lastCashClose(t);

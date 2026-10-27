@@ -55,10 +55,12 @@ private struct StoryIcon: View {
     var size: CGFloat = 11
 
     var body: some View {
-        Image(systemName: story.tag.symbol)
-            .font(.system(size: size, weight: .semibold))
-            .foregroundStyle(story.tag.color)
-            .frame(width: size + 5)
+        if story.isBreaking {
+            Image(systemName: story.tag.symbol)
+                .font(.system(size: size, weight: .semibold))
+                .foregroundStyle(story.tag.color)
+                .frame(width: size + 5)
+        }
     }
 }
 
@@ -113,7 +115,7 @@ private struct LockHeadline: View {
         VStack(alignment: .leading, spacing: 1) {
             HStack(spacing: 3) {
                 Image(systemName: story.tag.symbol)
-                Text(story.isUrgent ? story.tag.label.uppercased() : story.source)
+                Text(story.isBreaking ? story.tag.label.uppercased() : story.source)
                     .fontWeight(.bold)
                     .widgetAccentable()
                 Text("· " + story.age(at: date))

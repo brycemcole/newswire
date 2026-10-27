@@ -38,6 +38,7 @@ targets:
         NSSupportsLiveActivities: true
         UIBackgroundModes: [audio, fetch, processing, remote-notification]
         BGTaskSchedulerPermittedIdentifiers: [com.brycecole.newswire.refresh, com.brycecole.newswire.process]
+        CADisableMinimumFrameDurationOnPhone: true
     settings:
       base:
         DEVELOPMENT_TEAM: A792L5W262

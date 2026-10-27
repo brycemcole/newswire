@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { complete as freeComplete, model as freeModel } from './opencode.mjs';
+import { complete as freeComplete, model as freeModel } from './deepseek.mjs';
 
 export const goModel = 'deepseek-v4.1-flash';
 

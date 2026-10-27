@@ -83,7 +83,7 @@ export async function notify(stories) {
     let unusable = false;
     for (const story of stories) {
       if (unusable) break;
-      const payload = { aps: { alert: { body: story.title }, sound: 'default', 'interruption-level': 'time-sensitive', 'content-available': 1, 'thread-id': story.feed ?? 'wire' }, id: story.id, url: story.url, feed: story.feed ?? 'wire' };
+      const payload = { aps: { alert: story.alert ?? { body: story.title }, sound: 'default', 'interruption-level': 'time-sensitive', 'content-available': 1, 'thread-id': story.feed ?? 'wire' }, id: story.id, url: story.url, feed: story.feed ?? 'wire' };
       for (const device of group) {
         if (muted(device, story)) continue;
         const result = await send(client, jwt, device, payload);

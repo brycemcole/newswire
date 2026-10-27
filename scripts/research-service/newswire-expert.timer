@@ -1,0 +1,10 @@
+[Unit]
+Description=Write the Newswire expert feature after each weekday close
+
+[Timer]
+OnCalendar=Mon..Fri 16:40 America/New_York
+Persistent=true
+AccuracySec=60
+
+[Install]
+WantedBy=timers.target

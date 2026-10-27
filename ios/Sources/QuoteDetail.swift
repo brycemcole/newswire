@@ -71,7 +71,12 @@ nonisolated struct WatchEntry: Codable, Hashable, Sendable {
 
     init(symbol: String) { self.symbol = symbol }
 
-    var chart: MarketChart? { range == .day ? live : charts[range] }
+    var chart: MarketChart? {
+        guard range != .day else { return live }
+        guard let chart = charts[range] else { return nil }
+        guard range != .week, let live else { return chart }
+        return chart.includingRecentActivity(from: live)
+    }
 
     func refreshLive() async {
         do {
@@ -134,6 +139,7 @@ struct QuoteDetail: View {
     @State private var holding: MarketSymbol?
     @State private var showingOptions = false
     @State private var showingFilings = false
+    @State private var showingEarnings = false
     @State private var previewFiling: URL?
     @State private var showingQuestions = false
     @State private var aboutExpanded = false
@@ -182,10 +188,10 @@ struct QuoteDetail: View {
                 catalystReadout
                 HoldingSection(symbol: symbol, chart: model.live)
                 optionsLink
-                Divider()
+                tradingSection
                 QuoteNewsSection(symbol: symbol, name: name, instrument: summary?.text("price", "quoteType") ?? model.live?.instrument,
                                  move: dayMove, price: model.live.map { $0.money($0.price) }, model: news)
-                sections
+                researchSections
                 SimulatorSection(symbol: symbol, price: model.live?.price, currency: model.live?.currency ?? "USD")
                 Link(destination: yahooURL) {
                     Label("Data from Yahoo Finance", systemImage: "arrow.up.right")
@@ -225,6 +231,9 @@ struct QuoteDetail: View {
                 .accessibilityLabel("Stock actions")
             }
         }
+        .sheet(isPresented: $showingEarnings) {
+            EarningsHistoryView(symbol: symbol, currency: summary?.text("earnings", "financialCurrency") ?? "USD")
+        }
         .sheet(isPresented: $showingQuestions) {
             AskSheet(context: AskContext(symbol: symbol, name: name, price: model.live.map { $0.money($0.price) }))
         }
@@ -240,6 +249,7 @@ struct QuoteDetail: View {
                 try? await Task.sleep(for: .seconds(1))
                 showingFilings = true
             }
+            if CommandLine.arguments.contains("-earningsHistory") { showingEarnings = true }
             if CommandLine.arguments.contains("-stockQuestions") {
                 try? await Task.sleep(for: .seconds(1))
                 showingQuestions = true
@@ -324,7 +334,7 @@ struct QuoteDetail: View {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .frame(height: 230)
+        .frame(height: 260)
         .padding(.top, 18)
         .animation(.easeOut(duration: 0.2), value: model.chart == nil)
     }
@@ -421,7 +431,7 @@ struct QuoteDetail: View {
     }
 
     @ViewBuilder
-    private var sections: some View {
+    private var tradingSection: some View {
         let summary = summary
         let day = model.live
         let trading = stats([
@@ -453,6 +463,10 @@ struct QuoteDetail: View {
             }
             StatGrid(stats: trading)
         }
+    }
+
+    @ViewBuilder
+    private var researchSections: some View {
         if let summary {
             analysts(summary)
             earnings(summary)
@@ -628,10 +642,23 @@ struct QuoteDetail: View {
                     ("EPS estimate", calendar?["earningsAverage"]?.text),
                     ("EPS range", span(calendar?["earningsLow"]?.text, calendar?["earningsHigh"]?.text)),
                     ("Revenue estimate", calendar?["revenueAverage"]?.text),
+                    ("Revenue range", span(calendar?["revenueLow"]?.text, calendar?["revenueHigh"]?.text)),
                 ])
                 if !upcoming.isEmpty { StatGrid(stats: upcoming) }
                 if !quarters.isEmpty { EarningsChart(quarters: quarters, currency: currency) }
                 if !years.isEmpty { AnnualChart(years: years, currency: currency) }
+                Button { showingEarnings = true } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("All earnings & estimates").font(.subheadline.weight(.semibold))
+                            Text("Quarterly, annual, revenue & EPS forecasts").font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 8)
+                        Image(systemName: "chevron.right").font(.caption.weight(.semibold))
+                    }
+                    .frame(minHeight: 44).contentShape(.rect)
+                }
+                .buttonStyle(.plain)
             }
         }
     }
@@ -1186,6 +1213,34 @@ private struct QuoteHeader: View {
 }
 
 private extension ChartRange {
+    /// Axis labels at natural boundaries (hour, day, week, month, year) in the exchange's time zone, keyed by point id.
+    /// Labels come only from observed points, so a session still in progress never gets a label for time that has not happened.
+    func ticks(for points: [PricePoint], zone: TimeZone, domain: Int) -> [Int: String] {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        let unit: Calendar.Component
+        let style: Date.FormatStyle
+        switch self {
+        case .day: (unit, style) = (.hour, Date.FormatStyle(timeZone: zone).hour())
+        case .week: (unit, style) = (.day, Date.FormatStyle(timeZone: zone).weekday(.abbreviated))
+        case .month: (unit, style) = (.weekOfYear, Date.FormatStyle(timeZone: zone).month(.abbreviated).day())
+        case .threeMonths, .sixMonths, .ytd, .year: (unit, style) = (.month, Date.FormatStyle(timeZone: zone).month(.abbreviated))
+        case .fiveYears, .max: (unit, style) = (.year, Date.FormatStyle(timeZone: zone).year())
+        }
+        var starts: [PricePoint] = []
+        var previous: Date?
+        for point in points {
+            let start = calendar.dateInterval(of: unit, for: point.date)?.start
+            if start != previous { starts.append(point) }
+            previous = start
+        }
+        // The leading bucket is usually partial and its label would sit on the plot's edge.
+        let kept = starts.filter { Double($0.id) >= Double(domain) * 0.04 }
+        let step = Swift.max(1, Int((Double(kept.count) / 5).rounded(.up)))
+        return Dictionary(uniqueKeysWithValues: kept.enumerated().filter { $0.offset % step == 0 }
+            .map { ($0.element.id, $0.element.date.formatted(style)) })
+    }
+
     func stampStyle(_ zone: TimeZone) -> Date.FormatStyle {
         switch self {
         case .day: Date.FormatStyle(date: .omitted, time: .shortened, timeZone: zone)
@@ -1212,35 +1267,50 @@ private struct PriceChart: View {
         let low = closes.min() ?? 0, high = closes.max() ?? 1
         let pad = max((high - low) * 0.08, high * 0.0005)
         let floor = low - pad
-        let split = range.query.prePost && points.contains(where: \.extended)
+        let split = points.contains(where: \.extended)
+        let domain = max(chart.slots, points.count)
+        let ticks = range.ticks(for: points, zone: chart.timeZone, domain: domain)
+        let digits = high >= 1000 ? 0 : chart.decimals
         Chart {
             ForEach(points) { point in
                 AreaMark(x: .value("Time", point.id), yStart: .value("Floor", floor), yEnd: .value("Price", point.close))
+                    .interpolationMethod(.monotone)
                     .foregroundStyle(LinearGradient(colors: [tint.opacity(0.22), tint.opacity(0)], startPoint: .top, endPoint: .bottom))
             }
             ForEach(points) { point in
                 LineMark(x: .value("Time", point.id), y: .value("Price", point.close), series: .value("Session", "all"))
+                    .interpolationMethod(.monotone)
                     .foregroundStyle(tint.opacity(split ? 0.4 : 1))
                     .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
             }
             if split {
                 ForEach(points.filter { !$0.extended }) { point in
                     LineMark(x: .value("Time", point.id), y: .value("Price", point.close), series: .value("Session", "regular\(point.run)"))
+                        .interpolationMethod(.monotone)
                         .foregroundStyle(tint)
                         .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                 }
             }
+            // News is frequent and only context, so it stays a faint dot; earnings, dividends and splits keep a lettered badge.
             ForEach(markers) { marker in
+                let news = marker.event.kind == .news
+                let selected = scrub.index == marker.index
                 PointMark(x: .value("Event", marker.index), y: .value("Price", points[marker.index].close))
-                    .symbolSize(scrub.index == marker.index ? 90 : 40)
+                    .symbolSize(selected ? 90 : news ? 14 : 44)
                     .foregroundStyle(marker.event.kind == .earnings ? Color.orange : Color.secondary)
+                    .opacity(news && !selected ? 0.5 : 1)
                     .annotation(position: .bottom, spacing: 4) {
-                        Text(marker.event.kind.badge)
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(marker.event.kind == .earnings ? Color.orange : Color.secondary)
+                        if !news {
+                            Text(marker.event.kind.badge)
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(marker.event.kind == .earnings ? Color.orange : Color.secondary)
+                        }
                     }
             }
             if live, scrub.index == nil, let last = points.last {
+                PointMark(x: .value("Time", last.id), y: .value("Price", last.close))
+                    .symbolSize(150)
+                    .foregroundStyle(tint.opacity(0.25))
                 PointMark(x: .value("Time", last.id), y: .value("Price", last.close))
                     .symbolSize(40)
                     .foregroundStyle(tint)
@@ -1249,12 +1319,36 @@ private struct PriceChart: View {
                 RuleMark(y: .value("Previous close", reference))
                     .foregroundStyle(.secondary.opacity(0.5))
                     .lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 4]))
+                    .annotation(position: .top, alignment: .leading, spacing: 2) {
+                        Text("Prev close")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
             }
         }
-        .chartXScale(domain: 0...(max(chart.slots, points.count) - 1))
+        .chartXScale(domain: 0...(domain - 1))
         .chartYScale(domain: floor...(high + pad))
-        .chartXAxis(.hidden)
-        .chartYAxis(.hidden)
+        .chartXAxis {
+            AxisMarks(values: ticks.keys.sorted()) { value in
+                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [2, 4])).foregroundStyle(.quaternary)
+                AxisValueLabel {
+                    if let id = value.as(Int.self), let text = ticks[id] {
+                        Text(text).font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .chartYAxis {
+            AxisMarks(position: .trailing, values: .automatic(desiredCount: 4)) { value in
+                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [2, 4])).foregroundStyle(.quaternary)
+                AxisValueLabel {
+                    if let price = value.as(Double.self) {
+                        Text(price.formatted(.number.precision(.fractionLength(digits))))
+                            .font(.caption2).monospacedDigit().foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
         .chartLegend(.hidden)
         .chartOverlay { proxy in
             ScrubOverlay(proxy: proxy, chart: chart, range: range, tint: tint, scrub: scrub)

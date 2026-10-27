@@ -367,6 +367,13 @@ struct QuoteStrip: View {
 }
 
 enum QuoteInline {
+    static func annotate(_ paragraphs: [String], quotes: [Quote]) -> [AttributedString] {
+        let placements = plan(paragraphs, quotes: quotes)
+        return paragraphs.enumerated().map { index, paragraph in
+            annotate(paragraph, quotes: placements[index] ?? [])
+        }
+    }
+
     static func plan(_ paragraphs: [String], quotes: [Quote]) -> [Int: [Quote]] {
         var result: [Int: [Quote]] = [:]
         for quote in quotes {

@@ -335,15 +335,20 @@ export async function evaluateForecastCandidate(db: DB, candidateId: string, now
   return { id: candidateId, status, evaluation };
 }
 
+const minimumJudgedSessions = 30;
+const sampleStatus = (n: number) => n === 0 ? 'none' : n < minimumJudgedSessions ? 'too_few_to_judge' : 'judgeable';
+
 function directionalScore(rows: any[]) {
   const decided = rows.filter(r => r.tilt === 'up' || r.tilt === 'down');
   const covered = decided.filter(r => r.direction !== 0);
   const sign = (s: string) => s === 'up' ? 1 : s === 'down' ? -1 : 0;
   const hit = (prediction: number, outcome: number) => prediction === outcome ? 1 : 0;
   const mean = (rs: any[], f: (r: any) => number) => rs.length ? rs.reduce((s, r) => s + f(r), 0) / rs.length : null;
-  let priceN = 0, priceHits = 0, majorityN = 0, majorityHits = 0;
+  let priceN = 0, priceHits = 0, majorityN = 0, majorityHits = 0, yesterdayN = 0, yesterdayHits = 0;
   const ordered = [...rows].sort((a, b) => a.session_date.localeCompare(b.session_date));
   for (const row of covered) {
+    const last = ordered.filter(p => p.horizon === row.horizon && p.session_date < row.session_date && p.direction !== 0).at(-1);
+    if (last) { yesterdayN++; yesterdayHits += hit(last.direction, row.direction); }
     if (Number.isFinite(row.price_only_direction)) { priceN++; priceHits += hit(row.price_only_direction, row.direction); }
     const prior = ordered.filter(p => p.horizon === row.horizon && p.session_date < row.session_date && p.direction !== 0);
     if (prior.length >= 20) {
@@ -351,7 +356,17 @@ function directionalScore(rows: any[]) {
       majorityN++; majorityHits += hit(up >= 0.5 ? 1 : -1, row.direction);
     }
   }
-  return { count: rows.length, scored: covered.length, hit_rate: covered.length ? covered.filter(r => sign(r.tilt) === r.direction).length / covered.length : null,
+  const bucket = (label: string, test: (score: number) => boolean) => {
+    const group = covered.filter(r => Number.isFinite(r.score) && test(r.score));
+    return { label, scored: group.length, hit_rate: group.length ? group.filter(r => sign(r.tilt) === r.direction).length / group.length : null, sample: sampleStatus(group.length) };
+  };
+  const neutral = rows.filter(r => r.tilt === 'neutral').length;
+  return { count: rows.length, scored: covered.length, sample: sampleStatus(covered.length), minimum_sessions: minimumJudgedSessions,
+    abstained: neutral, abstain_rate: rows.length ? neutral / rows.length : null,
+    always_up_baseline_hit_rate: covered.length ? covered.filter(r => r.direction > 0).length / covered.length : null,
+    yesterday_baseline_hit_rate: yesterdayN ? yesterdayHits / yesterdayN : null,
+    confidence_buckets: [bucket('strong (≥65 or ≤35)', x => x >= 65 || x <= 35), bucket('moderate (55–65 or 35–45)', x => (x >= 55 && x < 65) || (x > 35 && x <= 45))],
+    hit_rate: covered.length ? covered.filter(r => sign(r.tilt) === r.direction).length / covered.length : null,
     mean_return_pct: mean(rows, r => r.return_pct), tilt_return_pct: mean(decided, r => sign(r.tilt) * r.return_pct),
     base_rate_up: rows.length ? rows.filter(r => r.direction > 0).length / rows.length : null,
     majority_baseline_hit_rate: majorityN ? majorityHits / majorityN : null,

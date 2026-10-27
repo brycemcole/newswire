@@ -108,9 +108,9 @@ async function headlines({ q, hours, limit }) {
   return { query: q, results: searchArchive(archive, q, { hours, limit }) };
 }
 
-export async function buildTools() {
+export async function buildTools({ names = dataTools } = {}) {
   const catalog = await api('/v1/data/tools.json');
-  const remote = catalog.tools.filter(tool => dataTools.has(tool.name)).map(tool => ({
+  const remote = catalog.tools.filter(tool => names.has(tool.name)).map(tool => ({
     name: tool.name, description: tool.description, parameters: tool.parameters,
     run: async args => {
       const params = new URLSearchParams(Object.entries(args ?? {}).filter(([, value]) => value !== null && value !== undefined && value !== '').map(([k, v]) => [k, String(v)]));

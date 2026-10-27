@@ -221,7 +221,7 @@ struct PortfolioOverview: View {
             if let series {
                 let change = selected.map { series.change(at: $0) } ?? series.change
                 let percent = selected.flatMap { series.percent(at: $0) } ?? (selected == nil ? series.percent : nil)
-                Text(Money.signed(change) + (percent.map { " (\(Money.percent($0)))" } ?? "") + " · Est. \(range.caption)")
+                Text(Money.signed(change) + (percent.map { " (\(Money.percent($0)))" } ?? "") + " · Est. \(range.caption)" + (series.estimatedFromHoldings ? " · current holdings" : ""))
                     .font(.caption.weight(.medium)).monospacedDigit().foregroundStyle(Money.tint(change))
                     .numericTextTransition(value: change)
             }
@@ -238,7 +238,7 @@ struct PortfolioOverview: View {
                     .font(.subheadline)
             }
             Button { explainingHistory = true } label: {
-                Label(series == nil && !recorded.isEmpty ? "About recorded balances" : "Transaction-based performance", systemImage: "info.circle")
+                Label(series == nil && !recorded.isEmpty ? "About recorded balances" : series?.estimatedFromHoldings == true ? "About this estimate" : "Transaction-based performance", systemImage: "info.circle")
                     .font(.caption).foregroundStyle(.secondary)
             }
             .buttonStyle(.borderless)
@@ -247,6 +247,8 @@ struct PortfolioOverview: View {
             } message: {
                 if series == nil, !recorded.isEmpty {
                     Text("These are brokerage-reported account values saved during successful syncs, including cash and options. Plaid's underlying values may be delayed. Only recorded observations are shown; missing earlier dates are not reconstructed. Deposits and withdrawals affect these values, so this is not an investment-return chart.\n\n" + (performance.errors[range] ?? "Complete trade-based performance is unavailable."))
+                } else if series?.estimatedFromHoldings == true {
+                    Text("Exact trade-based history is unavailable, so this values your current non-option holdings at past prices plus current cash and options. It ignores past trades, deposits and withdrawals.")
                 } else {
                     Text("Daily values reconstruct holdings and cash from recorded trades, including positions sold in full. Dollar gain excludes external deposits and withdrawals and includes income and fees. Percentage uses Modified Dietz, weighting funding by time invested. Order dates are used when available, otherwise posting dates; flows are treated as end-of-day. Values end at the latest brokerage sync. Missing history, option prices or unresolved corporate actions make performance unavailable.")
                 }

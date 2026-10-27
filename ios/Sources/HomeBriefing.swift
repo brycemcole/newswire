@@ -83,7 +83,18 @@ enum HomeSymbols {
     static func stories(_ stories: [Story], limit: Int = 5) -> [Story] {
         let names = Set(tracked.map(normalize))
         guard !names.isEmpty else { return [] }
-        return Array(stories.filter { story in story.tickers.contains { names.contains(normalize($0)) } }.prefix(limit))
+        let companies: [(String, String)] = positions.filter { $0.option == nil }.compactMap { position in
+            guard let name = position.name else { return nil }
+            let core = TickerNews.core(name, symbol: position.symbol).lowercased().split { !$0.isLetter && !$0.isNumber }.joined(separator: " ")
+            return core.count >= 4 ? (normalize(position.symbol), " \(core) ") : nil
+        }
+        return Array(stories.lazy.filter { story in
+            if story.tickers.contains(where: { names.contains(normalize($0)) }) { return true }
+            if story.textSymbols.contains(where: { names.contains(normalize($0)) }) { return true }
+            guard !companies.isEmpty else { return false }
+            let searchable = " " + "\(story.title)\n\(story.summary)".lowercased().split { !$0.isLetter && !$0.isNumber }.joined(separator: " ") + " "
+            return companies.contains { searchable.contains($0.1) }
+        }.prefix(limit))
     }
 }
 
@@ -305,7 +316,15 @@ struct SinceVisitCard: View {
 
         for symbol in HomeSymbols.tracked {
             guard let quote = board.quotes[symbol], quote.price > 0 else { continue }
+            // With a "Since <time>" header every row must be measured from that visit. A symbol with no recorded
+            // price (added after the baseline, or never quoted then) has no baseline, so it is omitted rather than
+            // shown with its day change under a "Since" label.
             let previous = since == nil ? nil : ledger.prices[symbol]
+            if since != nil, previous == nil || previous! <= 0 { continue }
+            switch board.freshness(of: symbol, now: now) {
+            case .unavailable?, .delayed?: continue
+            default: break
+            }
             let move = previous.map { (quote.price / $0 - 1) * 100 } ?? quote.changePercent
             guard abs(move) >= 1 else { continue }
             let isHeld = held.contains(symbol)
@@ -348,7 +367,8 @@ struct SinceVisitCard: View {
 
     private var newHeadlines: Int {
         guard let since = ledger.since else { return 0 }
-        return stories.filter { $0.receivedAt > since }.count
+        // Only headlines about held or watched symbols, matching how the rest of the home screen picks "your" news.
+        return HomeSymbols.stories(stories.filter { $0.receivedAt > since }, limit: .max).count
     }
 
     var body: some View {
@@ -359,7 +379,7 @@ struct SinceVisitCard: View {
                 VStack(alignment: .leading, spacing: 6) {
                     HomeCardHeader(title: ledger.since.map { "Since \(HomeFormat.since($0, now: now))" } ?? "Today") {
                         if newHeadlines > 0 {
-                            Text("\(newHeadlines) new headlines")
+                            Text(newHeadlines == 1 ? "1 new headline" : "\(newHeadlines) new headlines")
                         }
                     }
                     if HomeSymbols.tracked.isEmpty {
@@ -384,7 +404,14 @@ struct SinceVisitCard: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .background {
                 let tracked = Set(HomeSymbols.tracked)
-                ledger.leave(prices: board.quotes.filter { tracked.contains($0.key) }.mapValues(\.price))
+                // Only record prices that were current when leaving; a stale quote would become a false baseline.
+                ledger.leave(prices: board.quotes.filter { key, quote in
+                    guard tracked.contains(key), quote.price > 0 else { return false }
+                    switch board.freshness(of: key, now: .now) {
+                    case .unavailable?, .delayed?: return false
+                    default: return true
+                    }
+                }.mapValues(\.price))
             }
             if phase == .active { ledger.arrive() }
         }

@@ -80,6 +80,19 @@ struct ArticleLoaderTests {
         #expect(page?.validated == false)
     }
 
+    @Test func renderFirstPrefetchUsesServerWithoutAWebView() async {
+        let teaser = result(opening, complete: false)
+        let full = full
+        let page = await ArticleLoader.load(render: false, rendersFirst: true, fetch: { _ in teaser }, rendered: {
+            Issue.record("Feed preloading must not create a browser page")
+            return nil
+        }, extracted: {
+            ArticlePage(text: full, image: nil, video: nil)
+        })
+        #expect(page?.text == full)
+        #expect(page?.validated == true)
+    }
+
     @Test func boundedRecoveryPreservesRealShortBriefsAndLongerCandidates() async {
         let brief = result(opening)
         let page = await ArticleLoader.load(render: true, rendersFirst: false, fetch: { _ in brief }, rendered: { nil })

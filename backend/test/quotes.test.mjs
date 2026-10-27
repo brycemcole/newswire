@@ -35,7 +35,7 @@ test('quote shape separates the regular session from after hours', () => {
   assert.deepEqual(post.extended, { session: 'post', price: 112, change: 2, changePercent: 1.8182, time: new Date(2500000).toISOString() });
   assert.deepEqual(post.points, [101, 105, 110]);
   assert.deepEqual(post.extendedPoints, [111, 112]);
-  const open = shape(chart, 1500);
+  const open = shape({ ...chart, meta: { ...chart.meta, regularMarketTime: 1500 } }, 1500);
   assert.equal(open.state, 'regular');
   assert.equal(open.extended, null);
   assert.equal(shape({ meta: { symbol: 'X' } }), null);
@@ -56,7 +56,7 @@ test('a failed Yahoo lookup is not cached as "no match"', async () => {
     calls++;
     if (!healthy) return new Response('rate limited', { status: 429 });
     if (String(url).includes('/v1/finance/search')) return Response.json({ quotes: [{ symbol: 'NVDA', quoteType: 'EQUITY', longname: 'NVIDIA Corporation', shortname: 'NVIDIA Corp' }] });
-    return Response.json({ chart: { result: [{ meta: { symbol: 'NVDA', regularMarketPrice: 110, previousClose: 100 } }] } });
+    return Response.json({ chart: { result: [{ meta: { symbol: 'NVDA', regularMarketPrice: 110, previousClose: 100, regularMarketTime: Math.floor(Date.now() / 1000) } }] } });
   };
   try {
     assert.deepEqual(await resolve('Nvidia Jumps on Demand'), []);

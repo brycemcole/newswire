@@ -99,7 +99,7 @@ private nonisolated enum PTRDocumentParser {
 
         for pageIndex in 0..<document.pageCount {
             guard let page = document.page(at: pageIndex) else { continue }
-            let tokens = try recognize(page)
+            let (tokens, cgImage) = try recognize(page)
             let orderedTokens = tokens.sorted { $0.y == $1.y ? $0.x < $1.x : $0.y > $1.y }
             recognizedText.append(contentsOf: orderedTokens.map(\.text))
             var dateLines: [PTRDateLine] = []
@@ -112,6 +112,7 @@ private nonisolated enum PTRDocumentParser {
                 }
             }
 
+            let countBefore = transactions.count
             var availableTrades = textLayerTrades.indices.contains(pageIndex) ? textLayerTrades[pageIndex] : []
             for dateLine in dateLines.sorted(by: { $0.y > $1.y }) {
                 let nearby = tokens.filter { abs($0.y - dateLine.y) < 0.04 }
@@ -170,23 +171,127 @@ private nonisolated enum PTRDocumentParser {
                 )
                 transactions.append(transaction)
             }
+            if transactions.count == countBefore, let cgImage {
+                transactions.append(contentsOf: checkboxTransactions(tokens: tokens, image: cgImage))
+            }
         }
 
+        transactions.removeAll { $0.asset.localizedCaseInsensitiveContains("Example Mega Corp") }
         return PTRParseResult(transactions: transactions, recognizedText: String(recognizedText.joined(separator: " ").prefix(16000)))
     }
 
-    private static func recognize(_ page: PDFPage) throws -> [PTRRecognizedToken] {
+    private static let checkboxTypeColumns: [(x: Double, type: String)] = [(0.256, "Purchase"), (0.281, "Sale"), (0.307, "Exchange")]
+    private static let checkboxPartialX = 0.374
+    private static let checkboxAmountColumns: [(x: Double, label: String)] = [
+        (0.517, "$1,001–$15,000"), (0.552, "$15,001–$50,000"), (0.585, "$50,001–$100,000"), (0.614, "$100,001–$250,000"),
+        (0.642, "$250,001–$500,000"), (0.673, "$500,001–$1,000,000"), (0.708, "$1,000,001–$5,000,000"), (0.744, "$5,000,001–$25,000,000"),
+        (0.799, "$25,000,001–$50,000,000"), (0.852, "Over $50,000,000"), (0.914, "Over $1,000,000 (spouse/child)")
+    ]
+
+    private static func checkboxMarks(image: CGImage, y: Double) -> [(x: Double, ink: Int)] {
+        let width = image.width, height = image.height
+        let top = max(0, Int((1 - y - 0.021) * Double(height))), bottom = min(height, Int((1 - y + 0.006) * Double(height)))
+        let left = Int(0.22 * Double(width)), right = Int(0.97 * Double(width))
+        guard bottom - top > 4, right > left else { return [] }
+        let bandWidth = right - left, bandHeight = bottom - top
+        var gray = [UInt8](repeating: 255, count: width * height)
+        let drawn = gray.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width,
+                                          space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        guard drawn else { return [] }
+
+        var dark = [Bool](repeating: false, count: bandWidth * bandHeight)
+        for row in 0..<bandHeight { for column in 0..<bandWidth { dark[row * bandWidth + column] = gray[(top + row) * width + left + column] < 110 } }
+        var visited = [Bool](repeating: false, count: dark.count)
+        var centers: [(x: Double, ink: Int)] = []
+        for start in dark.indices where dark[start] && !visited[start] {
+            var stack = [start]
+            visited[start] = true
+            var count = 0, minX = Int.max, maxX = 0, minY = Int.max, maxY = 0
+            while let index = stack.popLast() {
+                let row = index / bandWidth, column = index % bandWidth
+                count += 1
+                minX = min(minX, column); maxX = max(maxX, column); minY = min(minY, row); maxY = max(maxY, row)
+                for (dr, dc) in [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)] {
+                    let nr = row + dr, nc = column + dc
+                    guard nr >= 0, nr < bandHeight, nc >= 0, nc < bandWidth else { continue }
+                    let next = nr * bandWidth + nc
+                    if dark[next], !visited[next] { visited[next] = true; stack.append(next) }
+                }
+            }
+            let markWidth = maxX - minX + 1, markHeight = maxY - minY + 1
+            if count >= 14, count <= 85, markWidth >= 7, markWidth <= 14, markHeight >= 6, markHeight <= 16 {
+                centers.append(((Double(left) + Double(minX + maxX) / 2) / Double(width), count))
+            }
+        }
+        return centers
+    }
+
+    private static func checkboxTransactions(tokens: [PTRRecognizedToken], image: CGImage) -> [HousePTRTransaction] {
+        var dateLines: [PTRDateLine] = []
+        for token in tokens where token.x >= 0.38 && token.x < 0.55 && !matches(in: token.text, pattern: datePattern).isEmpty {
+            if let index = dateLines.firstIndex(where: { abs($0.y - token.y) < 0.012 }) {
+                dateLines[index].tokens.append(token)
+            } else {
+                dateLines.append(PTRDateLine(y: token.y, tokens: [token]))
+            }
+        }
+        let rows = dateLines.sorted { $0.y > $1.y }
+        let rowCenters = rows.map { $0.y + 0.009 }
+        let amountOffset = tokens.first { $0.text.contains("$1,001") && abs($0.x - checkboxAmountColumns[0].x) < 0.03 }.map { $0.x - checkboxAmountColumns[0].x } ?? 0
+        let typeOffset = tokens.first { $0.text.localizedCaseInsensitiveContains("purch") && abs($0.x - checkboxTypeColumns[0].x) < 0.03 }.map { $0.x - checkboxTypeColumns[0].x } ?? 0
+
+        var result: [HousePTRTransaction] = []
+        for (rowIndex, row) in rows.enumerated() {
+            let dates = row.tokens.sorted { $0.x < $1.x }.flatMap { matches(in: $0.text, pattern: datePattern).map(isoDate) }
+            guard let tradeDate = dates.first, tradeDate >= "2000" else { continue }
+            let notificationDate = dates.count > 1 ? dates[1] : nil
+
+            let marks = checkboxMarks(image: image, y: row.y)
+            guard let typeColumn = marks.filter({ $0.x < 0.33 }).sorted(by: { $0.ink > $1.ink })
+                .compactMap({ mark in checkboxTypeColumns.first { abs($0.x + typeOffset - mark.x) < 0.014 } }).first else { continue }
+            let partial = marks.contains { abs($0.x - checkboxPartialX - typeOffset) < 0.018 }
+            let type = typeColumn.type == "Sale" && partial ? "Partial sale" : typeColumn.type
+            let amount = marks.filter { $0.x > checkboxAmountColumns[0].x + amountOffset - 0.012 }.sorted { $0.ink > $1.ink }.compactMap { mark in
+                checkboxAmountColumns.min { abs($0.x + amountOffset - mark.x) < abs($1.x + amountOffset - mark.x) }.flatMap { abs($0.x + amountOffset - mark.x) < 0.025 ? $0.label : nil }
+            }.first ?? "Amount not reported"
+
+            let center = rowCenters[rowIndex]
+            var seen = Set<String>()
+            let assetLines = tokens.filter { token in
+                token.x >= 0.10 && token.x < 0.245 &&
+                rowCenters.indices.min(by: { abs(rowCenters[$0] - token.y) < abs(rowCenters[$1] - token.y) }) == rowIndex &&
+                abs(token.y - center) < 0.024
+            }.sorted { $0.y > $1.y }.map { normalize($0.text) }.filter { !$0.isEmpty && seen.insert($0).inserted }
+            let joinedAsset = normalize(assetLines.joined(separator: " "))
+            let symbol = capture(joinedAsset, pattern: textLayerTickerPattern, group: 1)
+            let asset = joinedAsset.count > 2
+                ? normalize(joinedAsset.replacingOccurrences(of: #"\s*\[[A-Z]+\]"#, with: "", options: .regularExpression)
+                    .replacingOccurrences(of: #"\s*\([A-Z][A-Z0-9.\-]{0,8}\)\s*$"#, with: "", options: .regularExpression))
+                : "Asset name not recognized"
+            let ownerCode = tokens.filter { $0.x >= 0.03 && $0.x < 0.10 && abs($0.y - center) < 0.015 }.compactMap(ownerCode(in:)).first ?? "F"
+            result.append(HousePTRTransaction(asset: asset, owner: ownerLabel(ownerCode), type: type, tradeDate: tradeDate,
+                                              notificationDate: notificationDate, amount: amount, symbol: symbol))
+        }
+        return result
+    }
+
+    private static func recognize(_ page: PDFPage) throws -> ([PTRRecognizedToken], CGImage?) {
         let image = page.thumbnail(of: CGSize(width: 1800, height: 2500), for: .mediaBox)
-        guard let cgImage = image.cgImage else { return [] }
+        guard let cgImage = image.cgImage else { return ([], nil) }
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = false
         request.minimumTextHeight = 0.0025
         try VNImageRequestHandler(cgImage: cgImage, orientation: .up).perform([request])
-        return (request.results ?? []).compactMap { observation in
+        let tokens = (request.results ?? []).compactMap { observation -> PTRRecognizedToken? in
             guard let text = observation.topCandidates(1).first?.string else { return nil }
             return PTRRecognizedToken(text: text, x: observation.boundingBox.midX, y: observation.boundingBox.midY)
         }
+        return (tokens, cgImage)
     }
 
     private static func transactionType(_ text: String) -> (String, String)? {

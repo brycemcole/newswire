@@ -22,6 +22,9 @@ interface Env {
   AI?: { run(model: string, input: unknown): Promise<Record<string, unknown>> };
   BRAIN_AI_MODEL?: string;
   FRED_API_KEY?: string;
+  TWELVE_DATA_API_KEY?: string;
+  MASSIVE_API_KEY?: string;
+  FMP_API_KEY?: string;
   COMPUTE?: DurableObjectNamespace;
   ORIGIN_URL?: string;
   ORIGIN_TOKEN?: string;
@@ -224,7 +227,7 @@ async function shipsIngest(value: unknown, env: Env) {
   for (let i = 0; i < statements.length; i += 100) await env.DB.batch(statements.slice(i, i + 100));
   return json({ area, stored: rows.length }, 201);
 }
-async function quoteRoute(url: URL) {
+async function quoteRoute(url: URL, env: Env) {
   const q = query(url.searchParams, ['symbols', 'text']);
   const mentions: Mention[] = [];
   if (q.symbols !== undefined) {
@@ -236,7 +239,7 @@ async function quoteRoute(url: URL) {
     for (const mention of await resolve(text(q.text, 'text', 3000))) if (!mentions.some(item => item.symbol === mention.symbol)) mentions.push(mention);
   }
   if (!mentions.length && q.symbols === undefined && q.text === undefined) invalid('Provide symbols or text');
-  return json({ quotes: await quotes(mentions.slice(0, 12)) });
+  return json({ quotes: await quotes(mentions.slice(0, 12), env) });
 }
 async function list(url: URL, env: Env) {
   const q = query(url.searchParams, ['limit', 'cursor', 'category', 'priority', 'ticker', 'tag', 'agent', 'source', 'since', 'until', 'retracted', 'q']);
@@ -711,7 +714,7 @@ async function route(request: Request, env: Env, ctx?: ExecutionContext, ai?: AI
   }
   if (path === '/v1/quotes') {
     if (request.method !== 'GET') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
-    return quoteRoute(url);
+    return quoteRoute(url, env);
   }
   if (path === '/v1/ingest' && request.method === 'GET') {
     const data: Record<string, unknown> = query(url.searchParams, fields);

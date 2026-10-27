@@ -1,7 +1,7 @@
 import Foundation
 
 nonisolated enum ArticleQuality {
-    enum Assessment { case invalid, suspicious, usable }
+    enum Assessment: Sendable { case invalid, suspicious, usable }
 
     static func assess(_ text: String) -> Assessment {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -54,7 +54,7 @@ nonisolated enum ArticleLoader {
         }
         // The server's extractor is cheaper than a hidden web view, so it goes first except on sites
         // whose article only exists after rendering; those get it as the last attempt.
-        if !rendersFirst {
+        if !rendersFirst || !render {
             let server = await extracted()
             guard !Task.isCancelled else { return nil }
             if var server, ArticleQuality.assess(server.text) == .usable {

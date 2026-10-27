@@ -1,12 +1,12 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { model as freeDeepSeek } from '../ai/opencode.mjs';
+import { model as freeDeepSeek } from '../ai/deepseek.mjs';
 import { complete, goComplete, goModel } from '../ai/completion.mjs';
 
 // Free and paid Jev 1.13 are the same model, so cached verdicts stay valid across the fallback.
 export const classifierIdentity = process.env.NEWSWIRE_CLASSIFIER_PROVIDER === 'jev' ? 'zen:jev-1.13'
-  : process.env.NEWSWIRE_CLASSIFIER_PROVIDER === 'opencode-go' ? `opencode-go:${goModel}` : `opencode:${freeDeepSeek}:go-fallback`;
+  : process.env.NEWSWIRE_CLASSIFIER_PROVIDER === 'opencode-go' ? `opencode-go:${goModel}` : `deepseek:${freeDeepSeek}:go-fallback`;
 const endpoint = 'https://opencode.ai/zen/v1/systemone';
 const freeModel = 'jev-1.13-free';
 const paidModel = 'jev-1.13';

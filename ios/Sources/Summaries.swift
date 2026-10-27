@@ -63,7 +63,7 @@ nonisolated struct ArticlePage: Sendable {
     @ObservationIgnored private var running = false
     @ObservationIgnored private var loading: Task<Void, Never>?
     @ObservationIgnored private var saving: Task<Void, Never>?
-    /// Home-page preloading: full rendered articles fetched in hidden web views, highest priority first.
+    /// Home-page preloading uses network extraction only; browser rendering is reserved for the open article.
     @ObservationIgnored private var preloadQueue: [Story] = []
     @ObservationIgnored private var preloadAttempted: Set<String> = []
     @ObservationIgnored private var preloadPending: [String: Task<Void, Never>] = [:]
@@ -217,9 +217,8 @@ nonisolated struct ArticlePage: Sendable {
         }
     }
 
-    /// Queues the home feed's stories for full rendered loading in hidden web views. Breaking and urgent stories go
-    /// first, then feed order. At most three pages load at once and only one per site, with staggered starts, so no
-    /// publisher sees a burst. Stories already holding validated text are skipped.
+    /// Warms article text without creating hidden browser pages while the app is in use.
+    /// Breaking and urgent stories go first, with at most three requests and one per site.
     func preload(_ stories: [Story]) {
         func rank(_ story: Story) -> Int { story.priority == "breaking" ? 0 : story.priority == "urgent" ? 1 : 2 }
         preloadQueue = stories.prefix(40).enumerated()
@@ -234,7 +233,7 @@ nonisolated struct ArticlePage: Sendable {
         }
     }
 
-    /// A preload already running for this story, so the reader can wait for it instead of opening a second web view.
+    /// A network preload already running for this story, so the reader can reuse its result.
     func pendingPreload(_ story: Story) -> Task<Void, Never>? { preloadPending[story.url.absoluteString] }
 
     private func wantsPreload(_ story: Story) -> Bool {
@@ -270,9 +269,15 @@ nonisolated struct ArticlePage: Sendable {
         preloadAttempted.insert(key)
         preloadDomains[domain, default: 0] += 1
         preloadPending[key] = Task {
-            if let page = await Self.page(story.url) { apply(page, for: story) }
-            preloadDomains[domain, default: 1] -= 1
-            preloadPending[key] = nil
+            defer {
+                preloadDomains[domain, default: 1] -= 1
+                preloadPending[key] = nil
+            }
+            if let page = await Self.page(story.url, render: false) {
+                await idle()
+                guard !Task.isCancelled else { return }
+                apply(page, for: story)
+            }
         }
     }
 
@@ -519,7 +524,16 @@ nonisolated struct ArticlePage: Sendable {
     })()
     """
 
-    private struct Extracted: Decodable { let image: String; let video: String?; let paragraphs: [String] }
+    private nonisolated struct Extracted: Decodable, Sendable { let image: String; let video: String?; let paragraphs: [String] }
+
+    @concurrent nonisolated private static func decode(_ json: String, relativeTo url: URL) async -> (page: ArticlePage, quality: ArticleQuality.Assessment)? {
+        guard let found = try? JSONDecoder().decode(Extracted.self, from: Data(json.utf8)) else { return nil }
+        let text = ArticleExtractor.clean(found.paragraphs, minimum: 30).joined(separator: "\n")
+        let image = URL(string: found.image, relativeTo: url)?.absoluteURL
+        let page = ArticlePage(text: text, image: image?.scheme == "https" ? image : nil,
+                               video: ArticleExtractor.playable(found.video ?? "", relativeTo: url))
+        return (page, ArticleQuality.assess(text))
+    }
 
     static func load(_ url: URL, refresh: Bool = false) async -> ArticlePage? {
         let configuration = WKWebViewConfiguration()
@@ -533,26 +547,24 @@ nonisolated struct ArticlePage: Sendable {
         window?.addSubview(view)
         defer { view.stopLoading(); view.removeFromSuperview() }
         view.load(URLRequest(url: url, cachePolicy: refresh ? .reloadIgnoringLocalCacheData : .useProtocolCachePolicy, timeoutInterval: 20))
-        var best: Extracted?
+        var best: ArticlePage?
         var bestLength = 0
         var previous = ""
         var stable = 0
         for _ in 0..<30 {
             do { try await Task.sleep(for: .milliseconds(500)) } catch { return nil }
+            if Summarizer.shared.scrolling { continue }
             guard let json = try? await view.evaluateJavaScript(extract) as? String,
-                  let found = try? JSONDecoder().decode(Extracted.self, from: Data(json.utf8)) else { continue }
-            let text = ArticleExtractor.clean(found.paragraphs, minimum: 30).joined(separator: "\n")
-            if ArticleQuality.assess(text) != .invalid,
-               text.count > bestLength { best = found; bestLength = text.count }
+                  let found = await decode(json, relativeTo: url) else { continue }
+            guard !Task.isCancelled else { return nil }
+            let text = found.page.text
+            if found.quality != .invalid,
+               text.count > bestLength { best = found.page; bestLength = text.count }
             stable = text == previous ? stable + 1 : 0
             previous = text
-            if !view.isLoading, ArticleQuality.assess(text) == .usable, stable >= 4 { break }
+            if !view.isLoading, found.quality == .usable, stable >= 4 { break }
         }
-        guard let best, !best.paragraphs.isEmpty || !best.image.isEmpty else { return nil }
-        let image = URL(string: best.image, relativeTo: url)?.absoluteURL
-        let paragraphs = ArticleExtractor.clean(best.paragraphs, minimum: 30)
-        return ArticlePage(text: paragraphs.joined(separator: "\n"), image: image?.scheme == "https" ? image : nil,
-                           video: ArticleExtractor.playable(best.video ?? "", relativeTo: url))
+        return best
     }
 }
 

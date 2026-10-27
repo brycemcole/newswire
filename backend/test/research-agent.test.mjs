@@ -1,13 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-process.env.NEWSWIRE_AGENT_PROVIDER = 'go';
 const { parseJSON, runAgent } = await import('../../scripts/research-service/llm.mjs');
 const { parseBingNews, parseDuckDuckGo, searchArchive } = await import('../../scripts/research-service/tools.mjs');
 const { answerQueue } = await import('../../scripts/research-service/agent.mjs');
 
 test('runAgent executes tool calls, returns tool output to the model and parses the final JSON', async () => {
-  process.env.NEWSWIRE_OPENCODE_KEY = 'test-only';
+  process.env.DEEPSEEK_API_KEY = 'test-only';
   const requests = [];
   const original = globalThis.fetch;
   globalThis.fetch = async (url, init) => {
@@ -20,12 +19,12 @@ test('runAgent executes tool calls, returns tool output to the model and parses 
   };
   try {
     const tools = [{ name: 'quote', description: 'q', parameters: { type: 'object', properties: {} }, run: async args => `SPY 500 for ${args.symbol}` }];
-    const { result, trace } = await runAgent({ model: 'deepseek-v4.1-flash', system: 's', prompt: 'p', tools });
+    const { result, trace } = await runAgent({ system: 's', prompt: 'p', tools });
     assert.deepEqual(result, { verdict: 'confirmed' });
     assert.equal(trace.length, 2);
-    assert.match(requests[0].url, /opencode\.ai\/inference\/go\/v1\/chat\/completions/);
-    assert.equal(requests[0].headers['User-Agent'], 'newswire-research-agent/1.0');
-    assert.equal(requests[0].headers['x-opencode-session'], requests[1].headers['x-opencode-session']);
+    assert.equal(requests[0].url, 'https://api.deepseek.com/chat/completions');
+    assert.equal(requests[0].headers.Authorization, 'Bearer test-only');
+    assert.deepEqual(requests[0].body.thinking, { type: 'disabled' });
     const toolMessages = requests[1].body.messages.filter(m => m.role === 'tool');
     assert.deepEqual(toolMessages.map(m => m.content), ['SPY 500 for SPY', 'Error: Unknown tool missing']);
     assert.equal(requests[1].body.messages.some(m => m.content === null), false);

@@ -42,13 +42,27 @@ Article content versions, original arrival times, classification decisions and d
 
 ## Research agent
 
-`scripts/research-service/agent.mjs` runs on the Mini every five minutes. It calls DeepSeek through OpenCode Go (`deepseek-v4.1-flash` for questions, `deepseek-v4-pro` for predictions) with tools for the Newswire data catalog, the Mini's seven-day raw headline archive, open-web news and web search, article reading through `/v1/extract`, and a Jev second opinion. `NEWSWIRE_AGENT_PROVIDER=zen` switches to pay-as-you-go OpenCode Zen. The key is read from `NEWSWIRE_OPENCODE_KEY`, `~/.config/newswire/opencode-key`, or the existing `zen-key`.
+`scripts/research-service/agent.mjs` runs on the Mini every five minutes. It calls the DeepSeek API directly (`deepseek-flash`) with tools for the Newswire data catalog, the Mini's seven-day raw headline archive, open-web news and web search, article reading through `/v1/extract`, and a Jev second opinion. The key is read as described in the README's DeepSeek section.
 
 Open research questions are answered per event: the confirm and contradict halves share one verdict (`confirmed`, `contradicted`, `unresolved`), a likely market effect and cited sources, stored by `POST /v1/research/answers`. Unresolved events are retried after six hours while under two days old.
 
 Predictions cover SPY, QQQ, IWM and DIA. They are accepted only in two windows: 8:40–9:25 a.m. Eastern (to the open, to the close) and the last 30 to 5 minutes of the session (to the next open, to the next close). `POST /v1/research/predictions` freezes the server's own completed five-minute price as the baseline and keeps one call per symbol, session, window and horizon. Settlement uses the opening bar's open or the closing bar's close. `GET /v1/research/agent?symbol=SPY` and the `agent` field of `GET /v1/research` report calls, outcomes, hit rate against always-up, Brier score against a coin flip and signal return. These are measurements, not evidence of an edge until many calls have settled.
 
 `node scripts/research-service/agent.mjs --dry-run` runs both tasks without recording anything; outside the windows it rehearses late-session calls. `--only=answer` or `--only=predict` limits a run.
+
+## Expert desk
+
+`scripts/research-service/expert.mjs` writes one AI-generated feature per weekday after the close, rotating themes (Monday and Thursday: the AI trade; Tuesday: energy; Wednesday: banks and credit; Friday: the consumer). Code first fetches a price snapshot of the theme's basket (quote, day change, one-month and year-to-date returns) through the data tools; quotes older than four days are marked stale, and the run stops if fewer than half are current. The model then researches drivers with the same tools as the research agent plus screens, positioning and filings, and returns structured JSON. The story body is assembled by code: an AI-generated disclosure, key points, sections, what to watch, the deterministic price board and cited sources. The model never supplies the board's numbers.
+
+It calls the DeepSeek API directly (`deepseek-flash`); `NEWSWIRE_EXPERT_MODEL` overrides the model. Stories use `agent: newswire-expert`, source `Newswire Expert (AI)`, tags `expert` and `ai-generated`, and external ID `expert:<theme>:<New York date>`; `~/.config/newswire/expert-state.json` skips a theme already published that day.
+
+```sh
+node scripts/research-service/expert.mjs --list
+node scripts/research-service/expert.mjs --theme=ai --dry-run
+node scripts/research-service/expert.mjs --topic="How the GLP-1 trade is developing" --tickers=LLY,NVO,AMGN,VKTX,HIMS --dry-run
+```
+
+`--force` reruns a theme already recorded for the day, but the server still returns the stored story for the same external ID. Custom topics accept `--key`, `--angle`, `--benchmarks` and `--category`. Install `newswire-expert.{service,timer}` with the other units.
 
 ## Operations
 
@@ -58,6 +72,7 @@ The systemd units in `scripts/research-service/` run on the Mini:
 - `newswire-crawler.timer`: bounded discovery every ten minutes.
 - `newswire-learning.timer`: candidate training and evaluation daily at 21:30 New York time.
 - `newswire-agent.timer`: the research agent every five minutes.
+- `newswire-expert.timer`: the expert feature at 16:40 New York time on weekdays.
 
 These are separate from the minute-by-minute headline monitor. They use the existing protected writer-token mechanism. No token belongs in a unit, command argument, log or repository file. Browser dependencies are isolated under `scripts/crawler/`.
 

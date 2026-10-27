@@ -12,6 +12,8 @@ nonisolated struct NewsItem: Codable, Hashable, Identifiable, Sendable {
     let tickers: [String]
     let url: URL
 
+    var isBreaking: Bool { priority == "breaking" }
+
     var isUrgent: Bool { priority == "breaking" || priority == "urgent" }
 
     var link: URL {
@@ -26,7 +28,6 @@ nonisolated struct NewsItem: Codable, Hashable, Identifiable, Sendable {
     var tag: (label: String, symbol: String, color: Color) {
         switch priority {
         case "breaking": return ("Breaking", "bolt.fill", .red)
-        case "urgent": return ("Urgent", "exclamationmark.circle.fill", .orange)
         default:
             let style = NewsItem.categoryStyle(category)
             return (category.isEmpty ? "Latest" : category.capitalized, style.symbol, style.color)

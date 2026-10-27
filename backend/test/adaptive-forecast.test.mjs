@@ -32,8 +32,8 @@ test('aggregate score delta cannot amplify correlated inputs', () => {
   assert.deepEqual(run(rows, { ...features, score_delta: 1000 }), run(rows, { ...features, score_delta: -1000 }));
   const learned = run(rows);
   assert.ok(Object.values(learned.weights).every(Number.isFinite));
-  for (const key of ['futures_points', 'rates_points', 'volatility_points', 'overseas_points', 'commodity_points', 'market_other_points']) assert.ok(Number.isFinite(learned.weights[key]));
-  const groups = ['futures_points', 'rates_points', 'volatility_points', 'overseas_points', 'commodity_points', 'market_other_points'].map(key => learned.weights[key]);
+  for (const key of ['futures_points', 'rates_points', 'volatility_points', 'overseas_points', 'commodity_points', 'breadth_points', 'market_other_points']) assert.ok(Number.isFinite(learned.weights[key]));
+  const groups = ['futures_points', 'rates_points', 'volatility_points', 'overseas_points', 'commodity_points', 'breadth_points', 'market_other_points'].map(key => learned.weights[key]);
   assert.equal(learned.weights.market_points, Math.round(groups.reduce((s, v) => s + v, 0) / groups.length * 100) / 100);
 });
 test('targets preserve magnitude and volatility uses only outcomes known at each capture', () => {

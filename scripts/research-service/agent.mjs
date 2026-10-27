@@ -1,10 +1,10 @@
 import { fileURLToPath } from 'node:url';
-import { agentUsage, runAgent, freeModel } from './llm.mjs';
+import { agentUsage, runAgent, model } from './llm.mjs';
 import { api, buildTools } from './tools.mjs';
 
 export const symbols = ['SPY', 'QQQ', 'IWM', 'DIA'];
-const answerModel = process.env.NEWSWIRE_AGENT_ANSWER_MODEL ?? freeModel;
-const predictModel = process.env.NEWSWIRE_AGENT_PREDICT_MODEL ?? freeModel;
+const answerModel = process.env.NEWSWIRE_AGENT_ANSWER_MODEL ?? model;
+const predictModel = process.env.NEWSWIRE_AGENT_PREDICT_MODEL ?? model;
 const names = { SPY: 'S&P 500 (SPY)', QQQ: 'Nasdaq 100 (QQQ)', IWM: 'Russell 2000 small caps (IWM)', DIA: 'Dow Jones Industrial Average (DIA)' };
 const horizonText = {
   to_open: 'from the current price to the official open (first 5-minute bar open) of the target session',
