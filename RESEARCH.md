@@ -42,7 +42,7 @@ Article content versions, original arrival times, classification decisions and d
 
 ## Research agent
 
-`scripts/research-service/agent.mjs` runs on the Mini every five minutes. It calls DeepSeek through OpenCode Go (`deepseek-v4.1-flash` for questions, `deepseek-v4-pro` for predictions) with tools for the Newswire data catalog, the Mini's seven-day raw headline archive, open-web news and web search, article reading through `/v1/extract`, and a Jev second opinion. `NEWSWIRE_AGENT_PROVIDER=zen` switches to pay-as-you-go OpenCode Zen. The key is read from `NEWSWIRE_OPENCODE_KEY`, `~/.config/newswire/opencode-key`, or the existing `zen-key`.
+`scripts/research-service/agent.mjs` runs on the Mini every five minutes. It calls the DeepSeek API directly (`deepseek-flash`) with tools for the Newswire data catalog, the Mini's seven-day raw headline archive, open-web news and web search, article reading through `/v1/extract`, and a Jev second opinion. The key is read as described in the README's DeepSeek section.
 
 Open research questions are answered per event: the confirm and contradict halves share one verdict (`confirmed`, `contradicted`, `unresolved`), a likely market effect and cited sources, stored by `POST /v1/research/answers`. Unresolved events are retried after six hours while under two days old.
 
@@ -54,7 +54,7 @@ Predictions cover SPY, QQQ, IWM and DIA. They are accepted only in two windows: 
 
 `scripts/research-service/expert.mjs` writes one AI-generated feature per weekday after the close, rotating themes (Monday and Thursday: the AI trade; Tuesday: energy; Wednesday: banks and credit; Friday: the consumer). Code first fetches a price snapshot of the theme's basket (quote, day change, one-month and year-to-date returns) through the data tools; quotes older than four days are marked stale, and the run stops if fewer than half are current. The model then researches drivers with the same tools as the research agent plus screens, positioning and filings, and returns structured JSON. The story body is assembled by code: an AI-generated disclosure, key points, sections, what to watch, the deterministic price board and cited sources. The model never supplies the board's numbers.
 
-It calls OpenCode Go (`deepseek-v4.1-flash`) with `NEWSWIRE_GO_API_KEY` or the OpenCodex Go credential, falling back to the research-agent key. `NEWSWIRE_EXPERT_PROVIDER=opencode` uses the free runtime; `NEWSWIRE_EXPERT_MODEL` overrides the model. Stories use `agent: newswire-expert`, source `Newswire Expert (AI)`, tags `expert` and `ai-generated`, and external ID `expert:<theme>:<New York date>`; `~/.config/newswire/expert-state.json` skips a theme already published that day.
+It calls the DeepSeek API directly (`deepseek-flash`); `NEWSWIRE_EXPERT_MODEL` overrides the model. Stories use `agent: newswire-expert`, source `Newswire Expert (AI)`, tags `expert` and `ai-generated`, and external ID `expert:<theme>:<New York date>`; `~/.config/newswire/expert-state.json` skips a theme already published that day.
 
 ```sh
 node scripts/research-service/expert.mjs --list

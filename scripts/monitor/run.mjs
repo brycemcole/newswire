@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import { notify, wake } from './apns.mjs';
 import { syncCalendar } from './calendar.mjs';
-import { publish } from './publish.mjs';
+import { publish, recent } from './publish.mjs';
+import { reviewAlerts } from './alert-review.mjs';
 import { classifierIdentity, classifierUsage } from './jev.mjs';
 import { classifyImpacts } from './impacts.mjs';
 import { load, save, statePath } from './state.mjs';
@@ -102,7 +103,10 @@ for (const event of seed ? [] : batch) {
   }
 }
 
-const alerts = noNotify ? [] : published.filter(entry => entry.result === 'new' && ['breaking', 'urgent'].includes(entry.story.priority)).map(entry => entry.story);
+const proposed = noNotify ? [] : published.filter(entry => entry.result === 'new' && ['breaking', 'urgent'].includes(entry.story.priority)).map(entry => entry.story);
+const review = proposed.length ? await reviewAlerts(proposed, await recent(6).catch(() => [])) : { approved: [], held: [], failures: [] };
+failures.push(...review.failures);
+const alerts = review.approved;
 failures.push(...await notify(alerts).catch(error => [`notify: ${error.message}`]));
 if (!noNotify && !alerts.length && published.some(entry => entry.result === 'new')) failures.push(...await wake().catch(error => [`wake: ${error.message}`]));
 
@@ -124,6 +128,7 @@ const report = {
   impacts: impacts && { calls: impacts.calls, moving: impacts.moving, posted: impacts.posted, backlog: impacts.backlog },
   backfill_hours: lookbackHours ?? null,
   notifications: noNotify ? 'suppressed' : 'normal',
+  alerts: { proposed: proposed.length, sent: alerts.length, held: review.held.map(({ story, draft }) => ({ title: story.title, draft })) },
   candidates: candidates.length,
   fresh: fresh.length,
   published: published.filter(entry => entry.result === 'new').length,

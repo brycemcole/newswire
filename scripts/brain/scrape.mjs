@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { token } from '../monitor/publish.mjs';
 import { notify, wake } from '../monitor/apns.mjs';
-import { complete as freeComplete, model as freeModel } from '../ai/opencode.mjs';
+import { complete as freeComplete, model as freeModel } from '../ai/deepseek.mjs';
 
 const origin = process.env.NEWSWIRE_URL ?? 'https://bryce-newswire.bryce-e19.workers.dev';
 const stateFile = process.env.BRAIN_SCRAPE_STATE ?? join(homedir(), '.config', 'newswire', 'brain-state.json');

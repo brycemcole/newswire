@@ -1,6 +1,20 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { acceptedTopic, balanceHeadlines, classificationText, optionsFlowQuestion, optionsFlowReport, parseFeed, significanceTag } from '../../scripts/monitor/rules/headlines.mjs';
+import { acceptedTopic, balanceHeadlines, classificationText, optionsFlowQuestion, optionsFlowReport, parseFeed, settleHeadlineSources, significanceTag } from '../../scripts/monitor/rules/headlines.mjs';
+
+test('X collection starts while feeds are pending and failures remain isolated', async () => {
+  let finishFeed;
+  const feed = new Promise(resolve => { finishFeed = resolve; });
+  let started = false;
+  const result = settleHeadlineSources([feed], () => { started = true; throw new Error('X unavailable'); });
+  await Promise.resolve();
+  assert.equal(started, true);
+  finishFeed(['feed item']);
+  const settled = await result;
+  assert.deepEqual(settled[0], { status: 'fulfilled', value: ['feed item'] });
+  assert.equal(settled[1].status, 'rejected');
+  assert.match(settled[1].reason.message, /X unavailable/);
+});
 
 test('Yahoo RSS links decode query entities and remove syndication tracking', () => {
   const items = parseFeed(`<rss><channel><item>

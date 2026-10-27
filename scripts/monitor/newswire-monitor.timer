@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the Newswire monitor every minute
+
+[Timer]
+OnBootSec=60
+OnUnitInactiveSec=60
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

@@ -2,12 +2,11 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { agentUsage, freeModel, runAgent } from './llm.mjs';
+import { agentUsage, model as defaultModel, runAgent } from './llm.mjs';
 import { api, buildTools, origin } from './tools.mjs';
 import { publish } from '../monitor/publish.mjs';
 
-const provider = process.env.NEWSWIRE_EXPERT_PROVIDER ?? 'go';
-const model = process.env.NEWSWIRE_EXPERT_MODEL ?? (provider === 'opencode' ? freeModel : 'deepseek-v4.1-flash');
+const model = process.env.NEWSWIRE_EXPERT_MODEL ?? defaultModel;
 const stateFile = join(homedir(), '.config', 'newswire', 'expert-state.json');
 const toolNames = new Set(['market_pulse', 'wire_search', 'stock_news', 'quote', 'board', 'calendar', 'releases', 'fed_odds', 'yield_curve', 'macro',
   'stock_history', 'stock_fundamentals', 'sec_filings', 'screener', 'stock_screens', 'institutional_flow', 'holders', 'insider_trades', 'contracts', 'symbol_search']);
@@ -141,7 +140,7 @@ Breadth: ${stats.up} up, ${stats.down} down of ${stats.usable} current quotes; m
 
 Research what is driving these moves this week and write the feature.`;
   const tools = await buildTools({ names: toolNames });
-  const { result, trace } = await runAgent({ model, provider, system, prompt, tools, maxSteps: 16, maxTokens: 16000, temperature: 0.3, timeout: 240000 });
+  const { result, trace } = await runAgent({ model, system, prompt, tools, maxSteps: 16, maxTokens: 16000, temperature: 0.3, timeout: 240000 });
   if (!result?.title || !Array.isArray(result.sections) || !result.sections.length) throw new Error('Model returned no feature');
   const day = easternDay(now);
   const known = new Set([...tickers, ...(theme.benchmarks ?? [])]);
@@ -198,7 +197,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   } else {
     const report = await write({ key, theme, now, dryRun }).catch(error => ({ error: error.message }));
     if (!dryRun && !report.error) await saveState({ ...Object.fromEntries(Object.entries(state).filter(([, v]) => now - Date.parse(v.at) < 30 * 86400000)), [id]: { id: report.id, at: new Date(now).toISOString() } });
-    console.log(JSON.stringify({ ...report, provider, model, usage: agentUsage() }, null, dryRun ? 2 : 0));
+    console.log(JSON.stringify({ ...report, model, usage: agentUsage() }, null, dryRun ? 2 : 0));
     if (report.error) process.exitCode = 1;
   }
 }

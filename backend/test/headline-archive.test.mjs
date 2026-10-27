@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { archiveHeadlines } from '../../scripts/monitor/headline-archive.mjs';
@@ -77,6 +77,22 @@ test('legacy raw archive backfill preserves original arrival time before cache r
   assert.equal(saved.published_at, new Date(old.stamp).toISOString());
   assert.equal(saved.content.summary, old.summary);
   assert.deepEqual(saved.provenance.via, ['feed-a']);
+});
+
+test('seven-day archive retains more than 10000 records and expires older entries', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'newswire-archive-retention-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = join(dir, 'archive.json'), now = Date.parse('2026-10-27T00:00:00Z');
+  const records = Object.fromEntries(Array.from({ length: 10001 }, (_, i) => [String(i), {
+    title: `Story ${i}`, guid: String(i), publisher: 'Publisher', stamp: now - i * 1000,
+  }]));
+  records.expired = { title: 'Expired', guid: 'expired', publisher: 'Publisher', stamp: now - 8 * 86400000 };
+  await writeFile(file, JSON.stringify(records));
+  await writeFile(`${file}.migration-v1`, '{}');
+  const result = await archiveHeadlines([], { now, file });
+  assert.equal(result.records.length, 10001);
+  assert.equal(Object.keys(JSON.parse(await readFile(file, 'utf8'))).length, 10001);
+  assert.ok(result.records.some(item => item.guid === '10000'));
+  assert.ok(!result.records.some(item => item.guid === 'expired'));
 });
 
 test('old incoming items persist durably outside the seven-day hot cache', async t => {

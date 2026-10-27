@@ -54,13 +54,12 @@ export async function archiveHeadlines(items, { now = Date.now(), file = join(ho
       records[key] ??= { ...item, first_seen_at: observedAt };
       byOriginal.set(`${item.publisher}\n${item.guid}`, key);
     }
-    const entries = Object.entries(records).sort((a, b) => b[1].stamp - a[1].stamp);
-    const kept = Object.fromEntries(entries.slice(0, 10000));
+    const kept = Object.fromEntries(Object.entries(records).sort((a, b) => b[1].stamp - a[1].stamp));
     await appendHeadlineVersions(evidenceFile, evidence);
     await mkdir(dirname(file), { recursive: true, mode: 0o700 });
     const temporary = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
     await writeFile(temporary, JSON.stringify(kept) + '\n', { mode: 0o600 });
     await rename(temporary, file);
-    return { records: Object.values(kept), truncated: entries.length > 10000 };
+    return { records: Object.values(kept) };
   });
 }

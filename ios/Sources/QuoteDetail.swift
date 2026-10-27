@@ -71,7 +71,12 @@ nonisolated struct WatchEntry: Codable, Hashable, Sendable {
 
     init(symbol: String) { self.symbol = symbol }
 
-    var chart: MarketChart? { range == .day ? live : charts[range] }
+    var chart: MarketChart? {
+        guard range != .day else { return live }
+        guard let chart = charts[range] else { return nil }
+        guard range != .week, let live else { return chart }
+        return chart.includingRecentActivity(from: live)
+    }
 
     func refreshLive() async {
         do {
@@ -1262,7 +1267,7 @@ private struct PriceChart: View {
         let low = closes.min() ?? 0, high = closes.max() ?? 1
         let pad = max((high - low) * 0.08, high * 0.0005)
         let floor = low - pad
-        let split = range.query.prePost && points.contains(where: \.extended)
+        let split = points.contains(where: \.extended)
         let domain = max(chart.slots, points.count)
         let ticks = range.ticks(for: points, zone: chart.timeZone, domain: domain)
         let digits = high >= 1000 ? 0 : chart.decimals

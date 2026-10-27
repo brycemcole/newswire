@@ -15,6 +15,10 @@ import { canonicalUrl, dedupeCandidates, exactDuplicate, nearIdentical, recordDe
 
 export const id = 'headlines';
 
+export function settleHeadlineSources(feedTasks, xTask) {
+  return Promise.allSettled(xTask ? [...feedTasks, Promise.resolve().then(xTask)] : feedTasks);
+}
+
 const config = JSON.parse(readFileSync(new URL('./headlines.watchlist.json', import.meta.url), 'utf8'));
 const rank = { breaking: 0, urgent: 1, normal: 2 };
 const topics = config.topics;
@@ -247,22 +251,21 @@ export async function run({ lookbackHours } = {}) {
     ...topics.filter(topic => topic.query).map(topic => ({ name: `Google News: ${topic.label}`, url: googleNewsUrl(topic.query), via: [topic.id] })),
   ];
 
-  const settled = await Promise.allSettled(sources.map(async source => {
+  const feedTasks = sources.map(async source => {
     const xml = await getText(source.url);
     if (!/<(?:rss|feed)\b/i.test(xml)) throw new Error('Expected an RSS or Atom feed');
     return parseFeed(xml, source.name).map(item => ({ ...item, via: source.via, windowMs: lookbackHours === undefined ? (source.window_minutes ?? config.window_minutes ?? 30) * 60000 : windowMs }));
-  }));
-  if (config.x !== false) {
-    sources.push({ name: 'Curated financial X sources' });
-    settled.push(...await Promise.allSettled([timeline().then(result => {
-      failures.push(...result.failures);
-      return result.items.map(item => ({ ...item, via: [] }));
-    })]));
-  }
+  });
+  const xTask = config.x === false ? null : async () => {
+    const result = await timeline();
+    failures.push(...result.failures);
+    return result.items.map(item => ({ ...item, via: [] }));
+  };
+  if (xTask) sources.push({ name: 'Curated financial X sources' });
+  const settled = await settleHeadlineSources(feedTasks, xTask);
 
   const intake = settled.filter(entry => entry.status === 'fulfilled').flatMap(entry => entry.value).filter(item => !prefiltered(item));
   const archived = await archiveHeadlines(intake);
-  if (archived.truncated) failures.push('headlines raw archive reached 10000-story cap');
   if (lookbackHours !== undefined) {
     sources.push({ name: 'Local raw headline archive' });
     settled.push({ status: 'fulfilled', value: archived.records.map(item => ({ ...item, windowMs })) });

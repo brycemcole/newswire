@@ -1,5 +1,5 @@
 [Unit]
-Description=Newswire free DeepSeek through the official OpenCode runtime
+Description=Newswire DeepSeek completion worker
 After=network-online.target
 
 [Service]
