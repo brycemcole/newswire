@@ -37,6 +37,7 @@ nonisolated struct Backtest: Sendable {
     let points: [HistoryPoint]
     let amount: Double
     let price: Double
+    var reinvest = false
 
     /// Buys at the close of the first trading day on or after `date`, and values the position at `price`.
     init?(history: [HistoryPoint], from date: Date, amount: Double, price: Double?) {
@@ -51,9 +52,10 @@ nonisolated struct Backtest: Sendable {
     }
 
     var shares: Double { amount / start.close }
-    var value: Double { shares * price }
+    var priceValue: Double { shares * price }
+    var value: Double { reinvest ? dripValue ?? priceValue : priceValue }
     var gain: Double { value - amount }
-    var change: Double { price / start.close - 1 }
+    var change: Double { value / amount - 1 }
     var years: Double { Date.now.timeIntervalSince(start.date) / (365.25 * 86_400) }
     var annualized: Double? { years >= 1 ? pow(1 + change, 1 / years) - 1 : nil }
 
@@ -61,17 +63,34 @@ nonisolated struct Backtest: Sendable {
     var withDividends: Double? {
         guard let last = points.last, start.adjusted > 0, last.close > 0 else { return nil }
         let total = last.adjusted / start.adjusted * (price / last.close) - 1
-        return abs(total - change) > 0.0005 ? total : nil
+        return abs(total - (priceValue / amount - 1)) > 0.0005 ? total : nil
     }
 
     var dripValue: Double? { withDividends.map { amount * (1 + $0) } }
     var dripShares: Double? { dripValue.map { $0 / price } }
 
+    /// Cash paid per share, recovered from the step in Yahoo's adjustment factor on each ex-dividend date.
+    var dividendsPerShare: Double {
+        zip(points, points.dropFirst()).reduce(0) { sum, pair in
+            let (prev, next) = pair
+            guard prev.close > 0, next.close > 0, prev.adjusted > 0, next.adjusted > 0 else { return sum }
+            let factor = (prev.adjusted / prev.close) / (next.adjusted / next.close)
+            return factor < 0.99999 ? sum + prev.close * (1 - factor) : sum
+        }
+    }
+
+    var cashDividends: Double? { withDividends == nil ? nil : shares * dividendsPerShare }
+
+    func worth(_ point: HistoryPoint) -> Double {
+        reinvest && withDividends != nil ? amount * point.adjusted / start.adjusted : point.close * shares
+    }
+
     var drawdown: Double {
-        var peak = start.close, worst = 0.0
+        var peak = amount, worst = 0.0
         for point in points {
-            peak = max(peak, point.close)
-            worst = min(worst, point.close / peak - 1)
+            let worth = worth(point)
+            peak = max(peak, worth)
+            worst = min(worst, worth / peak - 1)
         }
         return worst
     }
@@ -97,6 +116,7 @@ struct SimulatorSection: View {
     @State private var paper = PaperPortfolio.shared
     @State private var watchlist = Watchlist.shared
     @State private var tracked = 0
+    @AppStorage("simulatorReinvest") private var reinvest = false
     @FocusState private var editing: Bool
 
     private let presets: [(label: String, component: Calendar.Component, value: Int)] = [
@@ -105,7 +125,11 @@ struct SimulatorSection: View {
 
     private var amount: Double { Double(amountText.filter { $0.isNumber || $0 == "." }) ?? 0 }
     private var today: Bool { Calendar.current.isDateInToday(date) }
-    private var backtest: Backtest? { today ? nil : Backtest(history: history, from: date, amount: amount, price: price) }
+    private var backtest: Backtest? {
+        guard !today, var test = Backtest(history: history, from: date, amount: amount, price: price) else { return nil }
+        test.reinvest = reinvest
+        return test
+    }
 
     var body: some View {
         QuoteSection("What if") {
@@ -193,6 +217,13 @@ struct SimulatorSection: View {
 
     @ViewBuilder
     private func result(_ test: Backtest) -> some View {
+        if test.withDividends != nil {
+            Picker("Dividends", selection: $reinvest.animation(.easeOut(duration: 0.2))) {
+                Text("Price").tag(false)
+                Text("DRIP").tag(true)
+            }
+            .pickerStyle(.segmented)
+        }
         VStack(alignment: .leading, spacing: 4) {
             Text("\(Money.whole(test.amount, code: currency)) → \(Money.text(test.value, code: currency))")
                 .font(.title2.weight(.bold).monospacedDigit())
@@ -208,8 +239,7 @@ struct SimulatorSection: View {
             ("Buy date", test.start.date.formatted(date: .abbreviated, time: .omitted)),
             ("Shares", test.shares.formatted(.number.precision(.fractionLength(0...4)))),
             test.dripShares.map { ("Shares with DRIP", $0.formatted(.number.precision(.fractionLength(0...4)))) },
-            test.dripValue.map { ("Value with DRIP", Money.text($0, code: currency)) },
-            test.withDividends.map { ("Return with DRIP", Money.percent($0)) },
+            test.cashDividends.map { ("Cash dividends", Money.text($0, code: currency)) },
             test.annualized.map { ("Annualized", Money.percent($0)) },
             ("Max drawdown", test.drawdown.formatted(.percent.precision(.fractionLength(1)))),
         ].compactMap { $0 })
@@ -295,16 +325,15 @@ private struct BacktestChart: View {
     var currency = "USD"
 
     var body: some View {
-        let shares = test.shares
         let up = test.gain >= 0
-        let values = test.series.map { $0.close * shares }
+        let values = test.series.map(test.worth)
         let low = min(values.min() ?? 0, test.amount), high = max(values.max() ?? 1, test.amount)
         let pad = max((high - low) * 0.08, 1)
         Chart {
             ForEach(test.series, id: \.date) { point in
-                AreaMark(x: .value("Date", point.date), yStart: .value("Floor", low - pad), yEnd: .value("Value", point.close * shares))
+                AreaMark(x: .value("Date", point.date), yStart: .value("Floor", low - pad), yEnd: .value("Value", test.worth(point)))
                     .foregroundStyle(LinearGradient(colors: [(up ? Color.green : .red).opacity(0.2), .clear], startPoint: .top, endPoint: .bottom))
-                LineMark(x: .value("Date", point.date), y: .value("Value", point.close * shares))
+                LineMark(x: .value("Date", point.date), y: .value("Value", test.worth(point)))
                     .foregroundStyle(up ? Color.green : .red)
                     .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
             }
