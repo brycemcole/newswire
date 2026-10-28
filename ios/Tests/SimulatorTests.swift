@@ -28,6 +28,12 @@ struct SimulatorTests {
         #expect(test.annualized != nil)
         let dividends = try #require(test.withDividends)
         #expect(abs(dividends - (150.0 / 96 * (200.0 / 150) - 1)) < 1e-9)
+        let drip = try #require(test.dripValue)
+        #expect(abs(drip - 1000 * (1 + dividends)) < 1e-9)
+        #expect(abs(try #require(test.dripShares) - drip / 200) < 1e-9)
+        let flat = [HistoryPoint(date: day(-366), close: 100, adjusted: 100), HistoryPoint(date: day(-1), close: 150, adjusted: 150)]
+        let noDividends = try #require(Backtest(history: flat, from: day(-370), amount: 1000, price: 150))
+        #expect(noDividends.dripValue == nil && noDividends.dripShares == nil)
         #expect(Backtest(history: history, from: day(1), amount: 1000, price: 200) == nil)
         #expect(Backtest(history: history, from: day(-370), amount: 0, price: 200) == nil)
     }

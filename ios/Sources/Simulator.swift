@@ -64,6 +64,9 @@ nonisolated struct Backtest: Sendable {
         return abs(total - change) > 0.0005 ? total : nil
     }
 
+    var dripValue: Double? { withDividends.map { amount * (1 + $0) } }
+    var dripShares: Double? { dripValue.map { $0 / price } }
+
     var drawdown: Double {
         var peak = start.close, worst = 0.0
         for point in points {
@@ -204,8 +207,10 @@ struct SimulatorSection: View {
             ("Bought at", QuoteFormat.price(test.start.close)),
             ("Buy date", test.start.date.formatted(date: .abbreviated, time: .omitted)),
             ("Shares", test.shares.formatted(.number.precision(.fractionLength(0...4)))),
+            test.dripShares.map { ("Shares with DRIP", $0.formatted(.number.precision(.fractionLength(0...4)))) },
+            test.dripValue.map { ("Value with DRIP", Money.text($0, code: currency)) },
+            test.withDividends.map { ("Return with DRIP", Money.percent($0)) },
             test.annualized.map { ("Annualized", Money.percent($0)) },
-            test.withDividends.map { ("With dividends", Money.percent($0)) },
             ("Max drawdown", test.drawdown.formatted(.percent.precision(.fractionLength(1)))),
         ].compactMap { $0 })
         trackButton("Track as Paper Trade") {
