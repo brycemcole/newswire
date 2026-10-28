@@ -274,8 +274,6 @@ struct FeedView: View {
     @State private var askPrompt = ""
     @State private var watchlist = Watchlist.shared
     @State private var board = MarketBoard.shared
-    @State private var watchlistExpanded = UserDefaults.standard.bool(forKey: "watchlistExpanded")
-    @State private var portfolioExpanded = UserDefaults.standard.bool(forKey: "portfolioExpanded")
     @State private var search = ""
     @State private var searchPresented = false
     @State private var storySuggestions = StorySuggestions()
@@ -284,8 +282,8 @@ struct FeedView: View {
     @State private var marketAlerts = false
     @State private var skyScroll = SkyScroll()
     @AppStorage("headlinesOnly") private var headlinesOnly = false
-    @AppStorage("compactHome") private var compactHome = false
     @AppStorage("homeOrder") private var homeOrder = "marketsFirst"
+    @AppStorage("homeTab") private var homeTab = HomeTab.positions
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var pillNamespace
     private let categories = ["", "general", "markets", "technology", "economy", "politics", "world", "science"]
@@ -308,22 +306,57 @@ struct FeedView: View {
         return HomeSymbols.stories(store.stories)
     }
 
-    @ViewBuilder private func homeBlock(_ block: HomeBlock) -> some View {
-        switch block {
-        case .status:
-            MarketStatusLine(now: homeClock, onQuote: { open(quote: $0) })
-        case .sinceVisit:
-            SinceVisitCard(now: homeClock, stories: store.stories, onQuote: { open(quote: $0) },
-                           onStory: { store.path.append($0) }, onAlert: { alertSymbol = MarketSymbol(id: $0) },
-                           onFindSymbols: { dock = .large })
-        case .positions:
-            PositionMoversCard(onQuote: { open(quote: $0) }, onAlert: { alertSymbol = MarketSymbol(id: $0) }, openPortfolio: { portfolio = true })
-        case .today:
-            TodayEventsCard(now: homeClock, onQuote: { open(quote: $0) })
-        case .dashboard:
-            dashboard
-        case .outlook:
-            OutlookLine()
+    /// One section at a time, so the market strip and this card stay within the top half of the screen.
+    private var homeDeck: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Picker("Home section", selection: $homeTab) {
+                ForEach(HomeTab.allCases) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented).labelsHidden()
+            switch homeTab {
+            case .moves:
+                SinceVisitCard(now: homeClock, stories: store.stories, onQuote: { open(quote: $0) },
+                               onStory: { store.path.append($0) }, onAlert: { alertSymbol = MarketSymbol(id: $0) },
+                               onFindSymbols: { dock = .large })
+            case .positions:
+                PositionMoversCard(onQuote: { open(quote: $0) }, onAlert: { alertSymbol = MarketSymbol(id: $0) }, openPortfolio: { portfolio = true })
+            case .watchlist:
+                deckWatchlist
+            case .next:
+                VStack(alignment: .leading, spacing: 8) {
+                    OutlookLine(embedded: true)
+                    TodayEventsCard(now: homeClock, onQuote: { open(quote: $0) })
+                }
+            }
+        }
+        .padding(12)
+        .homeCard()
+    }
+
+    private var deckWatchlist: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if watchlist.symbols.isEmpty {
+                Button { dock = .large } label: {
+                    Text("Star any quote to add it here.").font(.subheadline).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading).contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+            }
+            let shown = Array(moversFirst.prefix(3))
+            ForEach(shown, id: \.self) { symbol in
+                watchlistMenu(for: symbol) { WatchlistLine(symbol: symbol) }
+                if symbol != shown.last { Divider() }
+            }
+            if watchlist.symbols.count > shown.count {
+                Button { dock = .large } label: {
+                    HStack(spacing: 4) {
+                        Text("All \(watchlist.symbols.count) symbols")
+                        Image(systemName: "chevron.right").font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
+                    }
+                    .font(.caption).foregroundStyle(.secondary).padding(.top, 6).contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+            }
         }
     }
 
@@ -332,12 +365,14 @@ struct FeedView: View {
             Group {
                 List {
                     if showsHome {
-                        ForEach(HomeBlock.order(for: HomePhase.at(homeClock)), id: \.self) { block in
-                            homeBlock(block)
-                                .listRowInsets(EdgeInsets(top: block == .status ? 6 : 5, leading: 16, bottom: 5, trailing: 16))
-                                .listRowSeparator(.hidden)
-                                .listRowBackground(Color.clear)
-                        }
+                        MarketStatusLine(now: homeClock, onQuote: { open(quote: $0) })
+                            .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 5, trailing: 16))
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
+                        homeDeck
+                            .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 16))
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
                     }
                     filterBar
                     .listRowInsets(EdgeInsets())
@@ -608,14 +643,6 @@ struct FeedView: View {
             if CommandLine.arguments.contains("-marketSearch") { dock = .large }
             if CommandLine.arguments.contains("-marketSearchMedium") { dock = .medium }
             if CommandLine.arguments.contains("-askMarkets") { asking = .markets }
-            if CommandLine.arguments.contains("-dashboardDemo") {
-                for _ in 0..<2 {
-                    try? await Task.sleep(for: .seconds(2))
-                    morphDashboard { watchlistExpanded = true }
-                    try? await Task.sleep(for: .seconds(2))
-                    morphDashboard { watchlistExpanded = false }
-                }
-            }
             if let index = CommandLine.arguments.firstIndex(of: "-command"), let text = CommandLine.arguments.dropFirst(index + 1).first, let command = TerminalCommand.parse(text) {
                 try? await Task.sleep(for: .seconds(1))
                 open(quote: command.token)
@@ -640,8 +667,6 @@ struct FeedView: View {
                 dataRoute = nil
             }
         }
-        .onChange(of: watchlistExpanded) { _, value in UserDefaults.standard.set(value, forKey: "watchlistExpanded") }
-        .onChange(of: portfolioExpanded) { _, value in UserDefaults.standard.set(value, forKey: "portfolioExpanded") }
     }
 
     private func open(quote symbol: String) {
@@ -661,12 +686,6 @@ struct FeedView: View {
         marketDepth = store.path.count
     }
 
-    private var watchlistHeader: some View {
-        HomeSectionHeader("Watchlist", action: watchlist.symbols.count > 3 ? (watchlistExpanded ? "Show Less" : "Show All") : nil) {
-            morphDashboard { watchlistExpanded.toggle() }
-        }
-    }
-
     /// Biggest gain today first, biggest loss last; symbols still waiting on a quote keep their saved order at the end.
     private var moversFirst: [String] {
         let order = Dictionary(watchlist.symbols.enumerated().map { ($1, $0) }, uniquingKeysWith: min)
@@ -680,62 +699,9 @@ struct FeedView: View {
         }
     }
 
-    private var watchlistRows: some View {
-        VStack(spacing: 0) {
-            if watchlist.symbols.isEmpty {
-                Button { dock = .large } label: {
-                    Text("Tap the star on any quote to add it here.")
-                        .font(.subheadline).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
-                        .padding(.horizontal, 16)
-                        .contentShape(.rect)
-                }
-                .buttonStyle(.plain)
-            }
-            let shown = watchlistExpanded ? moversFirst : Array(moversFirst.prefix(3))
-            ForEach(shown, id: \.self) { symbol in
-                let quote = board.quotes[symbol]
-                watchlistMenu(for: symbol) {
-                    MarketRow(symbol: OptionSymbol.display(symbol), title: quote?.name ?? " ",
-                              tag: quote.flatMap { watchlist.entries[symbol]?.caption(at: $0.price) },
-                              quote: quote, spark: board.sparks[symbol], inset: 16)
-                }
-                if symbol != shown.last { Divider().padding(.leading, 16) }
-            }
-        }
-    }
-
-    private var dashboard: some View {
-        if compactHome {
-            return AnyView(compactDashboard)
-        }
-        let stacked = watchlistExpanded || portfolioExpanded
-        let layout = stacked ? AnyLayout(VStackLayout(alignment: .leading, spacing: 20)) : AnyLayout(HStackLayout(alignment: .top, spacing: 12))
-        return AnyView(layout {
-            PortfolioCard(compact: !stacked, expanded: portfolioExpanded,
-                          setExpanded: { value in morphDashboard { portfolioExpanded = value } }) { portfolio = true }
-            VStack(alignment: .leading, spacing: 8) {
-                if stacked { watchlistHeader.transition(.cardSwap) }
-                ZStack(alignment: .topLeading) {
-                    if stacked { watchlistRows.transition(.cardSwap) } else { compactWatchlist.transition(.cardSwap) }
-                }
-                .frame(maxWidth: .infinity, maxHeight: stacked ? nil : .infinity, alignment: .topLeading)
-                .clipShape(.rect(cornerRadius: 24, style: .continuous))
-                .homeCard()
-            }
-        }
-        .fixedSize(horizontal: false, vertical: true))
-    }
-
-    private var compactDashboard: some View {
-        CompactPortfolioTicker(openPortfolio: { portfolio = true },
-                               openWatchlist: { dock = .large },
-                               openQuote: { open(quote: $0) })
-    }
-
     /// Tap opens the quote; press and hold shows the remove action.
-    /// A `Menu` is used instead of `.contextMenu` because the dashboard is a single `List` row,
-    /// and a context menu inside a row lifts the whole row (both cards) as its preview.
+    /// A `Menu` is used instead of `.contextMenu` because the home card is a single `List` row,
+    /// and a context menu inside a row lifts the whole card as its preview.
     private func watchlistMenu<Label: View>(for symbol: String, @ViewBuilder label: () -> Label) -> some View {
         Menu {
             Button("Set Price Alert…", systemImage: "bell.badge") { alertSymbol = MarketSymbol(id: symbol) }
@@ -748,52 +714,6 @@ struct FeedView: View {
             open(quote: symbol)
         }
         .buttonStyle(.plain)
-    }
-
-    /// The dashboard is a single `List` row, and the list repositions that row while SwiftUI animates inside it,
-    /// so a sliding resize lurches. The layout switches at once and the new contents fade in instead.
-    private func morphDashboard(_ change: @escaping () -> Void) {
-        withTransaction(Transaction(animation: nil)) { change() }
-    }
-
-    private var compactWatchlist: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if watchlist.symbols.isEmpty {
-                Button { dock = .large } label: {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Watchlist").font(.subheadline.weight(.semibold))
-                        Text("Star any quote to add it here.").font(.caption).foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading).contentShape(.rect)
-                }
-                .buttonStyle(.plain)
-                .padding(14)
-            }
-            let shown = Array(moversFirst.prefix(3))
-            ForEach(shown, id: \.self) { symbol in
-                let quote = board.quotes[symbol]
-                watchlistMenu(for: symbol) {
-                    CompactWatchlistQuote(symbol: symbol, quote: quote)
-                }
-                if symbol != shown.last || watchlist.symbols.count > 3 { Divider().padding(.leading, 14) }
-            }
-            if watchlist.symbols.count > 3 {
-                Button { morphDashboard { watchlistExpanded = true } } label: {
-                    HStack(spacing: 4) {
-                        Text("\(watchlist.symbols.count - 3) more")
-                        Image(systemName: "chevron.down").font(.caption2.weight(.bold))
-                    }
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                    .padding(.horizontal, 14).padding(.vertical, 9)
-                    .contentShape(.rect)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Show all \(watchlist.symbols.count) watchlist items")
-            }
-        }
-        .padding(.vertical, 4)
     }
 
     private var filterBar: some View {
@@ -1802,7 +1722,6 @@ extension Story {
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @AppStorage("headlinesOnly") private var headlinesOnly = false
-    @AppStorage("compactHome") private var compactHome = false
     @AppStorage("homeOrder") private var homeOrder = "marketsFirst"
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var accentNamespace
@@ -1814,7 +1733,6 @@ struct SettingsView: View {
             Form {
                 Section("Feed") {
                     Toggle("Show summaries", isOn: Binding(get: { !headlinesOnly }, set: { headlinesOnly = !$0 }))
-                    Toggle("Compact dashboard", isOn: $compactHome)
                     Picker("Home order", selection: $homeOrder) {
                         Text("Markets first").tag("marketsFirst")
                         Text("News first").tag("newsFirst")

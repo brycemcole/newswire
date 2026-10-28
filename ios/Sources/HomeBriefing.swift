@@ -28,24 +28,18 @@ nonisolated enum HomePhase: String {
     var usesFutures: Bool { self != .open }
 }
 
-enum HomeBlock: Hashable {
-    case status, sinceVisit, positions, today, dashboard, outlook
+/// The sections of the home card. One shows at a time so the dashboard stays within half the screen.
+enum HomeTab: String, CaseIterable, Identifiable {
+    case moves, positions, watchlist, next
 
-    static func order(for phase: HomePhase) -> [HomeBlock] {
-        #if DEBUG
-        if let index = CommandLine.arguments.firstIndex(of: "-homeSkip"), let skip = CommandLine.arguments.dropFirst(index + 1).first {
-            let hidden = Set(skip.split(separator: ","))
-            return standard(for: phase).filter { !hidden.contains(Substring(String(describing: $0))) }
-        }
-        #endif
-        return standard(for: phase)
-    }
+    var id: Self { self }
 
-    private static func standard(for phase: HomePhase) -> [HomeBlock] {
-        switch phase {
-        case .open: [.status, .sinceVisit, .positions, .dashboard, .today, .outlook]
-        case .after: [.status, .sinceVisit, .positions, .today, .dashboard, .outlook]
-        case .premarket, .overnight, .closed: [.status, .sinceVisit, .today, .positions, .dashboard, .outlook]
+    var title: String {
+        switch self {
+        case .moves: "Moves"
+        case .positions: "Positions"
+        case .watchlist: "Watchlist"
+        case .next: "Next"
         }
     }
 }
@@ -152,6 +146,10 @@ enum HomeFormat {
         let magnitude = abs(value).formatted(.currency(code: "USD").precision(.fractionLength(abs(value) >= 1000 ? 0 : 2)))
         guard signed else { return magnitude }
         return (value > 0 ? "+" : value < 0 ? "−" : "") + magnitude
+    }
+
+    static func whole(_ value: Double) -> String {
+        abs(value).formatted(.currency(code: "USD").precision(.fractionLength(abs(value) >= 100 ? 0 : 2)))
     }
 
     static func tint(_ value: Double?) -> Color {
@@ -359,29 +357,22 @@ struct SinceVisitCard: View {
 
     var body: some View {
         let items = items
-        if HomeSymbols.tracked.isEmpty || !items.isEmpty {
-            Group {
-                if HomeSymbols.tracked.isEmpty {
-                    VStack(alignment: .leading, spacing: 6) {
-                        HomeCardHeader(title: "Today") { EmptyView() }
-                        Button(action: onFindSymbols) {
-                            Text("Star a few symbols or link a brokerage, and this will show what moved in your names while you were away.")
-                                .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.leading)
-                                .frame(maxWidth: .infinity, alignment: .leading).contentShape(.rect)
-                        }.buttonStyle(.plain).padding(.top, 4)
-                    }
-                } else {
-                    // The label leads the first line of chips so the card has no header row of its own.
-                    FlowLayout(spacing: 6) {
-                        Text(ledger.since.map { "Since \(HomeFormat.since($0, now: now))" } ?? "Today")
-                            .font(.subheadline.weight(.semibold)).frame(height: 30).accessibilityAddTraits(.isHeader)
-                        ForEach(items) { chip($0) }
-                    }
+        if HomeSymbols.tracked.isEmpty {
+            Button(action: onFindSymbols) {
+                Text("Star a few symbols or link a brokerage to see what moved while you were away.")
+                    .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading).contentShape(.rect)
+            }.buttonStyle(.plain)
+        } else {
+            FlowLayout(spacing: 6) {
+                Text(ledger.since.map { "Since \(HomeFormat.since($0, now: now))" } ?? "Today")
+                    .font(.subheadline.weight(.semibold)).frame(height: 30).accessibilityAddTraits(.isHeader)
+                ForEach(items) { chip($0) }
+                if items.isEmpty {
+                    Text("Nothing moved 1% or more").font(.subheadline).foregroundStyle(.secondary).frame(height: 30)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 14).padding(.vertical, 10)
-            .homeCard()
         }
     }
 
@@ -456,8 +447,6 @@ struct PositionMoversCard: View {
     @State private var board = MarketBoard.shared
     @State private var portfolio = PortfolioStore.shared
     @State private var optionQuotes: [String: OptionQuote] = [:]
-    @State private var expanded = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
 
     struct Row: Identifiable {
@@ -494,13 +483,9 @@ struct PositionMoversCard: View {
                 let contract = options[position.id]
                 let move = contract.flatMap { sessionChange($0, now: now) }
                 let value = contract.flatMap { $0.liveMarket ? $0.mark * multiplier : nil } ?? position.value
-                var parts = [abs(option.contracts) == 1 ? "1 contract" : "\(abs(option.contracts).formatted(.number.precision(.fractionLength(0...2)))) contracts"]
-                if let value { parts.append(HomeFormat.dollars(value, signed: false)) }
+                var parts = ["\(abs(option.contracts).formatted(.number.precision(.fractionLength(0...2)))) ct"]
+                if let value { parts.append(HomeFormat.whole(value)) }
                 parts.append("\(option.daysLeft) DTE")
-                if let price = quotes[symbol]?.price {
-                    let distance = (price - option.strike) / option.strike * 100 * (option.isCall ? 1 : -1)
-                    parts.append(String(format: "%.1f%% %@", abs(distance), distance >= 0 ? "ITM" : "OTM"))
-                }
                 let previous = contract.map { $0.last - (move ?? 0) }
                 let fallback: (String, String, Double?)? = position.gain.map { (HomeFormat.dollars($0), "total", $0) }
                     ?? quotes[symbol].map { (HomeFormat.percent($0.changePercent), "underlying", $0.changePercent) }
@@ -518,7 +503,7 @@ struct PositionMoversCard: View {
             let quote = quotes[symbol]
             let shares = "\(holding.quantity.formatted(.number.precision(.fractionLength(0...2)))) sh"
             let value = quote.map { $0.price * holding.quantity } ?? holding.value
-            let detail = [[shares, value.map { HomeFormat.dollars($0, signed: false) }].compactMap { $0 }.joined(separator: " · "),
+            let detail = [[shares, value.map(HomeFormat.whole)].compactMap { $0 }.joined(separator: " · "),
                           quote?.earnings.flatMap { earningsNote($0, now: now) }]
                 .compactMap { $0 }.joined(separator: " · ")
             result.append(Row(id: symbol, symbol: symbol, title: HomeFormat.display(symbol), detail: detail,
@@ -544,43 +529,35 @@ struct PositionMoversCard: View {
 
     var body: some View {
         let rows = rows
-        if !rows.isEmpty {
+        if rows.isEmpty {
+            Button(action: openPortfolio) {
+                Text("Link a brokerage to see your positions here.").font(.subheadline).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading).contentShape(.rect)
+            }.buttonStyle(.plain)
+        } else {
             let total = rows.compactMap(\.dollars).reduce(0, +)
-            let shown = expanded ? rows : Array(rows.prefix(4))
-            VStack(alignment: .leading, spacing: 6) {
+            let shown = Array(rows.prefix(3))
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(shown) { row in
+                    line(row)
+                    if row.id != shown.last?.id { Divider() }
+                }
                 Button(action: openPortfolio) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text("Positions").font(.subheadline.weight(.semibold))
+                    HStack(spacing: 4) {
                         if rows.contains(where: { $0.dollars != nil }) {
                             // Positions without a move today are left out of the total, so say so instead of implying all of them.
                             Text("\(HomeFormat.dollars(total)) today\(rows.contains { $0.dollars == nil } ? " · partial" : "")")
-                                .font(.caption.weight(.semibold)).monospacedDigit().foregroundStyle(HomeFormat.tint(total))
+                                .fontWeight(.semibold).foregroundStyle(HomeFormat.tint(total))
+                            Text("·")
                         }
+                        Text(rows.count > shown.count ? "All \(rows.count) positions" : "Portfolio")
                         Image(systemName: "chevron.right").font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
                     }
-                    .lineLimit(1).frame(minHeight: 24).contentShape(.rect)
+                    .font(.caption).monospacedDigit().foregroundStyle(.secondary).lineLimit(1)
+                    .padding(.top, 6).contentShape(.rect)
                 }
                 .buttonStyle(.plain)
-                .accessibilityHint("Opens your portfolio")
-                VStack(spacing: 0) {
-                    ForEach(shown) { row in
-                        line(row)
-                        if row.id != shown.last?.id { Divider() }
-                    }
-                }
-                if rows.count > 4 {
-                    Button {
-                        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { expanded.toggle() }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Text(expanded ? "Show less" : "\(rows.count - 4) more")
-                            Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.caption2.weight(.bold))
-                        }.font(.caption.weight(.medium)).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).contentShape(.rect)
-                    }.buttonStyle(.plain)
-                }
             }
-            .padding(.horizontal, 16).padding(.vertical, 10)
-            .homeCard()
             .task(id: "\(HomeSymbols.positions.filter { $0.option != nil }.map(\.id))-\(scenePhase == .active)") { await refreshOptions() }
         }
     }
@@ -607,38 +584,59 @@ struct PositionMoversCard: View {
 
     private func line(_ row: Row) -> some View {
         Menu {
-            Button("Open \(HomeFormat.display(row.symbol))", systemImage: "chart.xyaxis.line") { onQuote(row.symbol) }
-            Button("Set Price Alert…", systemImage: "bell.badge") { onAlert(row.symbol) }
+            Section(row.detail) {
+                Button("Open \(HomeFormat.display(row.symbol))", systemImage: "chart.xyaxis.line") { onQuote(row.symbol) }
+                Button("Set Price Alert…", systemImage: "bell.badge") { onAlert(row.symbol) }
+            }
         } label: {
-            HStack(alignment: .center, spacing: 10) {
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 5) {
-                        Text(row.title).font(.subheadline.weight(.semibold)).lineLimit(1)
-                        if row.urgent { Image(systemName: "hourglass").font(.caption2).foregroundStyle(.orange) }
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(row.title).font(.subheadline.weight(.semibold)).layoutPriority(2)
+                if row.urgent { Image(systemName: "hourglass").font(.caption2).foregroundStyle(.orange) }
+                Text(row.detail).font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                Spacer(minLength: 6)
+                if let dollars = row.dollars {
+                    Text(HomeFormat.dollars(dollars)).font(.system(.subheadline, design: .rounded, weight: .semibold))
+                        .foregroundStyle(HomeFormat.tint(dollars)).layoutPriority(2)
+                    if let percent = row.percent {
+                        Text(HomeFormat.percent(percent)).font(.caption2).foregroundStyle(.secondary).layoutPriority(1)
                     }
-                    Text(row.detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
-                Spacer(minLength: 8)
-                VStack(alignment: .trailing, spacing: 2) {
-                    if let dollars = row.dollars {
-                        Text(HomeFormat.dollars(dollars)).font(.system(.subheadline, design: .rounded, weight: .semibold)).monospacedDigit()
-                            .foregroundStyle(HomeFormat.tint(dollars))
-                        if let percent = row.percent {
-                            Text(HomeFormat.percent(percent)).font(.caption).monospacedDigit().foregroundStyle(.secondary)
-                        }
-                    } else if let fallback = row.fallback {
-                        Text(fallback.text).font(.system(.subheadline, design: .rounded, weight: .semibold)).monospacedDigit()
-                            .foregroundStyle(HomeFormat.tint(fallback.tint))
-                        Text(fallback.caption).font(.caption2).foregroundStyle(.tertiary)
-                    } else {
-                        Text("—").font(.system(.subheadline, design: .rounded, weight: .semibold)).foregroundStyle(.secondary)
-                    }
+                } else if let fallback = row.fallback {
+                    Text(fallback.text).font(.system(.subheadline, design: .rounded, weight: .semibold))
+                        .foregroundStyle(HomeFormat.tint(fallback.tint)).layoutPriority(2)
+                    Text(fallback.caption).font(.caption2).foregroundStyle(.tertiary).layoutPriority(1)
+                } else {
+                    Text("—").font(.subheadline).foregroundStyle(.secondary)
                 }
             }
-            .padding(.vertical, 6)
+            .lineLimit(1).monospacedDigit()
+            .frame(height: 32)
             .contentShape(.rect)
         } primaryAction: { onQuote(row.symbol) }
         .buttonStyle(.plain)
+    }
+}
+
+/// One watchlist symbol on a single line for the home card.
+struct WatchlistLine: View {
+    let symbol: String
+    @State private var board = MarketBoard.shared
+
+    var body: some View {
+        let quote = board.quotes[symbol]
+        let notice = board.freshness(of: symbol, now: .now)?.notice
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(OptionSymbol.display(symbol)).font(.subheadline.weight(.semibold)).layoutPriority(2)
+            Text(quote?.name ?? "").font(.caption).foregroundStyle(.secondary)
+            if let notice { Image(systemName: notice.symbol).font(.caption2).foregroundStyle(notice.tint).accessibilityLabel(notice.text) }
+            Spacer(minLength: 6)
+            Text(quote.map { QuoteFormat.price($0.price) } ?? "—").font(.subheadline.weight(.semibold)).layoutPriority(2)
+            Text(quote.map { QuoteFormat.percent($0.changePercent) } ?? " ").font(.caption.weight(.semibold))
+                .foregroundStyle(QuoteFormat.color(quote?.changePercent ?? 0)).layoutPriority(2)
+        }
+        .lineLimit(1).monospacedDigit()
+        .frame(height: 32)
+        .contentShape(.rect)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -646,6 +644,7 @@ struct PositionMoversCard: View {
 
 struct TodayEventsCard: View {
     let now: Date
+    var limit = 2
     var onQuote: (String) -> Void
     @State private var board = MarketBoard.shared
     @State private var pulse = PulseStore.shared
@@ -748,21 +747,16 @@ struct TodayEventsCard: View {
     }
 
     var body: some View {
-        let events = Self.events(upcoming: upcoming, earnings: earnings, now: now)
+        let events = Array(Self.events(upcoming: upcoming, earnings: earnings, now: now).prefix(limit))
         if !events.isEmpty {
-            VStack(alignment: .leading, spacing: 6) {
-                HomeCardHeader(title: "Coming up") { EmptyView() }
-                Grid(horizontalSpacing: 6, verticalSpacing: 6) {
-                    ForEach(Array(stride(from: 0, to: events.count, by: 2)), id: \.self) { index in
-                        GridRow {
-                            row(events[index])
-                            if index + 1 < events.count { row(events[index + 1]) } else { Color.clear.gridCellUnsizedAxes([.horizontal, .vertical]) }
-                        }
+            Grid(horizontalSpacing: 6, verticalSpacing: 6) {
+                ForEach(Array(stride(from: 0, to: events.count, by: 2)), id: \.self) { index in
+                    GridRow {
+                        row(events[index])
+                        if index + 1 < events.count { row(events[index + 1]) } else { Color.clear.gridCellUnsizedAxes([.horizontal, .vertical]) }
                     }
                 }
             }
-            .padding(.horizontal, 14).padding(.vertical, 10)
-            .homeCard()
         }
     }
 
@@ -807,6 +801,7 @@ private extension String {
 
 struct OutlookLine: View {
     var now: Date?
+    var embedded = false
     @State private var store = PulseStore.shared
     @State private var macro = MacroStore.shared
     @State private var showing = false
@@ -814,28 +809,36 @@ struct OutlookLine: View {
     @State private var graded = 0
     @Environment(\.scenePhase) private var phase
 
+    private var record: String {
+        guard let hitRate, graded > 0 else { return "Not yet graded" }
+        return "\(Int((hitRate * 100).rounded()))% right · \(graded) graded"
+    }
+
     var body: some View {
-        Button { showing = true } label: {
-            VStack(alignment: .leading, spacing: 6) {
-                HomeCardHeader(title: "Outlook · \(PulseStore.names[store.symbol] ?? store.symbol)") {
-                    HStack(spacing: 6) {
-                        if let hitRate, graded > 0 {
-                            Text("\(Int((hitRate * 100).rounded()))% right · \(graded) graded").monospacedDigit()
-                        } else {
-                            Text("Not yet graded")
+        let button = Button { showing = true } label: {
+            VStack(alignment: .leading, spacing: embedded ? 2 : 6) {
+                if !embedded {
+                    HomeCardHeader(title: "Outlook · \(PulseStore.names[store.symbol] ?? store.symbol)") {
+                        HStack(spacing: 6) {
+                            Text(record).monospacedDigit()
+                            Image(systemName: "chevron.right").font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
                         }
-                        Image(systemName: "chevron.right").font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
                     }
                 }
                 if let pulse = store.current {
                     TimelineView(.everyMinute) { context in
                         let note = pulse.outlookNote(at: now ?? context.date, refreshFailed: store.failed, fetchedAt: store.fetchedAt(store.symbol))
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(pulse.call?.headline ?? "Outlook unavailable").font(.subheadline)
-                                .foregroundStyle(note.standing == .current ? pulse.tint : Color.secondary).lineLimit(1)
-                            Text(note.text).font(.caption2)
+                            HStack(spacing: 4) {
+                                if embedded { Text(PulseStore.names[store.symbol] ?? store.symbol).foregroundStyle(.secondary) }
+                                Text(pulse.call?.headline ?? "Outlook unavailable")
+                                    .foregroundStyle(note.standing == .current ? pulse.tint : Color.secondary)
+                                if embedded { Image(systemName: "chevron.right").font(.caption2.weight(.semibold)).foregroundStyle(.tertiary) }
+                            }
+                            .font(embedded ? .subheadline.weight(.semibold) : .subheadline).lineLimit(1)
+                            Text(embedded ? "\(note.text) · \(record)" : note.text).font(.caption2)
                                 .foregroundStyle(note.refreshFailed || note.standing == .expired ? Color.orange : Color.secondary)
-                                .lineLimit(2)
+                                .lineLimit(embedded ? 1 : 2)
                         }
                     }
                 } else {
@@ -843,11 +846,11 @@ struct OutlookLine: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 16).padding(.vertical, 12)
+            .padding(.horizontal, embedded ? 0 : 16).padding(.vertical, embedded ? 0 : 12)
             .contentShape(.rect)
         }
         .buttonStyle(PressSpringStyle())
-        .homeCard()
+        Group { if embedded { button } else { button.homeCard() } }
         .accessibilityHint("Shows what is moving the market")
         .sheet(isPresented: $showing) { PulseDetail() }
         .task(id: "\(store.symbol)-\(phase == .active)") {

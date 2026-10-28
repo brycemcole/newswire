@@ -30,7 +30,7 @@ struct PositionRowsTests {
         #expect(rows.map(\.id) == ["a|gev-call", "KAI"])
         let option = try #require(rows.first)
         #expect(option.dollars == nil && option.value == 1800)
-        #expect(option.detail.hasPrefix("2 contracts · $1,800.00"))
+        #expect(option.detail.hasPrefix("2 ct · $1,800 · "))
         #expect(option.fallback?.text == "+$300.00" && option.fallback?.caption == "total")
     }
 
