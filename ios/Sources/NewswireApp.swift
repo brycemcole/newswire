@@ -281,6 +281,7 @@ struct FeedView: View {
     @State private var storySuggestions = StorySuggestions()
     @State private var homeClock = Date.now
     @State private var alertSymbol: MarketSymbol?
+    @State private var skyScroll = SkyScroll()
     @AppStorage("headlinesOnly") private var headlinesOnly = false
     @AppStorage("compactHome") private var compactHome = false
     @AppStorage("homeOrder") private var homeOrder = "marketsFirst"
@@ -409,11 +410,18 @@ struct FeedView: View {
                 .listSectionSeparator(.hidden)
                 .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: headlinesOnly)
                 .scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
+                .scrollContentBackground(.hidden)
+                .background { TwilightSky(scroll: skyScroll) }
                 .refreshable { await store.sync(.replace) }
                 .onScrollGeometryChange(for: Bool.self) { geometry in
                     geometry.contentOffset.y + geometry.contentInsets.top < 24
                 } action: { _, top in
                     store.atTop = top
+                }
+                .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                    min(max(geometry.contentOffset.y + geometry.contentInsets.top, 0), SkyScroll.fadeDistance)
+                } action: { _, offset in
+                    skyScroll.offset = offset
                 }
                 .onScrollPhaseChange { _, phase in
                     Summarizer.shared.scrolling = phase.isScrolling
