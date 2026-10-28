@@ -366,7 +366,7 @@ struct FeedView: View {
                     let mine = myStories
                     let mineIDs = Set(mine.map(\.id))
                     if !mine.isEmpty {
-                        HomeListHeader(title: "Your symbols")
+                        HomeListHeader(title: "Your symbols", trailing: HomeSymbols.arrivals(since: VisitLedger.shared.since, in: store.stories, now: homeClock))
                             .listRowInsets(EdgeInsets(top: 14, leading: 16, bottom: 0, trailing: 16))
                             .listRowSeparator(.hidden)
                             .listRowBackground(Color.clear)
@@ -412,6 +412,7 @@ struct FeedView: View {
                 .scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
                 .scrollContentBackground(.hidden)
                 .background { TwilightSky(scroll: skyScroll) }
+                .modifier(VisitTracking())
                 .refreshable { await store.sync(.replace) }
                 .onScrollGeometryChange(for: Bool.self) { geometry in
                     geometry.contentOffset.y + geometry.contentInsets.top < 24

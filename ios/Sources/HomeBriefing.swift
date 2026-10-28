@@ -76,6 +76,12 @@ enum HomeSymbols {
         return (held + watched).filter { seen.insert($0).inserted }
     }
 
+    static func arrivals(since date: Date?, in stories: [Story], now: Date = .now) -> String? {
+        guard let date else { return nil }
+        let count = Self.stories(stories.filter { $0.receivedAt > date }, limit: .max).count
+        return count == 0 ? nil : "\(count) new since \(HomeFormat.since(date, now: now))"
+    }
+
     static func normalize(_ ticker: String) -> String {
         ticker.trimmingCharacters(in: CharacterSet(charactersIn: "$ ")).uppercased()
     }
@@ -290,10 +296,8 @@ struct SinceVisitCard: View {
     var onFindSymbols: () -> Void
     @State private var board = MarketBoard.shared
     @State private var ledger = VisitLedger.shared
-    @State private var pulse = PulseStore.shared
     @State private var watchlist = Watchlist.shared
     @State private var portfolio = PortfolioStore.shared
-    @Environment(\.scenePhase) private var scenePhase
 
     struct Item: Identifiable {
         let id: String
@@ -356,68 +360,31 @@ struct SinceVisitCard: View {
                                value: nil, tint: .orange, detail: parts.joined(separator: " · "), icon: "hourglass",
                                score: 8 - Double(option.daysLeft)))
         }
-
-        if let event = pulse.current?.comingUp?.first(where: { $0.at > now && $0.at.timeIntervalSince(now) < 18 * 3600 }) {
-            result.append(Item(id: "event-\(event.id)", symbol: nil, title: event.title, value: nil, tint: .secondary,
-                               detail: event.at.formatted(.dateTime.weekday(.abbreviated).hour().minute()),
-                               icon: "calendar", score: 4))
-        }
         return Array(result.sorted { $0.score > $1.score }.prefix(5))
-    }
-
-    private var newHeadlines: Int {
-        guard let since = ledger.since else { return 0 }
-        // Only headlines about held or watched symbols, matching how the rest of the home screen picks "your" news.
-        return HomeSymbols.stories(stories.filter { $0.receivedAt > since }, limit: .max).count
     }
 
     var body: some View {
         let items = items
-        let showsCard = HomeSymbols.tracked.isEmpty || !items.isEmpty
-        Group {
-            if showsCard {
-                VStack(alignment: .leading, spacing: 6) {
-                    HomeCardHeader(title: ledger.since.map { "Since \(HomeFormat.since($0, now: now))" } ?? "Today") {
-                        if newHeadlines > 0 {
-                            Text(newHeadlines == 1 ? "1 new headline" : "\(newHeadlines) new headlines")
-                        }
-                    }
-                    if HomeSymbols.tracked.isEmpty {
-                        Button(action: onFindSymbols) {
-                            Text("Star a few symbols or link a brokerage, and this will show what moved in your names while you were away.")
-                                .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.leading)
-                                .frame(maxWidth: .infinity, alignment: .leading).contentShape(.rect)
-                        }.buttonStyle(.plain).padding(.top, 4)
-                    } else {
-                        VStack(spacing: 0) {
-                            ForEach(items) { item in
-                                row(item)
-                                if item.id != items.last?.id { Divider() }
-                            }
+        if HomeSymbols.tracked.isEmpty || !items.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                HomeCardHeader(title: ledger.since.map { "Since \(HomeFormat.since($0, now: now))" } ?? "Today") { EmptyView() }
+                if HomeSymbols.tracked.isEmpty {
+                    Button(action: onFindSymbols) {
+                        Text("Star a few symbols or link a brokerage, and this will show what moved in your names while you were away.")
+                            .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading).contentShape(.rect)
+                    }.buttonStyle(.plain).padding(.top, 4)
+                } else {
+                    VStack(spacing: 0) {
+                        ForEach(items) { item in
+                            row(item)
+                            if item.id != items.last?.id { Divider() }
                         }
                     }
                 }
-                .padding(.horizontal, 16).padding(.vertical, 12)
-                .homeCard()
             }
-        }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .background {
-                let tracked = Set(HomeSymbols.tracked)
-                // Only record prices that were current when leaving; a stale quote would become a false baseline.
-                ledger.leave(prices: board.quotes.filter { key, quote in
-                    guard tracked.contains(key), quote.price > 0 else { return false }
-                    switch board.freshness(of: key, now: .now) {
-                    case .unavailable?, .delayed?: return false
-                    default: return true
-                    }
-                }.mapValues(\.price))
-            }
-            if phase == .active { ledger.arrive() }
-        }
-        .task(id: "\(HomeSymbols.tracked)-\(scenePhase == .active)") {
-            guard scenePhase == .active else { return }
-            await board.refresh(quotes: HomeSymbols.tracked, sparks: [])
+            .padding(.horizontal, 16).padding(.vertical, 12)
+            .homeCard()
         }
     }
 
@@ -451,6 +418,36 @@ struct SinceVisitCard: View {
             if let story = item.story { onStory(story) } else if let symbol = item.symbol { onQuote(symbol) }
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// Records the visit baseline and refreshes tracked quotes from a view that is always on screen.
+/// The Since card hides when nothing moved, and a hidden card's lifecycle modifiers never run.
+struct VisitTracking: ViewModifier {
+    @State private var board = MarketBoard.shared
+    @State private var ledger = VisitLedger.shared
+    @Environment(\.scenePhase) private var scenePhase
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .background {
+                    let tracked = Set(HomeSymbols.tracked)
+                    // Only record prices that were current when leaving; a stale quote would become a false baseline.
+                    ledger.leave(prices: board.quotes.filter { key, quote in
+                        guard tracked.contains(key), quote.price > 0 else { return false }
+                        switch board.freshness(of: key, now: .now) {
+                        case .unavailable?, .delayed?: return false
+                        default: return true
+                        }
+                    }.mapValues(\.price))
+                }
+                if phase == .active { ledger.arrive() }
+            }
+            .task(id: "\(HomeSymbols.tracked)-\(scenePhase == .active)") {
+                guard scenePhase == .active else { return }
+                await board.refresh(quotes: HomeSymbols.tracked, sparks: [])
+            }
     }
 }
 
@@ -599,51 +596,100 @@ struct TodayEventsCard: View {
         let at: Date
         let title: String
         let detail: String?
-        let symbol: String?
+        var symbols: [String] = []
+        /// "Before open" or "After close" when the source only knows which side of the session the event falls on.
+        var session: String? = nil
+        var clockTime = true
     }
 
-    private var events: [Event] {
-        _ = watchlist.symbols
+    struct Earnings {
+        let symbol: String
+        let at: Date
+        let timing: String?
+        let estimated: Bool
+        let held: Bool
+    }
+
+    static func events(upcoming: [MarketPulse.Upcoming], earnings: [Earnings], now: Date, calendar: Calendar = .current) -> [Event] {
         var result: [Event] = []
-        for item in pulse.current?.comingUp ?? [] where item.at > now.addingTimeInterval(-3 * 3600) && item.at < now.addingTimeInterval(36 * 3600) {
-            result.append(Event(id: item.id, at: item.at, title: item.title, detail: item.timing ?? item.detail, symbol: nil))
+        for item in upcoming where item.at > now.addingTimeInterval(-3 * 3600) && item.at < now.addingTimeInterval(36 * 3600) {
+            result.append(Event(id: item.id, at: item.at, title: item.title, detail: fact(item.detail), session: session(item.timing),
+                                clockTime: item.timing == nil && !item.title.hasSuffix(" earnings")))
         }
+        // Yahoo stamps reports with placeholder clock times, so reports on the same day and side of the session are one event.
+        let start = calendar.startOfDay(for: now)
+        var keys: [String] = []
+        var groups: [String: [Earnings]] = [:]
+        for report in earnings where report.at >= start && report.at < now.addingTimeInterval(4 * 86400) {
+            let key = "\(calendar.startOfDay(for: report.at).timeIntervalSince1970)|\(session(report.timing) ?? "")|\(report.estimated)"
+            if groups[key] == nil { keys.append(key) }
+            groups[key, default: []].append(report)
+        }
+        for key in keys {
+            let group = groups[key]!
+            let symbols = group.map(\.symbol)
+            let names = symbols.prefix(3).map(HomeFormat.display).joined(separator: ", ") + (symbols.count > 3 ? " +\(symbols.count - 3)" : "")
+            let held = group.filter(\.held).map { HomeFormat.display($0.symbol) }
+            let owner = held.isEmpty ? "Watchlist" : symbols.count == 1 ? "You hold this" : "You hold \(held.joined(separator: ", "))"
+            result.append(Event(id: "earnings-\(key)", at: group.map(\.at).min()!, title: "\(names) earnings",
+                                detail: [owner, group[0].estimated ? "date estimated" : nil].compactMap { $0 }.joined(separator: " · "),
+                                symbols: symbols, session: session(group[0].timing), clockTime: false))
+        }
+        return Array(result.sorted { ($0.at, $0.title) < ($1.at, $1.title) }.prefix(5))
+    }
+
+    static func session(_ timing: String?) -> String? {
+        guard let timing = timing?.lowercased() else { return nil }
+        if timing.hasPrefix("before") { return "Before open" }
+        if timing.hasPrefix("after") { return "After close" }
+        return nil
+    }
+
+    /// Pulse details end with how much the event can move the index next to the other drivers; only the leading fact stands alone.
+    static func fact(_ detail: String) -> String? {
+        let sentences = detail.components(separatedBy: ". ")
+        return sentences.count > 1 ? sentences[0] : nil
+    }
+
+    static func timeLabel(_ event: Event, now: Date, calendar: Calendar = .current) -> (time: String, day: String?) {
+        let day: String? = calendar.isDate(event.at, inSameDayAs: now) ? nil
+            : calendar.isDate(event.at, inSameDayAs: calendar.date(byAdding: .day, value: 1, to: now)!) ? "Tmrw"
+            : event.at.formatted(.dateTime.weekday(.abbreviated))
+        let midnight = calendar.component(.hour, from: event.at) == 0 && calendar.component(.minute, from: event.at) == 0
+        if let time = event.session ?? (event.clockTime && !midnight ? event.at.formatted(.dateTime.hour().minute()) : nil) {
+            return (time, day)
+        }
+        return (day.map { $0 == "Tmrw" ? "Tomorrow" : $0 } ?? "Today", nil)
+    }
+
+    private var upcoming: [MarketPulse.Upcoming] {
+        #if DEBUG
+        if let demo = HomeBriefingDemo.upcoming { return demo }
+        #endif
+        return pulse.current?.comingUp ?? []
+    }
+
+    private var earnings: [Earnings] {
+        #if DEBUG
+        if let demo = HomeBriefingDemo.earnings { return demo }
+        #endif
+        _ = watchlist.symbols
         let held = Set(HomeSymbols.held)
-        let start = Calendar.current.startOfDay(for: now)
-        for symbol in HomeSymbols.tracked {
-            guard let quote = board.quotes[symbol], let date = quote.earnings, date >= start, date < now.addingTimeInterval(4 * 86400) else { continue }
-            result.append(Event(id: "earnings-\(symbol)", at: date, title: "\(HomeFormat.display(symbol)) earnings",
-                                detail: [held.contains(symbol) ? "You hold this" : "Watchlist", quote.earningsEstimated ? "date estimated" : nil].compactMap { $0 }.joined(separator: " · "),
-                                symbol: symbol))
+        return HomeSymbols.tracked.compactMap { symbol in
+            guard let quote = board.quotes[symbol], let date = quote.earnings else { return nil }
+            return Earnings(symbol: symbol, at: date, timing: quote.earningsTiming, estimated: quote.earningsEstimated, held: held.contains(symbol))
         }
-        return Array(result.sorted { $0.at < $1.at }.prefix(5))
     }
 
     var body: some View {
-        let events = events
+        let events = Self.events(upcoming: upcoming, earnings: earnings, now: now)
         if !events.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
                 HomeCardHeader(title: "Coming up") { EmptyView() }
                 VStack(spacing: 0) {
                     ForEach(events) { event in
-                        Button { if let symbol = event.symbol { onQuote(symbol) } } label: {
-                            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                                Text(timeLabel(event.at)).font(.caption.monospacedDigit()).foregroundStyle(.secondary).frame(width: 66, alignment: .leading)
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(event.title).font(.subheadline.weight(.medium)).lineLimit(1)
-                                    if let detail = event.detail, !detail.isEmpty {
-                                        Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                                    }
-                                }
-                                Spacer(minLength: 0)
-                            }
-                            .padding(.vertical, 7)
-                            .opacity(event.at < now ? 0.45 : 1)
-                            .contentShape(.rect)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(event.symbol == nil)
-                        if event.id != events.last?.id { Divider().padding(.leading, 78) }
+                        row(event)
+                        if event.id != events.last?.id { Divider().padding(.leading, 84) }
                     }
                 }
             }
@@ -652,14 +698,41 @@ struct TodayEventsCard: View {
         }
     }
 
-    private func timeLabel(_ date: Date) -> String {
-        let calendar = Calendar.current
-        let hasTime = calendar.component(.hour, from: date) != 0 || calendar.component(.minute, from: date) != 0
-        if calendar.isDate(date, inSameDayAs: now) { return hasTime ? date.formatted(.dateTime.hour().minute()) : "Today" }
-        if calendar.isDate(date, inSameDayAs: calendar.date(byAdding: .day, value: 1, to: now)!) {
-            return hasTime ? "Tmrw \(date.formatted(.dateTime.hour()))" : "Tomorrow"
+    @ViewBuilder private func row(_ event: Event) -> some View {
+        if event.symbols.count > 1 {
+            Menu {
+                ForEach(event.symbols, id: \.self) { symbol in
+                    Button("Open \(HomeFormat.display(symbol))", systemImage: "chart.xyaxis.line") { onQuote(symbol) }
+                }
+            } label: { line(event) }
+            .buttonStyle(.plain)
+        } else if let symbol = event.symbols.first {
+            Button { onQuote(symbol) } label: { line(event) }.buttonStyle(.plain)
+        } else {
+            line(event)
         }
-        return date.formatted(.dateTime.weekday(.abbreviated))
+    }
+
+    private func line(_ event: Event) -> some View {
+        let label = Self.timeLabel(event, now: now)
+        return HStack(alignment: .firstTextBaseline, spacing: 12) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(label.time).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                if let day = label.day { Text(day).font(.caption2).foregroundStyle(.tertiary) }
+            }
+            .lineLimit(1).frame(width: 72, alignment: .leading)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(event.title).font(.subheadline.weight(.medium)).lineLimit(1)
+                if let detail = event.detail, !detail.isEmpty {
+                    Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 7)
+        .opacity(event.at < now ? 0.45 : 1)
+        .contentShape(.rect)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -833,11 +906,14 @@ struct PriceAlertComposer: View {
 
 struct HomeListHeader: View {
     let title: String
+    var trailing: String? = nil
     var body: some View {
-        Text(title)
-            .font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityAddTraits(.isHeader)
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(title).font(.subheadline.weight(.semibold)).accessibilityAddTraits(.isHeader)
+            Spacer(minLength: 8)
+            if let trailing { Text(trailing).font(.caption).monospacedDigit().lineLimit(1) }
+        }
+        .foregroundStyle(.secondary)
     }
 }
 
@@ -846,6 +922,8 @@ enum HomeBriefingDemo {
     static let active = CommandLine.arguments.contains("-briefingDemo")
     nonisolated(unsafe) static var watched: [String]?
     nonisolated(unsafe) static var positions: [Position]?
+    nonisolated(unsafe) static var upcoming: [MarketPulse.Upcoming]?
+    nonisolated(unsafe) static var earnings: [TodayEventsCard.Earnings]?
 
     static func install(stories: [Story]) async {
         guard active, positions == nil else { return }
@@ -872,6 +950,15 @@ enum HomeBriefingDemo {
             guard let price = board.quotes[symbol]?.price else { continue }
             prices[symbol] = price * (offsets[symbol] ?? (watched?.first == symbol ? 0.975 : 0.998))
         }
+        let now = Date.now
+        upcoming = [
+            MarketPulse.Upcoming(title: "Federal Funds Rate, FOMC Statement", at: now.addingTimeInterval(8 * 3600),
+                                 detail: "Federal Funds Rate forecast 4.00%. A surprise here can outweigh everything above.", timing: nil),
+            MarketPulse.Upcoming(title: "FOMC Press Conference", at: now.addingTimeInterval(8.5 * 3600),
+                                 detail: "A surprise here can outweigh everything above.", timing: nil),
+        ]
+        earnings = ["KEX", "VFC", "GEV"].map { TodayEventsCard.Earnings(symbol: $0, at: now.addingTimeInterval(2.5 * 3600), timing: "Before open", estimated: false, held: false) }
+            + [TodayEventsCard.Earnings(symbol: "MSFT", at: now.addingTimeInterval(30 * 3600), timing: "After close", estimated: false, held: true)]
         VisitLedger.shared.override(since: Calendar.current.date(byAdding: .hour, value: -15, to: .now)!, prices: prices)
     }
 }
