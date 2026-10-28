@@ -72,6 +72,13 @@ struct PortfolioView: View {
     var body: some View {
         NavigationStack {
             List {
+                Section {
+                    NavigationLink {
+                        SoFiConnectionView()
+                    } label: {
+                        Label("SoFi on this device", systemImage: "building.columns")
+                    }
+                }
                 if !store.credentials.isComplete && !hasPortfolio {
                     Section {
                         Button { editingKeys = true } label: { Label("Add Plaid Keys", systemImage: "key") }
@@ -224,6 +231,7 @@ struct PortfolioView: View {
                 if url.path.hasPrefix("/plaid") { store.resume(from: url) }
             }
         }
+        .scrollEdgeEffectStyle(.soft, for: .all)
     }
 
     private var subtitle: String {
