@@ -445,6 +445,53 @@ async function brainRoute(request: Request, url: URL, path: string, env: Env) {
   ]);
   return json({ story: brainStory(await load()) });
 }
+const feedbackStatuses = ['new', 'working', 'done', 'failed'];
+async function feedbackRoute(request: Request, url: URL, path: string, env: Env) {
+  const now = new Date().toISOString();
+  if (path === '/v1/feedback') {
+    if (request.method === 'GET') {
+      const params = query(url.searchParams, ['status']);
+      const status = choice(params.status, 'status', feedbackStatuses, 'new');
+      return json({ feedback: (await env.DB.prepare('SELECT id, kind, note, context, device, image_count, status, result, pr_url, created_at, updated_at FROM feedback WHERE status = ? ORDER BY created_at LIMIT 50').bind(status).all()).results.map(row => ({ ...row, context: JSON.parse(row.context as string) })) });
+    }
+    if (request.method !== 'POST') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
+    query(url.searchParams, []);
+    const data = await readBody(request, 6_000_000) as Record<string, unknown> | null;
+    const kind = choice(data?.kind, 'kind', ['bug', 'feature']);
+    const note = text(data?.note, 'note', 4000);
+    const context = data?.context ?? {};
+    if (!context || typeof context !== 'object' || Array.isArray(context) || JSON.stringify(context).length > 8000) invalid('Invalid context');
+    const device = data?.device === undefined ? null : text(data.device, 'device', 200).toLowerCase();
+    if (device !== null && !/^[0-9a-f]{64,200}$/.test(device)) invalid('Invalid device');
+    const images = data?.images ?? [];
+    if (!Array.isArray(images) || images.length > 4 || images.some(i => typeof i !== 'string' || i.length > 1_400_000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(i) || !i.startsWith('/9j/'))) invalid('Invalid images');
+    const id = crypto.randomUUID();
+    await env.DB.batch([
+      env.DB.prepare('INSERT INTO feedback (id, kind, note, context, device, image_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(id, kind, note, JSON.stringify(context), device, images.length, now, now),
+      ...images.map((image, position) => env.DB.prepare('INSERT INTO feedback_images (feedback_id, position, data) VALUES (?, ?, ?)').bind(id, position, image)),
+    ]);
+    return json({ id, status: 'new' }, 201);
+  }
+  const match = /^\/v1\/feedback\/([0-9a-f-]{36})$/.exec(path);
+  if (!match) throw new ApiError(404, 'not_found', 'Route not found');
+  query(url.searchParams, []);
+  if (request.method === 'GET') {
+    const row = await env.DB.prepare('SELECT * FROM feedback WHERE id = ?').bind(match[1]).first<Record<string, unknown>>();
+    if (!row) throw new ApiError(404, 'not_found', 'Feedback not found');
+    const images = (await env.DB.prepare('SELECT data FROM feedback_images WHERE feedback_id = ? ORDER BY position').bind(match[1]).all<{ data: string }>()).results.map(r => r.data);
+    return json({ feedback: { ...row, context: JSON.parse(row.context as string), images } });
+  }
+  if (request.method !== 'POST') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
+  const data = await readBody(request) as Record<string, unknown> | null;
+  const status = choice(data?.status, 'status', feedbackStatuses);
+  const from = data?.from === undefined ? null : choice(data.from, 'from', feedbackStatuses);
+  const result = data?.result === undefined ? null : text(data.result, 'result', 4000, '');
+  const pr = data?.pr_url === undefined ? null : text(data.pr_url, 'pr_url', 300);
+  if (pr !== null && !/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+$/.test(pr)) invalid('Invalid pr_url');
+  const updated = await env.DB.prepare('UPDATE feedback SET status = ?, result = COALESCE(?, result), pr_url = COALESCE(?, pr_url), updated_at = ? WHERE id = ? AND (? IS NULL OR status = ?)').bind(status, result, pr, now, match[1], from, from).run();
+  if (!updated.meta.changes) throw new ApiError(409, 'conflict', 'Feedback is missing or not in the expected status');
+  return json({ id: match[1], status });
+}
 async function route(request: Request, env: Env, ctx?: ExecutionContext, ai?: AIBroker): Promise<Response> {
   const url = new URL(request.url);
   if (encoder.encode(request.url).length > 8000) throw new ApiError(413, 'too_large', 'URL exceeds 8000 bytes');
@@ -469,7 +516,7 @@ async function route(request: Request, env: Env, ctx?: ExecutionContext, ai?: AI
   const write = path === '/v1/ingest' || (path === '/v1/stories' && request.method === 'POST') || (/^\/v1\/stories\/([^/]+)$/.test(path) && request.method === 'DELETE')
     || (path === '/v1/devices' && request.method === 'GET') || (/^\/v1\/devices\/([^/]+)$/.test(path) && request.method === 'DELETE')
     || path.startsWith('/v1/ai/worker/')
-    || (path.startsWith('/v1/research/') && !(path === '/v1/research/discovery' && request.method === 'GET')) || path === '/v1/ships' || path === '/v1/econ/events' || path === '/v1/econ/history' || path === '/v1/econ/series' || path === '/v1/econ/sources' || path === '/v1/market-pulse/impacts' || ['/v1/brain/posts', '/v1/brain/known', '/v1/brain/ai', '/v1/brain/taste'].includes(path);
+    || (path.startsWith('/v1/research/') && !(path === '/v1/research/discovery' && request.method === 'GET')) || path === '/v1/ships' || (path === '/v1/feedback' && request.method !== 'POST') || path.startsWith('/v1/feedback/') || path === '/v1/econ/events' || path === '/v1/econ/history' || path === '/v1/econ/series' || path === '/v1/econ/sources' || path === '/v1/market-pulse/impacts' || ['/v1/brain/posts', '/v1/brain/known', '/v1/brain/ai', '/v1/brain/taste'].includes(path);
   await authenticate(request, env, write);
   if (path.startsWith('/v1/ai/')) {
     if (!ai) throw new AIError(503, 'AI compute is unavailable');
@@ -557,6 +604,7 @@ async function route(request: Request, env: Env, ctx?: ExecutionContext, ai?: AI
     query(url.searchParams, []);
     return shipsIngest(await readBody(request), env);
   }
+  if (path === '/v1/feedback' || path.startsWith('/v1/feedback/')) return feedbackRoute(request, url, path, env);
   if (path === '/v1/mcp') {
     if (request.method !== 'POST') throw new ApiError(405, 'method_not_allowed', 'Use POST with JSON-RPC');
     query(url.searchParams, []);

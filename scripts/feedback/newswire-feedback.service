@@ -1,0 +1,11 @@
+[Unit]
+Description=Newswire shake reports: turn new reports into draft pull requests
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/newswire
+Environment=PATH=%h/.local/bin:%h/.opencodex/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/node %h/newswire/scripts/feedback/run.mjs
+TimeoutStartSec=2400
+UMask=0077

@@ -11,7 +11,9 @@ import SwiftUI
     var body: some Scene {
         WindowGroup {
             #if DEBUG
-            if CommandLine.arguments.contains("-financialFreshnessPreview") {
+            if CommandLine.arguments.contains("-shakeReportPreview") {
+                ShakeReportSheet(screen: UIImage(systemName: "newspaper") ?? UIImage()) {}
+            } else if CommandLine.arguments.contains("-financialFreshnessPreview") {
                 NavigationStack { FinancialFreshnessPreviewScreen() }
             } else if CommandLine.arguments.contains("-marketSessionPreview") {
                 MarketSessionPreview()

@@ -62,6 +62,16 @@ iOS: `cd ios`, `xcodegen generate`, then open `Newswire.xcodeproj`. Build with X
 
 `Newswire.xcodeproj` is generated and not committed; `ios/project.yml` is authoritative. Pull requests run backend typecheck/tests and iOS unit tests (`.github/workflows/ci.yml`). Merges to `main` that touch `ios/` archive a Release build on GitHub's `xcode-27` runner and upload it to TestFlight (`.github/workflows/testflight.yml`); it can also be started manually from the Actions tab. Signing is cloud-managed through the App Store Connect API key in repository secrets `APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_ISSUER_ID`, and `APP_STORE_CONNECT_PRIVATE_KEY`. Build numbers derive from the workflow run; bump `MARKETING_VERSION` in `project.yml` for a new release version. `ios/scripts/release.sh` remains the local ad hoc path.
 
+## Shake to report
+
+Shake the phone anywhere in the app to send a bug report or feature request. The sheet attaches a screenshot of the current screen, takes up to three more from Photos, and sends them with the app version, build, iOS version and device model to `POST /v1/feedback` (reader session; JPEGs under 1 MB each, at most four). Reports wait in D1 (`feedback`, `feedback_images`) with status `new`.
+
+On the Mini, `newswire-feedback.timer` runs `scripts/feedback/run.mjs` every two minutes. It claims one report (`new` → `working`, so two runs never take the same one), writes the screenshots to `~/.cache/newswire-feedback`, makes a worktree of `origin/main` in `~/feedback`, and runs `claude -p` on it (`NEWSWIRE_FIX_AGENT=codex` uses `codex exec` instead). If the agent changed files, it commits them on `feedback/<kind>-<id>`, pushes, opens a draft PR, marks the report `done` with the PR link and pushes a notification to the phone that sent it. No changes or an error mark it `failed` with the agent's explanation. The agent cannot build iOS on Linux, so SwiftUI changes are only checked by the PR's CI job.
+
+If `~/.config/newswire/asc.json` (`key_id`, `issuer_id`) and `asc-key.p8` exist, the same run also imports TestFlight's own screenshot feedback into the queue.
+
+Setup on the Mini: a fine-grained GitHub token for this repository with Contents and Pull requests read/write in `~/.config/newswire/github-token` (mode 600), `claude` (or `codex`) signed in, then copy the two units from `scripts/feedback/` to `~/.config/systemd/user/` and `systemctl --user enable --now newswire-feedback.timer`. Logs: `journalctl --user -u newswire-feedback`.
+
 ## Architecture
 
 Agents → authenticated ingestion → Worker → D1 → authenticated feed → iOS / web.
