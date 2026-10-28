@@ -13,7 +13,13 @@ import SwiftUI
         WindowGroup {
             Group {
                 #if DEBUG
-                if CommandLine.arguments.contains("-financialFreshnessPreview") {
+                if CommandLine.arguments.contains("-sofiPreview") {
+                    NavigationStack { SoFiConnectionView(preview: true) }
+                        .scrollEdgeEffectStyle(.soft, for: .all)
+                } else if CommandLine.arguments.contains("-sofi") {
+                    NavigationStack { SoFiConnectionView() }
+                        .scrollEdgeEffectStyle(.soft, for: .all)
+                } else if CommandLine.arguments.contains("-financialFreshnessPreview") {
                     NavigationStack { FinancialFreshnessPreviewScreen() }
                 } else if CommandLine.arguments.contains("-marketSessionPreview") {
                     MarketSessionPreview()
@@ -71,6 +77,17 @@ import SwiftUI
             .task(id: scenePhase) {
                 guard scenePhase == .active else { return }
                 await PriceWatchStore.shared.refreshWhileActive()
+            }
+            .task(id: scenePhase) {
+                guard scenePhase == .active else {
+                    SoFiSession.shared.suspend()
+                    return
+                }
+                await SoFiSession.shared.runWhileActive()
+            }
+            .task(id: scenePhase) {
+                guard scenePhase == .active else { return }
+                await SoFiTrailStore.shared.runWhileActive()
             }
         }
         .backgroundTask(.appRefresh(FeedStore.refreshTaskID)) {

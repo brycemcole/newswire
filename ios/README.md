@@ -12,6 +12,16 @@ The feed uses amber metadata, visible ticker symbols, and an optional headlines-
 
 Breaking and urgent stories with images use a wide hero image below the story text. Other stories keep the compact thumbnail. Long-press an illustrated story and choose Use large image or Use thumbnail to save an override for that story. Headlines-only mode keeps images compact, and failed image loads fall back to text.
 
+## SoFi on this device
+
+Portfolio → SoFi on this device opens a dedicated persistent WebKit profile. Sign in and complete verification yourself, navigate to Invest holdings, then choose **Read holdings** and **Use this page**. The app retries the saved portfolio path on activation and every five minutes while active; it leaves the visible browser alone. Cookies stay in WebKit and are not copied to Keychain, logs, model prompts, or the backend. Disconnect clears this profile and its trailing alerts without removing Plaid.
+
+The initial web adapter reads visible semantic tables with explicit Symbol and Shares/Quantity/Contracts columns. It reports partial coverage and unknown quote time; unsupported layouts remain unavailable, and an unreadable page never implies an empty portfolio. Real SoFi sign-in, MFA, holdings layout, and session reuse across app termination still require account verification. Existing SoFi holdings from Plaid are labeled separately with their original sync time.
+
+Trailing alerts evaluate direct Yahoo USD quotes on the device every 15 seconds in the foreground during regular US market hours. They persist the highest price observed since arming, ignore old/future/duplicate observations, and trigger one review notification per arming. Exact option contract symbols are required; the underlying price is never substituted. These alerts do not submit orders, reconstruct missed highs, guarantee a fill price, or run continuously while iOS suspends the app. Pause retains the high; **Start a new high** resets it. No brokerage session or holdings are shared with a model.
+
+Debug launch arguments: `-sofi` opens the real connection screen; `-sofiPreview` shows labeled example alerts without connecting or saving alerts. Focused checks: `NewswireTests/SoFiTests` and `SessionUITests/SoFiUITests`.
+
 ## Build and test
 
 ```sh
