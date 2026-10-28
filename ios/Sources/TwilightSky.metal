@@ -31,16 +31,21 @@ static float fbm(float2 p, int octaves) {
     return sum;
 }
 
-static float3 starLayer(float2 position, float cellSize, float threshold, float brightness, float time) {
+static float3 starLayer(float2 position, float cellSize, float threshold, float brightness, float time, float scale) {
     float2 cell = floor(position / cellSize);
     float seed = twilightHash(cell);
     if (seed <= threshold) return float3(0.0);
     float rank = (seed - threshold) / (1.0 - threshold);
     float2 center = (cell + 0.25 + 0.5 * float2(twilightHash(cell + 7.1), twilightHash(cell + 3.7))) * cellSize;
-    float point = exp(-length_squared(position - center) / (0.3 + 1.4 * rank * rank));
+    // Measured in device pixels so a star stays a crisp point at any display scale; only bright ones get a halo.
+    float pixels = length(position - center) * scale;
+    float radius = 0.6 + 1.2 * rank * rank;
+    float core = saturate(radius + 0.5 - pixels);
+    float halo = exp(-pixels / (1.2 + 2.0 * rank)) * 0.22 * rank * rank;
+    float point = core + halo;
     float twinkle = 0.6 + 0.4 * sin(time * (0.7 + rank * 3.5) + seed * 90.0);
     float3 tint = mix(float3(1.0, 0.85, 0.7), float3(0.75, 0.85, 1.0), twilightHash(cell + 1.3));
-    return tint * point * twinkle * brightness * (0.25 + 0.75 * rank * rank);
+    return tint * point * twinkle * brightness * (0.45 + 0.55 * rank * rank);
 }
 
 static float ramp(float x, float x0, float y0, float x1, float y1) {
@@ -58,7 +63,7 @@ static float2 skyPosition(float hourAngle, float elevation, float horizon) {
 // along long air paths; Chappuis-band ozone absorption removes the remaining orange once the sun is down, which is
 // what keeps the blue hour deep blue instead of grey.
 // sun = (hour angle°, elevation°, cloud cover 0–1, real seconds); moon = (hour angle°, elevation°, phase 0–1, light appearance).
-[[ stitchable ]] half4 twilightSky(float2 position, half4 color, float2 size, float time, float4 sun, float4 moon) {
+[[ stitchable ]] half4 twilightSky(float2 position, half4 color, float2 size, float time, float4 sun, float4 moon, float scale) {
     float2 uv = position / size;
     float v = saturate(uv.y);
     float e = sun.y;
@@ -174,8 +179,8 @@ static float2 skyPosition(float hourAngle, float elevation, float horizon) {
     if (night > 0.0) {
         float emerge = mix(smoothstep(0.05, 0.4, v), 1.0, smoothstep(-12.0, -18.0, e)) * (1.0 - smoothstep(0.85, 1.0, v));
         float full = smoothstep(-12.0, -18.0, e);
-        float3 stars = starLayer(position, 6.0, mix(0.975, 0.93, full), 0.55, realTime)
-                     + starLayer(position + 101.0, 17.0, mix(0.96, 0.86, full), 1.4, realTime);
+        float3 stars = starLayer(position, 6.0, mix(0.975, 0.93, full), 0.95, realTime, scale)
+                     + starLayer(position + 101.0, 17.0, mix(0.96, 0.86, full), 1.6, realTime, scale);
 
         float2 along = normalize(float2(1.0, 0.42));
         float band = dot(position / size.x - float2(0.0, 0.05), float2(-along.y, along.x));
@@ -194,7 +199,7 @@ static float2 skyPosition(float hourAngle, float elevation, float horizon) {
             float2 relative = position - (origin + direction * length * progress);
             float behind = dot(relative, -direction);
             float offset = dot(relative, float2(-direction.y, direction.x));
-            float streak = step(0.0, behind) * (1.0 - smoothstep(0.0, length * 0.35, behind)) * exp(-offset * offset / 0.5);
+            float streak = step(0.0, behind) * (1.0 - smoothstep(0.0, length * 0.35, behind)) * saturate(0.9 - abs(offset) * scale * 0.6);
             sky += float3(0.9, 0.95, 1.0) * streak * sin(progress * M_PI_F) * night * clear;
         }
     }
