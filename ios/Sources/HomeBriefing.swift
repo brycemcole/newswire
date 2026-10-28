@@ -301,6 +301,8 @@ struct SinceVisitCard: View {
         let icon: String?
         let score: Double
         var story: Story? = nil
+        /// The few words a chip keeps from the detail: the dollar impact or days to expiry.
+        var brief: String? = nil
     }
 
     private var items: [Item] {
@@ -336,7 +338,7 @@ struct SinceVisitCard: View {
             else { detail = isHeld ? "Your position" : "On your watchlist" }
             result.append(Item(id: "move-\(symbol)", symbol: symbol, title: HomeFormat.display(symbol), value: HomeFormat.percent(move),
                                tint: HomeFormat.tint(move), detail: detail, icon: nil,
-                               score: abs(move) * (isHeld ? 2 : 1) + (story == nil ? 0 : 1.5), story: story))
+                               score: abs(move) * (isHeld ? 2 : 1) + (story == nil ? 0 : 1.5), story: story, brief: impact))
         }
 
         for position in positions {
@@ -350,7 +352,7 @@ struct SinceVisitCard: View {
             if let gain = position.gainPercent { parts.append("\(HomeFormat.percent(gain * 100)) total") }
             result.append(Item(id: "option-\(position.id)", symbol: underlying, title: "\(HomeFormat.display(underlying)) \(option.title)",
                                value: nil, tint: .orange, detail: parts.joined(separator: " · "), icon: "hourglass",
-                               score: 8 - Double(option.daysLeft)))
+                               score: 8 - Double(option.daysLeft), brief: parts[0]))
         }
         return Array(result.sorted { $0.score > $1.score }.prefix(5))
     }
@@ -358,54 +360,56 @@ struct SinceVisitCard: View {
     var body: some View {
         let items = items
         if HomeSymbols.tracked.isEmpty || !items.isEmpty {
-            VStack(alignment: .leading, spacing: 6) {
-                HomeCardHeader(title: ledger.since.map { "Since \(HomeFormat.since($0, now: now))" } ?? "Today") { EmptyView() }
+            Group {
                 if HomeSymbols.tracked.isEmpty {
-                    Button(action: onFindSymbols) {
-                        Text("Star a few symbols or link a brokerage, and this will show what moved in your names while you were away.")
-                            .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.leading)
-                            .frame(maxWidth: .infinity, alignment: .leading).contentShape(.rect)
-                    }.buttonStyle(.plain).padding(.top, 4)
+                    VStack(alignment: .leading, spacing: 6) {
+                        HomeCardHeader(title: "Today") { EmptyView() }
+                        Button(action: onFindSymbols) {
+                            Text("Star a few symbols or link a brokerage, and this will show what moved in your names while you were away.")
+                                .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.leading)
+                                .frame(maxWidth: .infinity, alignment: .leading).contentShape(.rect)
+                        }.buttonStyle(.plain).padding(.top, 4)
+                    }
                 } else {
-                    VStack(spacing: 0) {
-                        ForEach(items) { item in
-                            row(item)
-                            if item.id != items.last?.id { Divider() }
-                        }
+                    // The label leads the first line of chips so the card has no header row of its own.
+                    FlowLayout(spacing: 6) {
+                        Text(ledger.since.map { "Since \(HomeFormat.since($0, now: now))" } ?? "Today")
+                            .font(.subheadline.weight(.semibold)).frame(height: 30).accessibilityAddTraits(.isHeader)
+                        ForEach(items) { chip($0) }
                     }
                 }
             }
-            .padding(.horizontal, 16).padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14).padding(.vertical, 10)
             .homeCard()
         }
     }
 
-    private func row(_ item: Item) -> some View {
+    private func chip(_ item: Item) -> some View {
         Menu {
-            if let story = item.story { Button("Read Story", systemImage: "newspaper") { onStory(story) } }
-            if let symbol = item.symbol {
-                Button("Open \(HomeFormat.display(symbol))", systemImage: "chart.xyaxis.line") { onQuote(symbol) }
-                Button("Set Price Alert…", systemImage: "bell.badge") { onAlert(symbol) }
+            Section(item.detail) {
+                if let story = item.story { Button("Read Story", systemImage: "newspaper") { onStory(story) } }
+                if let symbol = item.symbol {
+                    Button("Open \(HomeFormat.display(symbol))", systemImage: "chart.xyaxis.line") { onQuote(symbol) }
+                    Button("Set Price Alert…", systemImage: "bell.badge") { onAlert(symbol) }
+                }
             }
         } label: {
-            HStack(alignment: .top, spacing: 10) {
-                if let icon = item.icon {
-                    Image(systemName: icon).font(.subheadline).foregroundStyle(item.tint).frame(width: 18).padding(.top, 1)
+            HStack(spacing: 5) {
+                if let icon = item.icon { Image(systemName: icon).font(.caption).foregroundStyle(item.tint) }
+                Text(item.title).font(.subheadline.weight(.semibold))
+                if let value = item.value {
+                    Text(value).font(.system(.subheadline, design: .rounded, weight: .semibold)).monospacedDigit().foregroundStyle(item.tint)
                 }
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text(item.title).font(.subheadline.weight(.semibold)).lineLimit(1)
-                        Spacer(minLength: 8)
-                        if let value = item.value {
-                            Text(value).font(.system(.subheadline, design: .rounded, weight: .semibold)).monospacedDigit().foregroundStyle(item.tint)
-                        }
-                    }
-                    Text(item.detail).font(.caption).foregroundStyle(.secondary).lineLimit(2).multilineTextAlignment(.leading)
-                }
+                if let brief = item.brief { Text(brief).font(.caption).monospacedDigit().foregroundStyle(.secondary) }
+                if item.story != nil { Image(systemName: "newspaper").font(.caption2).foregroundStyle(.secondary) }
             }
-            .padding(.vertical, 6)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(.rect)
+            .lineLimit(1)
+            .padding(.horizontal, 10).frame(height: 30)
+            .background(Color.primary.opacity(0.07), in: .capsule)
+            .contentShape(.capsule)
+            .accessibilityElement(children: .combine)
+            .accessibilityHint(item.detail)
         } primaryAction: {
             if let story = item.story { onStory(story) } else if let symbol = item.symbol { onQuote(symbol) }
         }
@@ -544,16 +548,20 @@ struct PositionMoversCard: View {
             let total = rows.compactMap(\.dollars).reduce(0, +)
             let shown = expanded ? rows : Array(rows.prefix(4))
             VStack(alignment: .leading, spacing: 6) {
-                HomeCardHeader(title: "Positions") {
-                    HStack(spacing: 12) {
+                Button(action: openPortfolio) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text("Positions").font(.subheadline.weight(.semibold))
                         if rows.contains(where: { $0.dollars != nil }) {
                             // Positions without a move today are left out of the total, so say so instead of implying all of them.
                             Text("\(HomeFormat.dollars(total)) today\(rows.contains { $0.dollars == nil } ? " · partial" : "")")
-                                .fontWeight(.semibold).monospacedDigit().foregroundStyle(HomeFormat.tint(total))
+                                .font(.caption.weight(.semibold)).monospacedDigit().foregroundStyle(HomeFormat.tint(total))
                         }
-                        Button("All", action: openPortfolio).fontWeight(.medium).tint(.wireAccent)
+                        Image(systemName: "chevron.right").font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
                     }
+                    .lineLimit(1).frame(minHeight: 24).contentShape(.rect)
                 }
+                .buttonStyle(.plain)
+                .accessibilityHint("Opens your portfolio")
                 VStack(spacing: 0) {
                     ForEach(shown) { row in
                         line(row)
@@ -703,7 +711,10 @@ struct TodayEventsCard: View {
     /// Pulse details end with how much the event can move the index next to the other drivers; only the leading fact stands alone.
     static func fact(_ detail: String) -> String? {
         let sentences = detail.components(separatedBy: ". ")
-        return sentences.count > 1 ? sentences[0] : nil
+        guard sentences.count > 1 else { return nil }
+        // "CPI m/m forecast 0.6%" repeats the event's own title; the number is what the line is for.
+        if let range = sentences[0].range(of: " forecast ") { return "Forecast \(sentences[0][range.upperBound...])" }
+        return sentences[0]
     }
 
     static func time(_ event: Event, now: Date, calendar: Calendar = .current) -> String {
@@ -739,11 +750,18 @@ struct TodayEventsCard: View {
     var body: some View {
         let events = Self.events(upcoming: upcoming, earnings: earnings, now: now)
         if !events.isEmpty {
-            VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 6) {
                 HomeCardHeader(title: "Coming up") { EmptyView() }
-                ForEach(events) { row($0) }
+                Grid(horizontalSpacing: 6, verticalSpacing: 6) {
+                    ForEach(Array(stride(from: 0, to: events.count, by: 2)), id: \.self) { index in
+                        GridRow {
+                            row(events[index])
+                            if index + 1 < events.count { row(events[index + 1]) } else { Color.clear.gridCellUnsizedAxes([.horizontal, .vertical]) }
+                        }
+                    }
+                }
             }
-            .padding(.horizontal, 16).padding(.vertical, 10)
+            .padding(.horizontal, 14).padding(.vertical, 10)
             .homeCard()
         }
     }
@@ -764,23 +782,19 @@ struct TodayEventsCard: View {
     }
 
     private func line(_ event: Event) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
-            Text(Self.time(event, now: now)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                .lineLimit(1).minimumScaleFactor(0.85).frame(width: 92, alignment: .leading)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(event.title).font(.subheadline.weight(.medium)).lineLimit(1)
-                if let detail = event.detail {
-                    Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
-            }
-            Spacer(minLength: 8)
-            if let note = event.note {
-                Text(note).font(.caption).foregroundStyle(.secondary).lineLimit(1).layoutPriority(1)
+        VStack(alignment: .leading, spacing: 1) {
+            Text(Self.time(event, now: now)).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+            Text(event.title).font(.footnote.weight(.semibold)).lineLimit(2).multilineTextAlignment(.leading)
+            if let extra = [event.detail, event.note].compactMap({ $0 }).joined(separator: " · ").nilIfEmpty {
+                Text(extra).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
             }
         }
-        .padding(.vertical, 4)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(.horizontal, 9).padding(.vertical, 7)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color.primary.opacity(0.07), in: .rect(cornerRadius: 12, style: .continuous))
         .opacity(event.at < now ? 0.45 : 1)
-        .contentShape(.rect)
+        .contentShape(.rect(cornerRadius: 12, style: .continuous))
         .accessibilityElement(children: .combine)
     }
 }

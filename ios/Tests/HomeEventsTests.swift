@@ -45,7 +45,7 @@ struct HomeEventsTests {
         ]
         let events = TodayEventsCard.events(upcoming: upcoming, earnings: [], now: now)
         #expect(events.map(\.title) == ["Federal Funds Rate, FOMC Statement", "FOMC Press Conference", "ASML earnings"])
-        #expect(events.map(\.detail) == ["Federal Funds Rate forecast 4.00%", nil, "Expected EPS 10.76"])
+        #expect(events.map(\.detail) == ["Forecast 4.00%", nil, "Expected EPS 10.76"])
         #expect(TodayEventsCard.time(events[1], now: now) == "Tmrw \(at(29, 3, 30).formatted(.dateTime.hour().minute()))")
         #expect(TodayEventsCard.time(events[2], now: now) == "Tmrw before open")
     }
