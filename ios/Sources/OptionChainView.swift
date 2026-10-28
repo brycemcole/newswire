@@ -10,7 +10,6 @@ struct OptionChainView: View {
     @State private var watchlist = Watchlist.shared
     @Environment(\.scenePhase) private var phase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Namespace private var sideNamespace
 
     private static let utc = TimeZone(identifier: "UTC")!
 
@@ -97,34 +96,7 @@ struct OptionChainView: View {
     }
 
     private var sideSwitch: some View {
-        GlassEffectContainer {
-            HStack(spacing: 0) {
-                ForEach([true, false], id: \.self) { side in
-                    let selected = calls == side
-                    Button {
-                        withAnimation(reduceMotion ? .easeOut(duration: 0.15) : .spring(duration: 0.32, bounce: 0.18)) { calls = side }
-                    } label: {
-                        Text(side ? "Calls" : "Puts")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(selected ? Color.primary : Color.secondary)
-                            .frame(width: 64, height: 32)
-                            .background {
-                                if selected {
-                                    Capsule().fill(.fill.secondary)
-                                        .matchedGeometryEffect(id: "side", in: sideNamespace)
-                                }
-                            }
-                            .contentShape(.capsule)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityAddTraits(selected ? .isSelected : [])
-                }
-            }
-            .padding(3)
-            .glassEffect(.regular.interactive(), in: .capsule)
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Side")
+        GlassSwitch(label: "Side", selection: $calls, options: [true, false], segmentWidth: 64) { $0 ? "Calls" : "Puts" }
     }
 
     private var subtitle: String {
@@ -239,5 +211,50 @@ struct OptionChainView: View {
         // Yahoo stamps expirations at 00:00 UTC; the contract settles at the 4 PM ET close that day.
         let days = Int((date.addingTimeInterval(20 * 3600).timeIntervalSinceNow / 86_400).rounded(.up))
         return days <= 0 ? "Today" : "\(days)d"
+    }
+}
+
+/// A capsule of text segments on interactive glass; the selected segment's fill slides between them.
+struct GlassSwitch<Value: Hashable>: View {
+    let label: String
+    @Binding var selection: Value
+    let options: [Value]
+    /// Fixed segment width; nil stretches the segments to fill the available width.
+    var segmentWidth: CGFloat? = nil
+    let title: (Value) -> String
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var namespace
+
+    var body: some View {
+        GlassEffectContainer {
+            HStack(spacing: 0) {
+                ForEach(options, id: \.self) { option in
+                    let selected = selection == option
+                    Button {
+                        withAnimation(reduceMotion ? .easeOut(duration: 0.15) : .spring(duration: 0.32, bounce: 0.18)) { selection = option }
+                    } label: {
+                        Text(title(option))
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(selected ? Color.primary : Color.secondary)
+                            .lineLimit(1)
+                            .frame(width: segmentWidth, height: 32)
+                            .frame(maxWidth: segmentWidth == nil ? .infinity : nil)
+                            .background {
+                                if selected {
+                                    Capsule().fill(.fill.secondary)
+                                        .matchedGeometryEffect(id: "selection", in: namespace)
+                                }
+                            }
+                            .contentShape(.capsule)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(selected ? .isSelected : [])
+                }
+            }
+            .padding(3)
+            .glassEffect(.regular.interactive(), in: .capsule)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(label)
     }
 }

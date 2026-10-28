@@ -309,25 +309,26 @@ struct FeedView: View {
     /// One section at a time, so the market strip and this card stay within the top half of the screen.
     private var homeDeck: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Picker("Home section", selection: $homeTab) {
-                ForEach(HomeTab.allCases) { Text($0.title).tag($0) }
-            }
-            .pickerStyle(.segmented).labelsHidden()
-            switch homeTab {
-            case .moves:
-                SinceVisitCard(now: homeClock, stories: store.stories, onQuote: { open(quote: $0) },
-                               onStory: { store.path.append($0) }, onAlert: { alertSymbol = MarketSymbol(id: $0) },
-                               onFindSymbols: { dock = .large })
-            case .positions:
-                PositionMoversCard(onQuote: { open(quote: $0) }, onAlert: { alertSymbol = MarketSymbol(id: $0) }, openPortfolio: { portfolio = true })
-            case .watchlist:
-                deckWatchlist
-            case .next:
-                VStack(alignment: .leading, spacing: 8) {
-                    OutlookLine(embedded: true)
-                    TodayEventsCard(now: homeClock, onQuote: { open(quote: $0) })
+            GlassSwitch(label: "Home section", selection: $homeTab, options: HomeTab.allCases, title: \.title)
+            Group {
+                switch homeTab {
+                case .moves:
+                    SinceVisitCard(now: homeClock, stories: store.stories, onQuote: { open(quote: $0) },
+                                   onStory: { store.path.append($0) }, onAlert: { alertSymbol = MarketSymbol(id: $0) },
+                                   onFindSymbols: { dock = .large })
+                case .positions:
+                    PositionMoversCard(onQuote: { open(quote: $0) }, onAlert: { alertSymbol = MarketSymbol(id: $0) }, openPortfolio: { portfolio = true })
+                case .watchlist:
+                    deckWatchlist
+                case .next:
+                    VStack(alignment: .leading, spacing: 8) {
+                        OutlookLine(embedded: true)
+                        TodayEventsCard(now: homeClock, onQuote: { open(quote: $0) })
+                    }
                 }
             }
+            // Only the switch animates; a resizing list row lurches if the section underneath animates with it.
+            .transaction { $0.animation = nil }
         }
         .padding(12)
         .homeCard()
