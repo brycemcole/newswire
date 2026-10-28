@@ -342,3 +342,30 @@ test('session alert preferences persist, preserve older clients and clear explic
   assert.equal((await register({ session_alerts: [] })).status, 201);
   assert.deepEqual(JSON.parse((await registered()).session_alerts), []);
 });
+
+test('feedback reports accept screenshots from readers and only writers can read or claim them', async () => {
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]).toString('base64');
+  const submit = (data, token = 'reader') => request('/v1/feedback', token, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+  assert.equal((await submit({ kind: 'bug', note: 'x' }, null)).status, 401);
+  for (const bad of [{ kind: 'other', note: 'x' }, { kind: 'bug', note: '' }, { kind: 'bug', note: 'x', images: ['iVBOR'] }, { kind: 'bug', note: 'x', images: Array(5).fill(jpeg) }, { kind: 'bug', note: 'x', device: 'nope' }]) assert.equal((await submit(bad)).status, 400);
+  const created = await submit({ kind: 'feature', note: 'Add a dark chart', images: [jpeg, jpeg], context: { screen: 'Quote AAPL', build: '42' }, device: 'a'.repeat(64) });
+  assert.equal(created.status, 201);
+  const { id } = await created.json();
+  assert.equal((await request('/v1/feedback')).status, 403);
+  assert.equal((await request(`/v1/feedback/${id}`)).status, 403);
+  const listed = (await (await request('/v1/feedback', 'writer')).json()).feedback.find(f => f.id === id);
+  assert.equal(listed.kind, 'feature');
+  assert.equal(listed.image_count, 2);
+  assert.equal(listed.context.screen, 'Quote AAPL');
+  assert.equal(listed.images, undefined);
+  const detail = (await (await request(`/v1/feedback/${id}`, 'writer')).json()).feedback;
+  assert.deepEqual(detail.images, [jpeg, jpeg]);
+  const update = data => request(`/v1/feedback/${id}`, 'writer', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+  assert.equal((await update({ status: 'working', from: 'new' })).status, 200);
+  assert.equal((await update({ status: 'working', from: 'new' })).status, 409);
+  assert.equal((await update({ status: 'done', pr_url: 'https://evil.example/pull/1' })).status, 400);
+  assert.equal((await update({ status: 'done', from: 'working', pr_url: 'https://github.com/brycemcole/newswire/pull/9', result: 'Opened a draft PR' })).status, 200);
+  const done = (await (await request('/v1/feedback?status=done', 'writer')).json()).feedback.find(f => f.id === id);
+  assert.equal(done.pr_url, 'https://github.com/brycemcole/newswire/pull/9');
+  assert.ok(!(await (await request('/v1/feedback', 'writer')).json()).feedback.some(f => f.id === id));
+});

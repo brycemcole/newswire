@@ -1,0 +1,10 @@
+[Unit]
+Description=Check for Newswire shake reports every two minutes
+
+[Timer]
+OnBootSec=240
+OnUnitInactiveSec=120
+AccuracySec=10
+
+[Install]
+WantedBy=timers.target
