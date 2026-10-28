@@ -3,6 +3,7 @@ import SwiftUI
 
 @main struct NewswireApp: App {
     @UIApplicationDelegateAdaptor(PushDelegate.self) private var push
+    @Environment(\.scenePhase) private var scenePhase
 
     #if DEBUG && targetEnvironment(simulator) || PERFMETER
     init() { FrameMeter.startIfRequested() }
@@ -10,61 +11,67 @@ import SwiftUI
 
     var body: some Scene {
         WindowGroup {
-            #if DEBUG
-            if CommandLine.arguments.contains("-financialFreshnessPreview") {
-                NavigationStack { FinancialFreshnessPreviewScreen() }
-            } else if CommandLine.arguments.contains("-marketSessionPreview") {
-                MarketSessionPreview()
-            } else if CommandLine.arguments.contains("-sessionAlertsPreview") {
-                SessionAlertsView(preview: true)
-            } else if CommandLine.arguments.contains("-numericTransitionPreview") {
-                NumericTextPreview()
-            } else if CommandLine.arguments.contains("-predictionHistoryPreview") {
-                PulseDetail()
-            } else if CommandLine.arguments.contains("-priceWatch") {
-                NavigationStack { PriceWatchView() }
-            } else if CommandLine.arguments.contains("-priceWatchPreview") {
-                NavigationStack { PriceWatchView(preview: true) }
-            } else if MarketResearchFixture.launch != nil || CommandLine.arguments.contains("-openResearch") {
-                MarketResearchView()
-            } else if CommandLine.arguments.contains("-notificationSetupPreview") {
-                NavigationStack { PushSettingsView(preview: PushStatusPreview.fromArguments) }
-            } else if CommandLine.arguments.contains("-savedStoriesPreview") {
-                SavedStoriesPreview()
-            } else if CommandLine.arguments.contains("-institutionalPreview") {
-                InstitutionalPreview()
-            } else if CommandLine.arguments.contains("-tweetFeedPreview") {
-                TweetFeedPreview()
-            } else if CommandLine.arguments.contains("-tweetPreview") {
-                TweetPreview()
-            } else if CommandLine.arguments.contains("-storyLayoutPreview") {
-                StoryLayoutPreview()
-            } else if let index = CommandLine.arguments.firstIndex(of: "-articlePreview"),
-               let raw = CommandLine.arguments.dropFirst(index + 1).first, let url = URL(string: raw) {
-                ArticleReaderPreview(url: url)
-            } else if let index = CommandLine.arguments.firstIndex(of: "-dataPreview"), let route = CommandLine.arguments.dropFirst(index + 1).first {
-                DataReadingPreview(path: route)
-            } else if CommandLine.arguments.contains("-ptrReportPreview"),
-                      let source = URL(string: "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/20035408.pdf") {
-                HousePTRDetailView(member: "April McClain Delaney", filed: "2026-09-09", filingID: "20035408", year: 2026, source: source)
-            } else if CommandLine.arguments.contains("-statsPreview") {
-                MarketStatsPreview()
-            } else if CommandLine.arguments.contains("-storyDesignPreview") {
-                StoryDesignPreview()
-            } else if CommandLine.arguments.contains("-portfolioTickerPreview") {
-                PortfolioTickerPreview()
-            } else if CommandLine.arguments.contains("-portfolioPreview") {
-                PortfolioPreview()
-            } else if CommandLine.arguments.contains("-portfolioAudit") {
-                PortfolioView()
-            } else if let index = CommandLine.arguments.firstIndex(of: "-widgetGallery") {
-                WidgetGallery(page: CommandLine.arguments.dropFirst(index + 1).first ?? "home")
-            } else {
+            Group {
+                #if DEBUG
+                if CommandLine.arguments.contains("-financialFreshnessPreview") {
+                    NavigationStack { FinancialFreshnessPreviewScreen() }
+                } else if CommandLine.arguments.contains("-marketSessionPreview") {
+                    MarketSessionPreview()
+                } else if CommandLine.arguments.contains("-sessionAlertsPreview") {
+                    SessionAlertsView(preview: true)
+                } else if CommandLine.arguments.contains("-numericTransitionPreview") {
+                    NumericTextPreview()
+                } else if CommandLine.arguments.contains("-predictionHistoryPreview") {
+                    PulseDetail()
+                } else if CommandLine.arguments.contains("-priceWatch") {
+                    NavigationStack { PriceWatchView() }
+                } else if CommandLine.arguments.contains("-priceWatchPreview") {
+                    NavigationStack { PriceWatchView(preview: true) }
+                } else if MarketResearchFixture.launch != nil || CommandLine.arguments.contains("-openResearch") {
+                    MarketResearchView()
+                } else if CommandLine.arguments.contains("-notificationSetupPreview") {
+                    NavigationStack { PushSettingsView(preview: PushStatusPreview.fromArguments) }
+                } else if CommandLine.arguments.contains("-savedStoriesPreview") {
+                    SavedStoriesPreview()
+                } else if CommandLine.arguments.contains("-institutionalPreview") {
+                    InstitutionalPreview()
+                } else if CommandLine.arguments.contains("-tweetFeedPreview") {
+                    TweetFeedPreview()
+                } else if CommandLine.arguments.contains("-tweetPreview") {
+                    TweetPreview()
+                } else if CommandLine.arguments.contains("-storyLayoutPreview") {
+                    StoryLayoutPreview()
+                } else if let index = CommandLine.arguments.firstIndex(of: "-articlePreview"),
+                   let raw = CommandLine.arguments.dropFirst(index + 1).first, let url = URL(string: raw) {
+                    ArticleReaderPreview(url: url)
+                } else if let index = CommandLine.arguments.firstIndex(of: "-dataPreview"), let route = CommandLine.arguments.dropFirst(index + 1).first {
+                    DataReadingPreview(path: route)
+                } else if CommandLine.arguments.contains("-ptrReportPreview"),
+                          let source = URL(string: "https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/20035408.pdf") {
+                    HousePTRDetailView(member: "April McClain Delaney", filed: "2026-09-09", filingID: "20035408", year: 2026, source: source)
+                } else if CommandLine.arguments.contains("-statsPreview") {
+                    MarketStatsPreview()
+                } else if CommandLine.arguments.contains("-storyDesignPreview") {
+                    StoryDesignPreview()
+                } else if CommandLine.arguments.contains("-portfolioTickerPreview") {
+                    PortfolioTickerPreview()
+                } else if CommandLine.arguments.contains("-portfolioPreview") {
+                    PortfolioPreview()
+                } else if CommandLine.arguments.contains("-portfolioAudit") {
+                    PortfolioView()
+                } else if let index = CommandLine.arguments.firstIndex(of: "-widgetGallery") {
+                    WidgetGallery(page: CommandLine.arguments.dropFirst(index + 1).first ?? "home")
+                } else {
+                    FeedView()
+                }
+                #else
                 FeedView()
+                #endif
             }
-            #else
-            FeedView()
-            #endif
+            .task(id: scenePhase) {
+                guard scenePhase == .active else { return }
+                await PriceWatchStore.shared.refreshWhileActive()
+            }
         }
         .backgroundTask(.appRefresh(FeedStore.refreshTaskID)) {
             await FeedStore.shared.backgroundRefresh()

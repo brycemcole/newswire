@@ -86,7 +86,7 @@ final class PushDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCen
     }
 
     private static func registerPreferences() async {
-        guard UserDefaults.standard.bool(forKey: "pushEnabled") else { return }
+        guard UserDefaults.standard.bool(forKey: "pushEnabled") || !PriceWatchStore.shared.activityRegistration.isEmpty else { return }
         guard let device = UserDefaults.standard.string(forKey: "pushDevice") else {
             UserDefaults.standard.set("Waiting for Apple device registration", forKey: "pushRegistrationStatus")
             return
@@ -106,7 +106,7 @@ final class PushDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCen
         let symbols = Set(store.snapshot.positions.filter { realItems.contains($0.itemID) && $0.option == nil && $0.quantity != 0 }.map { $0.symbol.uppercased() }).sorted()
         do {
             try await NewswireAPI(baseURL: url).register(device: device, environment: environment, symbols: symbols, muted: AlertTopic.muted.sorted(), watches: PriceWatchStore.shared.registration, activities: PriceWatchStore.shared.activityRegistration, sessionAlerts: SessionAlertStore.shared.registration)
-            UserDefaults.standard.set("Synced: \(symbols.count) held stocks · \(SessionAlertStore.shared.alerts.count) market alerts", forKey: "pushServerStatus")
+            UserDefaults.standard.set("Synced: \(symbols.count) held stocks · \(PriceWatchStore.shared.watches.count) price watches · \(SessionAlertStore.shared.alerts.count) market alerts", forKey: "pushServerStatus")
         }
         catch {
             UserDefaults.standard.set("Sync failed: \(error.localizedDescription)", forKey: "pushServerStatus")

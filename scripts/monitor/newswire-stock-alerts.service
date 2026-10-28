@@ -1,0 +1,10 @@
+[Unit]
+Description=Newswire price alerts and Live Activity updates
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/newswire
+ExecStart=/usr/bin/node %h/newswire/scripts/monitor/stock-alerts.mjs
+TimeoutStartSec=55
+UMask=0077

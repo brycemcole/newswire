@@ -579,6 +579,17 @@ nonisolated enum MarketClient {
         return HistoryPoint.parse(result)
     }
 
+    @concurrent static func priceWatchQuote(_ symbol: String) async throws -> PriceWatchQuote {
+        let data = try await get("/v8/finance/chart/\(symbol)", [
+            URLQueryItem(name: "range", value: "1d"), URLQueryItem(name: "interval", value: "1m"),
+            URLQueryItem(name: "includePrePost", value: "true"),
+        ])
+        guard let chart = try JSONDecoder().decode(YValue.self, from: data)["chart"]?["result"]?.array.first,
+              chart["meta"]?["symbol"]?.text?.uppercased() == symbol.uppercased(),
+              let quote = PriceWatchQuote.parse(chart) else { throw MarketError.notFound(symbol) }
+        return quote
+    }
+
     @concurrent static func chart(_ symbol: String, range: ChartRange) async throws -> MarketChart {
         var query = range.query
         if range == .week || range == .month, OptionSymbol(symbol) != nil { query.interval = "1d"; query.prePost = false }
