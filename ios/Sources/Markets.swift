@@ -523,13 +523,6 @@ nonisolated enum MarketClient {
         return quotes.map { $0.applyingOvernight(trades[$0.symbol]) }
     }
 
-    @concurrent static func movers(_ list: MoverList) async throws -> [MarketQuote] {
-        let root = try await authed("/v1/finance/screener/predefined/saved", [
-            URLQueryItem(name: "scrIds", value: list.rawValue), URLQueryItem(name: "count", value: "8"),
-        ])
-        return (root["finance"]?["result"]?.array.first?["quotes"]?.array ?? []).compactMap(MarketQuote.init)
-    }
-
     @concurrent static func sparks(_ symbols: [String]) async throws -> [String: Spark] {
         guard !symbols.isEmpty else { return [:] }
         let data = try await get("/v7/finance/spark", [
@@ -702,7 +695,6 @@ nonisolated enum Overnight {
         return try? Date(trimmed, strategy: .iso8601)
     }
 }
-
 
 struct FlowLayout: Layout {
     var spacing: CGFloat
