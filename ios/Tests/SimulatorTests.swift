@@ -33,9 +33,28 @@ struct SimulatorTests {
         #expect(abs(try #require(test.dripShares) - drip / 200) < 1e-9)
         let flat = [HistoryPoint(date: day(-366), close: 100, adjusted: 100), HistoryPoint(date: day(-1), close: 150, adjusted: 150)]
         let noDividends = try #require(Backtest(history: flat, from: day(-370), amount: 1000, price: 150))
-        #expect(noDividends.dripValue == nil && noDividends.dripShares == nil)
+        #expect(noDividends.dripValue == nil && noDividends.dripShares == nil && noDividends.cashDividends == nil)
+        var reinvested = test
+        reinvested.reinvest = true
+        #expect(abs(reinvested.value - drip) < 1e-9 && abs(reinvested.change - dividends) < 1e-9)
+        #expect(abs(reinvested.worth(history[1]) - 1000) < 1e-9)
+        var flatReinvested = noDividends
+        flatReinvested.reinvest = true
+        #expect(flatReinvested.value == noDividends.value)
         #expect(Backtest(history: history, from: day(1), amount: 1000, price: 200) == nil)
         #expect(Backtest(history: history, from: day(-370), amount: 0, price: 200) == nil)
+    }
+
+    @Test func recoversCashDividendsFromAdjustedCloses() throws {
+        let history = [
+            HistoryPoint(date: day(-40), close: 50, adjusted: 49.5 * 0.98),
+            HistoryPoint(date: day(-30), close: 50, adjusted: 50 * 0.99 * 0.98),
+            HistoryPoint(date: day(-20), close: 48, adjusted: 48 * 0.98),
+            HistoryPoint(date: day(-10), close: 47, adjusted: 47),
+        ]
+        let test = try #require(Backtest(history: history, from: day(-35), amount: 1000, price: 47))
+        #expect(abs(test.dividendsPerShare - (50 * 0.01 + 48 * 0.02)) < 1e-9)
+        #expect(abs(try #require(test.cashDividends) - 20 * (0.5 + 0.96)) < 1e-9)
     }
 
     @Test func parsesChartHistoryAndSkipsNulls() throws {
