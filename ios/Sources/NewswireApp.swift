@@ -281,6 +281,7 @@ struct FeedView: View {
     @State private var storySuggestions = StorySuggestions()
     @State private var homeClock = Date.now
     @State private var alertSymbol: MarketSymbol?
+    @State private var marketAlerts = false
     @State private var skyScroll = SkyScroll()
     @AppStorage("headlinesOnly") private var headlinesOnly = false
     @AppStorage("compactHome") private var compactHome = false
@@ -296,11 +297,8 @@ struct FeedView: View {
     private var selectionAnimation: Animation { reduceMotion ? .easeOut(duration: 0.15) : .spring(duration: 0.38, bounce: 0.18) }
 
     private var subtitle: String {
-        guard !store.stories.isEmpty else {
-            if !store.configured { return "Not connected" }
-            return store.loading ? "Connecting" : "No stories yet"
-        }
-        return homeClock.formatted(.dateTime.weekday(.wide))
+        guard store.configured else { return "Not connected" }
+        return "\(homeClock.formatted(.dateTime.weekday(.wide))) · \(MarketStatusLine.status(at: homeClock))"
     }
 
     private var showsHome: Bool { search.isEmpty && store.filters.isEmpty }
@@ -336,7 +334,7 @@ struct FeedView: View {
                     if showsHome {
                         ForEach(HomeBlock.order(for: HomePhase.at(homeClock)), id: \.self) { block in
                             homeBlock(block)
-                                .listRowInsets(EdgeInsets(top: block == .status ? 8 : 6, leading: 16, bottom: 6, trailing: 16))
+                                .listRowInsets(EdgeInsets(top: block == .status ? 6 : 5, leading: 16, bottom: 5, trailing: 16))
                                 .listRowSeparator(.hidden)
                                 .listRowBackground(Color.clear)
                         }
@@ -453,6 +451,12 @@ struct FeedView: View {
                 .navigationBarTitleDisplayMode(.large)
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
+                        Button { marketAlerts = true } label: {
+                            Image(systemName: "bell").frame(width: 32, height: 32).contentShape(.rect)
+                        }
+                        .accessibilityLabel("Market alerts")
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
                         Menu {
                             Button { portfolio = true } label: { Label("Portfolio", systemImage: "briefcase") }
                             Button { settings = true } label: { Label("Settings", systemImage: "gearshape") }
@@ -472,6 +476,7 @@ struct FeedView: View {
             .sheet(isPresented: $showingSaved) { SavedStoriesView() }
             .sheet(isPresented: $portfolio) { PortfolioView() }
             .sheet(item: $alertSymbol) { PriceAlertComposer(symbol: $0.id) }
+            .sheet(isPresented: $marketAlerts) { SessionAlertsView() }
             .sheet(item: $asking, onDismiss: { askPrompt = "" }) { AskSheet(context: $0, initialQuestion: askPrompt) }
         }
         .task(id: store.category + "|" + search + "|" + store.filters.map(\.id).joined(separator: "|") + "|" + store.serverURL) {
@@ -589,6 +594,7 @@ struct FeedView: View {
             if HomeBriefingDemo.active {
                 for _ in 0..<20 where store.stories.isEmpty { try? await Task.sleep(for: .milliseconds(300)) }
                 await HomeBriefingDemo.install(stories: store.stories)
+                homeClock = .now
             }
             if let index = CommandLine.arguments.firstIndex(of: "-priceAlert"), let symbol = CommandLine.arguments.dropFirst(index + 1).first {
                 try? await Task.sleep(for: .seconds(1))

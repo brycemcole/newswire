@@ -43,6 +43,8 @@ nonisolated struct OptionQuote: Sendable, Equatable {
     let ask: Double
     let last: Double
     let lastTrade: Date?
+    /// Change of the last trade from the contract's previous close, per share.
+    let change: Double?
     let yahooVolatility: Double?
     let regular: Double
     let pre: Double?
@@ -211,6 +213,7 @@ nonisolated enum OptionChain {
                            ask: contract["ask"]?.raw ?? 0,
                            last: contract["lastPrice"]?.raw ?? 0,
                            lastTrade: contract["lastTradeDate"]?.raw.map { Date(timeIntervalSince1970: $0) },
+                           change: contract["change"]?.raw,
                            yahooVolatility: contract["impliedVolatility"]?.raw,
                            regular: regular,
                            pre: quote["preMarketPrice"]?.raw,

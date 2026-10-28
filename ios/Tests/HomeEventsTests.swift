@@ -16,9 +16,9 @@ struct HomeEventsTests {
         let events = TodayEventsCard.events(upcoming: [], earnings: reports, now: now)
         let event = try #require(events.only)
         #expect(event.title == "KEX, VFC, GEV earnings")
-        #expect(event.detail == "You hold GEV")
+        #expect(event.detail == nil && event.note == "GEV held")
         #expect(event.symbols == ["KEX", "VFC", "GEV"])
-        #expect(TodayEventsCard.timeLabel(event, now: now) == ("Before open", nil))
+        #expect(TodayEventsCard.time(event, now: now) == "Before open")
     }
 
     @Test func keepsEstimatedDatesApartAndShowsOnlyTheDay() throws {
@@ -29,10 +29,11 @@ struct HomeEventsTests {
         let events = TodayEventsCard.events(upcoming: [], earnings: reports, now: now)
         #expect(events.count == 2)
         let estimated = try #require(events.first { $0.symbols == ["VFC"] })
-        #expect(estimated.detail == "You hold this · date estimated")
-        #expect(TodayEventsCard.timeLabel(estimated, now: now) == ("Tomorrow", nil))
+        #expect(estimated.note == "Held · date est.")
+        #expect(TodayEventsCard.time(estimated, now: now) == "Tomorrow")
         let confirmed = try #require(events.first { $0.symbols == ["KEX"] })
-        #expect(TodayEventsCard.timeLabel(confirmed, now: now) == ("Before open", "Tmrw"))
+        #expect(confirmed.note == nil)
+        #expect(TodayEventsCard.time(confirmed, now: now) == "Tmrw before open")
     }
 
     @Test func macroEventsKeepMinutesAndOnlyTheirFact() throws {
@@ -45,9 +46,8 @@ struct HomeEventsTests {
         let events = TodayEventsCard.events(upcoming: upcoming, earnings: [], now: now)
         #expect(events.map(\.title) == ["Federal Funds Rate, FOMC Statement", "FOMC Press Conference", "ASML earnings"])
         #expect(events.map(\.detail) == ["Federal Funds Rate forecast 4.00%", nil, "Expected EPS 10.76"])
-        let press = events[1]
-        #expect(TodayEventsCard.timeLabel(press, now: now) == (at(29, 3, 30).formatted(.dateTime.hour().minute()), "Tmrw"))
-        #expect(TodayEventsCard.timeLabel(events[2], now: now) == ("Before open", "Tmrw"))
+        #expect(TodayEventsCard.time(events[1], now: now) == "Tmrw \(at(29, 3, 30).formatted(.dateTime.hour().minute()))")
+        #expect(TodayEventsCard.time(events[2], now: now) == "Tmrw before open")
     }
 
     @Test func dropsReportsOutsideTheWindow() {

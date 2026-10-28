@@ -188,7 +188,7 @@ struct HomeCardHeader<Trailing: View>: View {
             Spacer(minLength: 8)
             trailing.font(.caption).foregroundStyle(.secondary).lineLimit(1)
         }
-        .frame(minHeight: 28)
+        .frame(minHeight: 24)
     }
 }
 
@@ -198,10 +198,14 @@ struct MarketStatusLine: View {
     let now: Date
     var onQuote: (String) -> Void
     @State private var board = MarketBoard.shared
-    @State private var alerts = false
     @Environment(\.scenePhase) private var scenePhase
 
     private var phase: HomePhase { HomePhase.at(now) }
+
+    static func status(at now: Date) -> String {
+        let timing = timing(at: now)
+        return timing.isEmpty ? HomePhase.at(now).label : "\(HomePhase.at(now).label) · \(timing)"
+    }
 
     private var symbols: [(symbol: String, label: String)] {
         phase.usesFutures
@@ -209,8 +213,8 @@ struct MarketStatusLine: View {
             : [("SPY", "SPY"), ("QQQ", "QQQ"), ("IWM", "IWM"), ("^VIX", "VIX"), ("^TNX", "10Y")]
     }
 
-    private var timing: String {
-        switch phase {
+    private static func timing(at now: Date) -> String {
+        switch HomePhase.at(now) {
         case .open:
             guard let session = MarketClock.session(on: now) else { return "" }
             return "closes in \(HomeFormat.countdown(to: session.end, now: now))"
@@ -224,26 +228,14 @@ struct MarketStatusLine: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HomeCardHeader(title: phase.label) {
-                HStack(spacing: 8) {
-                    if !timing.isEmpty { Text(timing).monospacedDigit() }
-                    Button { alerts = true } label: {
-                        Image(systemName: "bell").font(.subheadline).frame(width: 32, height: 28).contentShape(.rect)
-                    }
-                    .buttonStyle(.plain).accessibilityLabel("Market alerts")
-                }
-            }
-            HStack(spacing: 0) {
-                ForEach(symbols, id: \.symbol) { item in
-                    Button { onQuote(item.symbol) } label: { chip(item.symbol, label: item.label, now: now) }
-                        .buttonStyle(.plain)
-                }
+        HStack(spacing: 0) {
+            ForEach(symbols, id: \.symbol) { item in
+                Button { onQuote(item.symbol) } label: { chip(item.symbol, label: item.label, now: now) }
+                    .buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, 16).padding(.vertical, 12)
+        .padding(.horizontal, 16).padding(.vertical, 11)
         .homeCard()
-        .sheet(isPresented: $alerts) { SessionAlertsView() }
         .task(id: "\(phase.usesFutures)-\(scenePhase == .active)") {
             guard scenePhase == .active, !FinancialFreshnessPreview.active else { return }
             while !Task.isCancelled {
@@ -383,7 +375,7 @@ struct SinceVisitCard: View {
                     }
                 }
             }
-            .padding(.horizontal, 16).padding(.vertical, 12)
+            .padding(.horizontal, 16).padding(.vertical, 10)
             .homeCard()
         }
     }
@@ -411,7 +403,7 @@ struct SinceVisitCard: View {
                     Text(item.detail).font(.caption).foregroundStyle(.secondary).lineLimit(2).multilineTextAlignment(.leading)
                 }
             }
-            .padding(.vertical, 8)
+            .padding(.vertical, 6)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(.rect)
         } primaryAction: {
@@ -459,57 +451,89 @@ struct PositionMoversCard: View {
     var openPortfolio: () -> Void
     @State private var board = MarketBoard.shared
     @State private var portfolio = PortfolioStore.shared
+    @State private var optionQuotes: [String: OptionQuote] = [:]
     @State private var expanded = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
 
     struct Row: Identifiable {
         let id: String
         let symbol: String
         let title: String
         let detail: String
-        let percent: Double?
+        /// Today's change in dollars, nil when unavailable rather than zero.
         let dollars: Double?
+        let percent: Double?
+        /// Market value, used to order the list so options rank by what the contracts are worth.
+        let value: Double?
+        /// What the right column shows when today's change is unavailable.
+        var fallback: (text: String, caption: String, tint: Double?)? = nil
         let urgent: Bool
+    }
+
+    /// The contract's move in the current regular session, per share. Before the open, or until the contract trades,
+    /// Yahoo's change still describes the previous session, so it is unavailable rather than today's move.
+    static func sessionChange(_ quote: OptionQuote, now: Date) -> Double? {
+        guard let change = quote.change, let traded = quote.lastTrade,
+              let session = MarketClock.session(on: now), now >= session.start, traded >= session.start else { return nil }
+        return change
+    }
+
+    static func rows(positions: [Position], quotes: [String: MarketQuote], options: [String: OptionQuote], now: Date) -> [Row] {
+        var stocks: [String: (quantity: Double, value: Double?)] = [:]
+        var result: [Row] = []
+        for position in positions {
+            let symbol = HomeSymbols.normalize(position.symbol)
+            if let option = position.option {
+                guard option.daysLeft >= 0 else { continue }
+                let multiplier = 100 * option.contracts
+                let contract = options[position.id]
+                let move = contract.flatMap { sessionChange($0, now: now) }
+                let value = contract.flatMap { $0.liveMarket ? $0.mark * multiplier : nil } ?? position.value
+                var parts = [abs(option.contracts) == 1 ? "1 contract" : "\(abs(option.contracts).formatted(.number.precision(.fractionLength(0...2)))) contracts"]
+                if let value { parts.append(HomeFormat.dollars(value, signed: false)) }
+                parts.append("\(option.daysLeft) DTE")
+                if let price = quotes[symbol]?.price {
+                    let distance = (price - option.strike) / option.strike * 100 * (option.isCall ? 1 : -1)
+                    parts.append(String(format: "%.1f%% %@", abs(distance), distance >= 0 ? "ITM" : "OTM"))
+                }
+                let previous = contract.map { $0.last - (move ?? 0) }
+                let fallback: (String, String, Double?)? = position.gain.map { (HomeFormat.dollars($0), "total", $0) }
+                    ?? quotes[symbol].map { (HomeFormat.percent($0.changePercent), "underlying", $0.changePercent) }
+                result.append(Row(id: position.id, symbol: symbol, title: "\(HomeFormat.display(symbol)) \(option.title)",
+                                  detail: parts.joined(separator: " · "), dollars: move.map { $0 * multiplier },
+                                  percent: move.flatMap { move in previous.flatMap { $0 > 0 ? move / $0 * 100 : nil } },
+                                  value: value, fallback: fallback, urgent: option.daysLeft <= 7))
+            } else {
+                let lots = stocks[symbol]
+                stocks[symbol] = (quantity: (lots?.quantity ?? 0) + position.quantity,
+                                  value: lots == nil ? position.value : lots!.value.flatMap { total in position.value.map { total + $0 } })
+            }
+        }
+        for (symbol, holding) in stocks {
+            let quote = quotes[symbol]
+            let shares = "\(holding.quantity.formatted(.number.precision(.fractionLength(0...2)))) sh"
+            let value = quote.map { $0.price * holding.quantity } ?? holding.value
+            let detail = [[shares, value.map { HomeFormat.dollars($0, signed: false) }].compactMap { $0 }.joined(separator: " · "),
+                          quote?.earnings.flatMap { earningsNote($0, now: now) }]
+                .compactMap { $0 }.joined(separator: " · ")
+            result.append(Row(id: symbol, symbol: symbol, title: HomeFormat.display(symbol), detail: detail,
+                              dollars: quote.map { $0.change * holding.quantity }, percent: quote?.changePercent, value: value, urgent: false))
+        }
+        return result.sorted { a, b in
+            if a.urgent != b.urgent { return a.urgent }
+            return abs(a.value ?? 0) > abs(b.value ?? 0)
+        }
     }
 
     private var rows: [Row] {
         _ = portfolio.snapshot.updated
-        var stocks: [String: Double] = [:]
-        var result: [Row] = []
-        for position in HomeSymbols.positions {
-            let symbol = HomeSymbols.normalize(position.symbol)
-            if let option = position.option {
-                guard option.daysLeft >= 0 else { continue }
-                var parts = ["\(option.daysLeft) DTE"]
-                let quote = board.quotes[symbol]
-                if let price = quote?.price {
-                    let distance = (price - option.strike) / option.strike * 100 * (option.isCall ? 1 : -1)
-                    parts.append(String(format: "%.1f%% %@", abs(distance), distance >= 0 ? "ITM" : "OTM"))
-                }
-                if let gain = position.gainPercent { parts.append("\(HomeFormat.percent(gain * 100)) total") }
-                result.append(Row(id: position.id, symbol: symbol, title: "\(HomeFormat.display(symbol)) \(option.title)",
-                                  detail: parts.joined(separator: " · "), percent: quote?.changePercent, dollars: nil, urgent: option.daysLeft <= 7))
-            } else {
-                stocks[symbol, default: 0] += position.quantity
-            }
-        }
-        for (symbol, quantity) in stocks {
-            let quote = board.quotes[symbol]
-            let shares = "\(quantity.formatted(.number.precision(.fractionLength(0...2)))) sh"
-            let detail = [quote.map { "\(shares) · \(HomeFormat.dollars($0.price * quantity, signed: false))" } ?? shares, quote?.earnings.flatMap(earningsNote)]
-                .compactMap { $0 }.joined(separator: " · ")
-            result.append(Row(id: symbol, symbol: symbol, title: HomeFormat.display(symbol), detail: detail,
-                              percent: quote?.changePercent, dollars: quote.map { $0.change * quantity }, urgent: false))
-        }
-        return result.sorted { a, b in
-            if a.urgent != b.urgent { return a.urgent }
-            return abs(a.dollars ?? 0) > abs(b.dollars ?? 0)
-        }
+        return Self.rows(positions: HomeSymbols.positions, quotes: board.quotes, options: optionQuotes, now: .now)
     }
 
-    private func earningsNote(_ date: Date) -> String? {
+    private static func earningsNote(_ date: Date, now: Date) -> String? {
         let calendar = Calendar.current
-        let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: .now), to: calendar.startOfDay(for: date)).day ?? 99
+        let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: now), to: calendar.startOfDay(for: date)).day ?? 99
         guard (0...7).contains(days) else { return nil }
         return days == 0 ? "Earnings today" : days == 1 ? "Earnings tomorrow" : "Earnings \(date.formatted(.dateTime.weekday(.abbreviated)))"
     }
@@ -523,7 +547,9 @@ struct PositionMoversCard: View {
                 HomeCardHeader(title: "Positions") {
                     HStack(spacing: 12) {
                         if rows.contains(where: { $0.dollars != nil }) {
-                            Text("\(HomeFormat.dollars(total)) today").fontWeight(.semibold).monospacedDigit().foregroundStyle(HomeFormat.tint(total))
+                            // Positions without a move today are left out of the total, so say so instead of implying all of them.
+                            Text("\(HomeFormat.dollars(total)) today\(rows.contains { $0.dollars == nil } ? " · partial" : "")")
+                                .fontWeight(.semibold).monospacedDigit().foregroundStyle(HomeFormat.tint(total))
                         }
                         Button("All", action: openPortfolio).fontWeight(.medium).tint(.wireAccent)
                     }
@@ -545,8 +571,29 @@ struct PositionMoversCard: View {
                     }.buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, 16).padding(.vertical, 12)
+            .padding(.horizontal, 16).padding(.vertical, 10)
             .homeCard()
+            .task(id: "\(HomeSymbols.positions.filter { $0.option != nil }.map(\.id))-\(scenePhase == .active)") { await refreshOptions() }
+        }
+    }
+
+    private func refreshOptions() async {
+        guard scenePhase == .active, !FinancialFreshnessPreview.active else { return }
+        while !Task.isCancelled {
+            let held = HomeSymbols.positions.filter { ($0.option?.daysLeft ?? -1) >= 0 }
+            guard !held.isEmpty else { optionQuotes = [:]; return }
+            let found = await withTaskGroup(of: (String, OptionQuote?).self) { group in
+                for position in held {
+                    group.addTask { (position.id, try? await OptionChain.quote(symbol: HomeSymbols.normalize(position.symbol), option: position.option!)) }
+                }
+                var result: [String: OptionQuote] = [:]
+                for await (id, quote) in group { if let quote { result[id] = quote } }
+                return result
+            }
+            guard !Task.isCancelled else { return }
+            // A failed fetch drops the contract back to its synced value rather than keeping an older quote as current.
+            optionQuotes = found
+            do { try await Task.sleep(for: .seconds(found.values.contains(where: \.liveMarket) ? 30 : 120)) } catch { return }
         }
     }
 
@@ -565,17 +612,22 @@ struct PositionMoversCard: View {
                 }
                 Spacer(minLength: 8)
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text(row.dollars.map { HomeFormat.dollars($0) } ?? row.percent.map(HomeFormat.percent) ?? "—")
-                        .font(.system(.subheadline, design: .rounded, weight: .semibold)).monospacedDigit()
-                        .foregroundStyle(HomeFormat.tint(row.dollars ?? row.percent))
-                    if row.dollars != nil, let percent = row.percent {
-                        Text(HomeFormat.percent(percent)).font(.caption).monospacedDigit().foregroundStyle(.secondary)
-                    } else if row.dollars == nil, row.percent != nil {
-                        Text("underlying").font(.caption2).foregroundStyle(.tertiary)
+                    if let dollars = row.dollars {
+                        Text(HomeFormat.dollars(dollars)).font(.system(.subheadline, design: .rounded, weight: .semibold)).monospacedDigit()
+                            .foregroundStyle(HomeFormat.tint(dollars))
+                        if let percent = row.percent {
+                            Text(HomeFormat.percent(percent)).font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                        }
+                    } else if let fallback = row.fallback {
+                        Text(fallback.text).font(.system(.subheadline, design: .rounded, weight: .semibold)).monospacedDigit()
+                            .foregroundStyle(HomeFormat.tint(fallback.tint))
+                        Text(fallback.caption).font(.caption2).foregroundStyle(.tertiary)
+                    } else {
+                        Text("—").font(.system(.subheadline, design: .rounded, weight: .semibold)).foregroundStyle(.secondary)
                     }
                 }
             }
-            .padding(.vertical, 8)
+            .padding(.vertical, 6)
             .contentShape(.rect)
         } primaryAction: { onQuote(row.symbol) }
         .buttonStyle(.plain)
@@ -595,7 +647,10 @@ struct TodayEventsCard: View {
         let id: String
         let at: Date
         let title: String
-        let detail: String?
+        /// A number worth a second line: a consensus forecast or EPS estimate.
+        var detail: String? = nil
+        /// A few words at the end of the line, such as "Held".
+        var note: String? = nil
         var symbols: [String] = []
         /// "Before open" or "After close" when the source only knows which side of the session the event falls on.
         var session: String? = nil
@@ -630,9 +685,9 @@ struct TodayEventsCard: View {
             let symbols = group.map(\.symbol)
             let names = symbols.prefix(3).map(HomeFormat.display).joined(separator: ", ") + (symbols.count > 3 ? " +\(symbols.count - 3)" : "")
             let held = group.filter(\.held).map { HomeFormat.display($0.symbol) }
-            let owner = held.isEmpty ? "Watchlist" : symbols.count == 1 ? "You hold this" : "You hold \(held.joined(separator: ", "))"
+            let owner: String? = held.isEmpty ? nil : held.count == symbols.count ? "Held" : "\(held.joined(separator: ", ")) held"
             result.append(Event(id: "earnings-\(key)", at: group.map(\.at).min()!, title: "\(names) earnings",
-                                detail: [owner, group[0].estimated ? "date estimated" : nil].compactMap { $0 }.joined(separator: " · "),
+                                note: [owner, group[0].estimated ? "date est." : nil].compactMap { $0 }.joined(separator: " · ").nilIfEmpty,
                                 symbols: symbols, session: session(group[0].timing), clockTime: false))
         }
         return Array(result.sorted { ($0.at, $0.title) < ($1.at, $1.title) }.prefix(5))
@@ -651,15 +706,15 @@ struct TodayEventsCard: View {
         return sentences.count > 1 ? sentences[0] : nil
     }
 
-    static func timeLabel(_ event: Event, now: Date, calendar: Calendar = .current) -> (time: String, day: String?) {
+    static func time(_ event: Event, now: Date, calendar: Calendar = .current) -> String {
+        let midnight = calendar.component(.hour, from: event.at) == 0 && calendar.component(.minute, from: event.at) == 0
+        let clock = event.session ?? (event.clockTime && !midnight ? event.at.formatted(.dateTime.hour().minute()) : nil)
         let day: String? = calendar.isDate(event.at, inSameDayAs: now) ? nil
             : calendar.isDate(event.at, inSameDayAs: calendar.date(byAdding: .day, value: 1, to: now)!) ? "Tmrw"
             : event.at.formatted(.dateTime.weekday(.abbreviated))
-        let midnight = calendar.component(.hour, from: event.at) == 0 && calendar.component(.minute, from: event.at) == 0
-        if let time = event.session ?? (event.clockTime && !midnight ? event.at.formatted(.dateTime.hour().minute()) : nil) {
-            return (time, day)
-        }
-        return (day.map { $0 == "Tmrw" ? "Tomorrow" : $0 } ?? "Today", nil)
+        guard let day else { return clock ?? "Today" }
+        guard let clock else { return day == "Tmrw" ? "Tomorrow" : day }
+        return "\(day) \(event.session == nil ? clock : clock.lowercased())"
     }
 
     private var upcoming: [MarketPulse.Upcoming] {
@@ -684,16 +739,11 @@ struct TodayEventsCard: View {
     var body: some View {
         let events = Self.events(upcoming: upcoming, earnings: earnings, now: now)
         if !events.isEmpty {
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 0) {
                 HomeCardHeader(title: "Coming up") { EmptyView() }
-                VStack(spacing: 0) {
-                    ForEach(events) { event in
-                        row(event)
-                        if event.id != events.last?.id { Divider().padding(.leading, 84) }
-                    }
-                }
+                ForEach(events) { row($0) }
             }
-            .padding(.horizontal, 16).padding(.vertical, 12)
+            .padding(.horizontal, 16).padding(.vertical, 10)
             .homeCard()
         }
     }
@@ -714,26 +764,29 @@ struct TodayEventsCard: View {
     }
 
     private func line(_ event: Event) -> some View {
-        let label = Self.timeLabel(event, now: now)
-        return HStack(alignment: .firstTextBaseline, spacing: 12) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(label.time).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                if let day = label.day { Text(day).font(.caption2).foregroundStyle(.tertiary) }
-            }
-            .lineLimit(1).frame(width: 72, alignment: .leading)
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(Self.time(event, now: now)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                .lineLimit(1).minimumScaleFactor(0.85).frame(width: 92, alignment: .leading)
             VStack(alignment: .leading, spacing: 1) {
                 Text(event.title).font(.subheadline.weight(.medium)).lineLimit(1)
-                if let detail = event.detail, !detail.isEmpty {
+                if let detail = event.detail {
                     Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
-            Spacer(minLength: 0)
+            Spacer(minLength: 8)
+            if let note = event.note {
+                Text(note).font(.caption).foregroundStyle(.secondary).lineLimit(1).layoutPriority(1)
+            }
         }
-        .padding(.vertical, 7)
+        .padding(.vertical, 4)
         .opacity(event.at < now ? 0.45 : 1)
         .contentShape(.rect)
         .accessibilityElement(children: .combine)
     }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }
 
 // MARK: Outlook
