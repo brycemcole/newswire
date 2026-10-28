@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { build } from 'esbuild';
 
 const source = (await build({ entryPoints: ['src/quotes.ts'], bundle: true, format: 'esm', write: false })).outputFiles[0].text;
-const { candidates, accepts, shape } = await import(`data:text/javascript,${encodeURIComponent(source)}`);
+const { candidates, accepts, shape, withOvernight, overnightHour } = await import(`data:text/javascript,${encodeURIComponent(source)}`);
 
 test('company names only match the listed company', () => {
   assert.ok(candidates("SK Hynix Shares Fall as Solidigm's Potential US IPO Sours Mood").includes('SK Hynix'));
@@ -39,6 +39,25 @@ test('quote shape separates the regular session from after hours', () => {
   assert.equal(open.state, 'regular');
   assert.equal(open.extended, null);
   assert.equal(shape({ meta: { symbol: 'X' } }), null);
+});
+
+test('overnight trades attach as their own session without replacing the regular close', () => {
+  const at = iso => Date.parse(iso);
+  const base = { symbol: 'AAPL', name: 'Apple', currency: 'USD', exchange: 'NasdaqGS', state: 'closed', price: 100, change: 1, changePercent: 1, previousClose: 99,
+    time: '2026-10-27T20:00:00.000Z', extended: { session: 'post', price: 101, change: 1, changePercent: 1, time: '2026-10-27T23:55:00.000Z' }, points: [], extendedPoints: [], url: '' };
+  const now = at('2026-10-28T06:00:00Z');
+  const night = withOvernight(base, { price: 102, time: '2026-10-28T05:58:00.123Z' }, now);
+  assert.deepEqual(night.extended, { session: 'overnight', price: 102, change: 2, changePercent: 2, time: '2026-10-28T05:58:00.123Z' });
+  assert.equal(night.price, 100);
+  assert.equal(night.time, base.time);
+  assert.equal(withOvernight(base, null, now), base, 'provider failure keeps the Yahoo quote');
+  assert.equal(withOvernight(base, { price: 102, time: '2026-10-27T23:50:00Z' }, now), base, 'older than the after-hours print');
+  assert.equal(withOvernight(base, { price: 102, time: '2026-10-28T09:00:00Z' }, at('2026-10-28T09:05:00Z')), base, 'pre-market trade is not overnight');
+  assert.equal(withOvernight(base, { price: 102, time: '2026-10-28T00:30:00Z' }, at('2026-10-28T07:59:00Z')).extended.session, 'overnight');
+  assert.equal(withOvernight({ ...base, state: 'regular' }, { price: 102, time: '2026-10-28T05:58:00Z' }, now).extended.session, 'post');
+  assert.equal(withOvernight(base, { price: 102, time: '2026-10-24T07:59:00Z' }, at('2026-10-25T01:00:00Z')), base, 'Friday early-morning trade is stale by Saturday night');
+  assert.equal(withOvernight(base, { price: 102, time: '2026-10-28T07:00:00Z' }, now), base, 'future trade time');
+  assert.ok(overnightHour(at('2026-10-28T00:00:00Z')) && overnightHour(at('2026-10-28T07:59:00Z')) && !overnightHour(at('2026-10-28T08:00:00Z')) && !overnightHour(at('2026-10-27T23:59:00Z')));
 });
 
 test('a failed Yahoo lookup is not cached as "no match"', async () => {

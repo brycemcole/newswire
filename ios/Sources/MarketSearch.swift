@@ -126,16 +126,17 @@ nonisolated struct MarketQuote: Sendable, Hashable, Identifiable {
     let type: String?
     let exchange: String?
     let currency: String
-    let price: Double
-    let change: Double
-    let changePercent: Double
+    private(set) var price: Double
+    private(set) var change: Double
+    private(set) var changePercent: Double
     let marketCap: Double?
-    let extendedLabel: String?
-    let extendedPercent: Double?
+    private(set) var extendedLabel: String?
+    private(set) var extendedPercent: Double?
     let earnings: Date?
     let earningsEstimated: Bool
-    /// Source timestamp of the selected price (pre, post or regular session), not a fetch time.
-    let observedAt: Date?
+    /// Source timestamp of the selected price (pre, post, overnight or regular session), not a fetch time.
+    private(set) var observedAt: Date?
+    let regularPrice: Double
 
     var id: String { symbol }
 
@@ -146,6 +147,7 @@ nonisolated struct MarketQuote: Sendable, Hashable, Identifiable {
         let price = rawPrice / divisor
         self.symbol = symbol
         self.currency = currency
+        regularPrice = price
         name = value["longName"]?.text ?? value["shortName"]?.text ?? value["displayName"]?.text ?? symbol
         type = value["quoteType"]?.text
         exchange = value["fullExchangeName"]?.text
@@ -181,6 +183,22 @@ nonisolated struct MarketQuote: Sendable, Hashable, Identifiable {
         earnings = value["earningsTimestampStart"]?.date ?? value["earningsTimestamp"]?.date
         if case .bool(true)? = value["isEarningsDateEstimate"] { earningsEstimated = true } else { earningsEstimated = false }
     }
+
+    func applyingOvernight(_ trade: MarketTick?, now: Date = .now) -> MarketQuote {
+        guard let trade, trade.symbol == symbol, currency == "USD", regularPrice > 0, trade.date > observedAt ?? .distantPast,
+              now.timeIntervalSince(trade.date) < 8 * 3600 else { return self }
+        var next = self
+        next.price = trade.price
+        next.change = trade.price - regularPrice
+        next.changePercent = next.change / regularPrice * 100
+        next.extendedLabel = "Overnight"
+        next.extendedPercent = next.changePercent
+        next.observedAt = trade.date
+        return next
+    }
+
+    var extendedIcon: String { extendedLabel == "Pre" ? "sunrise" : extendedLabel == "Overnight" ? "moon.stars" : "moon" }
+    var extendedDescription: String { extendedLabel == "Pre" ? "Premarket" : extendedLabel == "Overnight" ? "Overnight" : "After hours" }
 
     var kind: String {
         switch type {
@@ -860,10 +878,10 @@ struct MarketRow: View {
                     .font(.body.weight(.semibold)).lineLimit(1)
                 HStack(spacing: 6) {
                     Text(symbol).font(.caption.monospaced()).foregroundStyle(.secondary)
-                    if let label = quote?.extendedLabel {
-                        Image(systemName: label == "Pre" ? "sunrise" : "moon")
+                    if let quote, quote.extendedLabel != nil {
+                        Image(systemName: quote.extendedIcon)
                             .font(.caption2).foregroundStyle(.secondary)
-                            .accessibilityLabel(label == "Pre" ? "Premarket" : "After hours")
+                            .accessibilityLabel(quote.extendedDescription)
                     }
                     if let tag, !tag.isEmpty {
                         Text(tag).font(.caption2.weight(.medium)).foregroundStyle(.tertiary).lineLimit(1)
@@ -949,10 +967,10 @@ struct IndexCard: View {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 4) {
                     Text(label ?? symbol).font(.footnote.weight(.bold).monospaced()).lineLimit(1)
-                    if let label = quote?.extendedLabel {
-                        Image(systemName: label == "Pre" ? "sunrise" : "moon")
+                    if let quote, quote.extendedLabel != nil {
+                        Image(systemName: quote.extendedIcon)
                             .font(.caption2).foregroundStyle(.secondary)
-                            .accessibilityLabel(label == "Pre" ? "Premarket" : "After hours")
+                            .accessibilityLabel(quote.extendedDescription)
                     }
                 }
                 Text(quote?.name ?? " ").font(.caption2).foregroundStyle(.secondary).lineLimit(1)

@@ -33,7 +33,7 @@ export interface Mention { symbol: string; match: string }
 export interface Quote {
   symbol: string; name: string; match?: string; currency: string; exchange: string; state: 'pre' | 'regular' | 'post' | 'closed';
   price: number; change: number; changePercent: number; previousClose: number; time: string;
-  extended: { session: 'pre' | 'post'; price: number; change: number; changePercent: number; time: string } | null;
+  extended: { session: 'pre' | 'post' | 'overnight'; price: number; change: number; changePercent: number; time: string } | null;
   points: number[]; extendedPoints: number[]; url: string;
   source?: string; fetchedAt?: string; dataStatus?: 'current' | 'closed' | 'stale';
 }
@@ -188,7 +188,40 @@ export function newestQuote(values: (Omit<Quote, 'match'> | null)[], now = Date.
   return { ...selected, ...(usEquity ? { dataStatus: quoteStatus(Date.parse(selected.time), now) } : {}) };
 }
 
+export interface OvernightTrade { price: number; time: string }
+
+export function overnightHour(time: number): boolean {
+  const hour = Number(new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', hourCycle: 'h23' }).format(new Date(time)));
+  return hour >= 20 || hour < 4;
+}
+
+export function withOvernight(value: Omit<Quote, 'match'>, trade: OvernightTrade | null, now = Date.now()): Omit<Quote, 'match'> {
+  if (!trade || value.state === 'regular' || !Number.isFinite(trade.price) || trade.price <= 0) return value;
+  const time = Date.parse(trade.time);
+  if (!Number.isFinite(time) || time > now + 60000 || now - time > 8 * 3600000 || !overnightHour(time) || time <= Date.parse(value.time)) return value;
+  if (value.extended && Date.parse(value.extended.time) >= time) return value;
+  return { ...value, extended: { session: 'overnight', price: round(trade.price), change: round(trade.price - value.price), changePercent: round((trade.price - value.price) / value.price * 100), time: new Date(time).toISOString() } };
+}
+
+const usListed = (value: Omit<Quote, 'match'>) => value.currency === 'USD' && /^[A-Z]{1,5}(?:-[A-Z])?$/.test(value.symbol) && /nasdaq|nyse|nms|ngm|ncm|pcx|ase|bats|cboe/i.test(value.exchange);
+
+async function overnight(symbol: string): Promise<OvernightTrade | null> {
+  return cached(`overnight/v1/${encodeURIComponent(symbol)}`, 20, async () => {
+    const response = await fetch(`https://api.robinhood.com/marketdata/quotes/?symbols=${encodeURIComponent(symbol.replace('-', '.'))}&bounds=24_5`, { headers: { 'User-Agent': agent, Accept: 'application/json' }, signal: AbortSignal.timeout(3000) });
+    if (!response.ok) return null;
+    const row = ((await response.json()) as { results?: { last_non_reg_trade_price?: string; venue_last_non_reg_trade_time?: string }[] }).results?.[0];
+    const price = Number(row?.last_non_reg_trade_price);
+    return row?.venue_last_non_reg_trade_time && Number.isFinite(price) ? { price, time: row.venue_last_non_reg_trade_time } : null;
+  }).catch(() => null);
+}
+
 export async function quote(symbol: string, env?: MarketDataEnv): Promise<Omit<Quote, 'match'> | null> {
+  const value = await regularQuote(symbol, env);
+  if (!value || value.state === 'regular' || !usListed(value) || !overnightHour(Date.now())) return value;
+  return withOvernight(value, await overnight(value.symbol));
+}
+
+async function regularQuote(symbol: string, env?: MarketDataEnv): Promise<Omit<Quote, 'match'> | null> {
   const target = aliases[symbol.toUpperCase()] ?? symbol;
   const [original, additional] = await Promise.all([
     cached(`quote/v2/${encodeURIComponent(target)}`, 20, async () => {

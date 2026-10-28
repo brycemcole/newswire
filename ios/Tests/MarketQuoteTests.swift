@@ -75,4 +75,32 @@ struct MarketQuoteTests {
         #expect(try stamped("2026-10-18T11:50:00Z", type: "CRYPTOCURRENCY").freshness(at: sunday) == .live)
         #expect(try stamped("2026-10-18T11:50:00Z").freshness(at: sunday) == .closed)
     }
+
+    @Test func overnightTradeReplacesClosedQuoteOnlyWhenNewer() throws {
+        let closed = try quote(state: "CLOSED")
+        let now = Date(timeIntervalSince1970: 1_793_170_000)
+        let night = closed.applyingOvernight(MarketTick(symbol: "SPY", price: 104, date: now - 60), now: now)
+        #expect(night.price == 104 && night.change == 4 && night.changePercent == 4 && night.extendedLabel == "Overnight" && night.extendedIcon == "moon.stars")
+        #expect(night.regularPrice == 100 && night.observedAt == now - 60)
+        #expect(closed.applyingOvernight(nil, now: now) == closed)
+        #expect(closed.applyingOvernight(MarketTick(symbol: "QQQ", price: 104, date: now - 60), now: now) == closed)
+        #expect(closed.applyingOvernight(MarketTick(symbol: "SPY", price: 104, date: Date(timeIntervalSince1970: 150)), now: now) == closed)
+        #expect(closed.applyingOvernight(MarketTick(symbol: "SPY", price: 104, date: now - 9 * 3600), now: now) == closed)
+    }
+
+    @Test func overnightParsingKeepsOnlyTradesInsideTheOvernightWindow() throws {
+        func row(_ time: String) throws -> YValue {
+            try JSONDecoder().decode(YValue.self, from: Data(#"{"symbol":"AAPL","last_non_reg_trade_price":"346.500000","venue_last_non_reg_trade_time":"\#(time)"}"#.utf8))
+        }
+        let now = try Date("2026-10-28T08:00:00Z", strategy: .iso8601)
+        let trade = try #require(Overnight.parse(row("2026-10-28T07:41:09.20680323Z"), symbol: "AAPL", now: now))
+        let traded = try Date("2026-10-28T07:41:09Z", strategy: .iso8601)
+        #expect(trade.price == 346.5 && trade.date == traded)
+        let row23 = try row("2026-10-27T23:55:00Z")
+        #expect(Overnight.parse(row23, symbol: "AAPL", now: now) == nil)
+        let row08 = try row("2026-10-28T08:30:00Z")
+        #expect(Overnight.parse(row08, symbol: "AAPL", now: now) == nil)
+        #expect(Overnight.inSession(try Date("2026-10-28T00:00:00Z", strategy: .iso8601)))
+        #expect(!Overnight.inSession(now))
+    }
 }
