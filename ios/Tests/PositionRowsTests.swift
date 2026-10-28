@@ -49,4 +49,36 @@ struct PositionRowsTests {
         let option = try #require(rows.first)
         #expect(option.value == 1800 && option.dollars == nil && option.percent == nil)
     }
+
+    private func fund(_ symbol: String, name: String? = nil, value: Double? = 4688) -> Position {
+        Position(id: "b|\(symbol)", itemID: "b", institution: "Empower", account: "401(k)", symbol: symbol, name: name,
+                 option: nil, quantity: 12.84, price: nil, value: value, reportedCost: nil)
+    }
+
+    @Test func planFundsMapToTheETFTrackingTheirIndex() {
+        #expect(fund("SP.500.INDEX.PL.CL.D").proxySymbol == "SPY")
+        #expect(fund("SP.INTL.INDEX.D").proxySymbol == "VXUS")
+        #expect(fund("SP.SMALL.CP.IND.CL.D").proxySymbol == "IWM")
+        #expect(fund("SP.MID.CAP.INDEX.D").proxySymbol == "IJH")
+        #expect(fund("US.BOND.INDEX.CL.F").proxySymbol == "AGG")
+        #expect(fund("TARGET.2055.FUND.K").proxySymbol == nil)
+        #expect(fund("VOO").proxySymbol == nil)
+        #expect(shares.proxySymbol == nil && call.proxySymbol == nil)
+    }
+
+    @Test func planFundEstimatesTodayFromTheProxyPercentOnItsSyncedValue() throws {
+        let data = Data("""
+        {"symbol":"SPY","regularMarketPrice":600,"regularMarketTime":100,"regularMarketChange":6,"regularMarketChangePercent":1,"marketState":"REGULAR"}
+        """.utf8)
+        let spy = try #require(MarketQuote(JSONDecoder().decode(YValue.self, from: data)))
+        let row = try #require(PositionMoversCard.rows(positions: [fund("SP.500.INDEX.PL.CL.D")], quotes: ["SPY": spy], options: [:], now: session).first)
+        #expect(row.symbol == "SPY" && row.proxy == "SPY" && row.title == "SP.500.INDEX.PL.CL.D")
+        #expect(row.value == 4688 && abs((row.dollars ?? 0) - 46.88) < 1e-9 && row.percent == 1)
+        #expect(row.detail == "12.84 sh · $4,688 · tracks SPY")
+
+        let unquoted = try #require(PositionMoversCard.rows(positions: [fund("SP.500.INDEX.PL.CL.D")], quotes: [:], options: [:], now: session).first)
+        #expect(unquoted.dollars == nil && unquoted.value == 4688)
+        let unvalued = try #require(PositionMoversCard.rows(positions: [fund("SP.500.INDEX.PL.CL.D", value: nil)], quotes: ["SPY": spy], options: [:], now: session).first)
+        #expect(unvalued.dollars == nil && unvalued.percent == 1)
+    }
 }

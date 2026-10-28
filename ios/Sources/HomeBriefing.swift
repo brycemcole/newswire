@@ -58,6 +58,12 @@ enum HomeSymbols {
         return positions.map(\.symbol).map(normalize).filter { seen.insert($0).inserted }
     }
 
+    /// Held symbols to fetch quotes for, with plan funds replaced by the ETF that tracks them.
+    static var quoted: [String] {
+        var seen = Set<String>()
+        return positions.map { $0.proxySymbol ?? normalize($0.symbol) }.filter { seen.insert($0).inserted }
+    }
+
     static var watched: [String] {
         #if DEBUG
         if let demo = HomeBriefingDemo.watched { return demo }
@@ -237,7 +243,7 @@ struct MarketStatusLine: View {
         .task(id: "\(phase.usesFutures)-\(scenePhase == .active)") {
             guard scenePhase == .active, !FinancialFreshnessPreview.active else { return }
             while !Task.isCancelled {
-                await board.refresh(quotes: symbols.map(\.symbol) + HomeSymbols.held, sparks: [])
+                await board.refresh(quotes: symbols.map(\.symbol) + HomeSymbols.quoted, sparks: [])
                 do { try await Task.sleep(for: .seconds(30)) } catch { return }
             }
         }
@@ -462,6 +468,8 @@ struct PositionMoversCard: View {
         /// What the right column shows when today's change is unavailable.
         var fallback: (text: String, caption: String, tint: Double?)? = nil
         let urgent: Bool
+        /// The ETF whose move estimates this plan fund's; `dollars` and `percent` are then estimates.
+        var proxy: String? = nil
     }
 
     /// The contract's move in the current regular session, per share. Before the open, or until the contract trades,
@@ -473,7 +481,7 @@ struct PositionMoversCard: View {
     }
 
     static func rows(positions: [Position], quotes: [String: MarketQuote], options: [String: OptionQuote], now: Date) -> [Row] {
-        var stocks: [String: (quantity: Double, value: Double?)] = [:]
+        var stocks: [String: (quantity: Double, value: Double?, proxy: String?)] = [:]
         var result: [Row] = []
         for position in positions {
             let symbol = HomeSymbols.normalize(position.symbol)
@@ -496,12 +504,22 @@ struct PositionMoversCard: View {
             } else {
                 let lots = stocks[symbol]
                 stocks[symbol] = (quantity: (lots?.quantity ?? 0) + position.quantity,
-                                  value: lots == nil ? position.value : lots!.value.flatMap { total in position.value.map { total + $0 } })
+                                  value: lots == nil ? position.value : lots!.value.flatMap { total in position.value.map { total + $0 } },
+                                  proxy: position.proxySymbol)
             }
         }
         for (symbol, holding) in stocks {
-            let quote = quotes[symbol]
             let shares = "\(holding.quantity.formatted(.number.precision(.fractionLength(0...2)))) sh"
+            if let proxy = holding.proxy {
+                // The fund's own price differs from the ETF's, so only the ETF's percentage move applies to the synced value.
+                let quote = quotes[proxy]
+                let detail = [shares, holding.value.map(HomeFormat.whole), "tracks \(proxy)"].compactMap { $0 }.joined(separator: " · ")
+                result.append(Row(id: symbol, symbol: proxy, title: HomeFormat.display(symbol), detail: detail,
+                                  dollars: quote.flatMap { quote in holding.value.map { $0 * quote.changePercent / 100 } },
+                                  percent: quote?.changePercent, value: holding.value, urgent: false, proxy: proxy))
+                continue
+            }
+            let quote = quotes[symbol]
             let value = quote.map { $0.price * holding.quantity } ?? holding.value
             let detail = [[shares, value.map(HomeFormat.whole)].compactMap { $0 }.joined(separator: " · "),
                           quote?.earnings.flatMap { earningsNote($0, now: now) }]
@@ -546,7 +564,7 @@ struct PositionMoversCard: View {
                     HStack(spacing: 4) {
                         if rows.contains(where: { $0.dollars != nil }) {
                             // Positions without a move today are left out of the total, so say so instead of implying all of them.
-                            Text("\(HomeFormat.dollars(total)) today\(rows.contains { $0.dollars == nil } ? " · partial" : "")")
+                            Text("\(rows.contains { $0.proxy != nil && $0.dollars != nil } ? "≈" : "")\(HomeFormat.dollars(total)) today\(rows.contains { $0.dollars == nil } ? " · partial" : "")")
                                 .fontWeight(.semibold).foregroundStyle(HomeFormat.tint(total))
                             Text("·")
                         }
@@ -595,7 +613,7 @@ struct PositionMoversCard: View {
                 Text(row.detail).font(.caption).monospacedDigit().foregroundStyle(.secondary)
                 Spacer(minLength: 6)
                 if let dollars = row.dollars {
-                    Text(HomeFormat.dollars(dollars)).font(.system(.subheadline, design: .rounded, weight: .semibold))
+                    Text((row.proxy == nil ? "" : "≈") + HomeFormat.dollars(dollars)).font(.system(.subheadline, design: .rounded, weight: .semibold))
                         .foregroundStyle(HomeFormat.tint(dollars)).layoutPriority(2)
                     if let percent = row.percent {
                         Text(HomeFormat.percent(percent)).font(.caption2).foregroundStyle(.secondary).layoutPriority(1)
