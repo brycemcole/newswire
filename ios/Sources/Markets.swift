@@ -105,12 +105,16 @@ nonisolated struct MarketChart: Sendable {
     let regular: MarketSession?
     let post: MarketSession?
     var events: [ChartCatalyst] = []
+    var overnightTrade: MarketTick?
 
     var high: Double? { points.map(\.close).max() }
     var low: Double? { points.map(\.close).min() }
     var open: Double? { points.first { !$0.extended }?.open ?? points.first?.open }
 
     var extendedQuote: (label: String, price: Double)? {
+        if let trade = overnightTrade, let last = points.last, trade.date > last.date, Date.now.timeIntervalSince(trade.date) < 8 * 3600 {
+            return ("Overnight", trade.price)
+        }
         guard let last = points.last, last.extended else { return nil }
         if let pre, pre.contains(last.date) { return ("Pre-market", last.close) }
         if let post, last.date >= post.start { return ("After hours", last.close) }
@@ -513,7 +517,10 @@ nonisolated enum MarketClient {
     @concurrent static func quotes(_ symbols: [String]) async throws -> [MarketQuote] {
         guard !symbols.isEmpty else { return [] }
         let root = try await authed("/v7/finance/quote", [URLQueryItem(name: "symbols", value: symbols.joined(separator: ","))])
-        return (root["quoteResponse"]?["result"]?.array ?? []).compactMap(MarketQuote.init)
+        let quotes = (root["quoteResponse"]?["result"]?.array ?? []).compactMap(MarketQuote.init)
+        guard Overnight.inSession() else { return quotes }
+        let trades = await Overnight.trades(quotes.filter { $0.currency == "USD" && ["EQUITY", "ETF"].contains($0.type ?? "") }.map(\.symbol))
+        return quotes.map { $0.applyingOvernight(trades[$0.symbol]) }
     }
 
     @concurrent static func movers(_ list: MoverList) async throws -> [MarketQuote] {
@@ -582,6 +589,7 @@ nonisolated enum MarketClient {
     @concurrent static func chart(_ symbol: String, range: ChartRange) async throws -> MarketChart {
         var query = range.query
         if range == .week || range == .month, OptionSymbol(symbol) != nil { query.interval = "1d"; query.prePost = false }
+        async let night = range == .day && Overnight.inSession() ? Overnight.trade(symbol.uppercased()) : nil
         let data: Data
         do {
             data = try await get("/v8/finance/chart/\(symbol)", [
@@ -628,7 +636,7 @@ nonisolated enum MarketClient {
             }
             if let close, close > last.date { slots += Int(close.timeIntervalSince(last.date) / 120) }
         }
-        return MarketChart(
+        var chart = MarketChart(
             symbol: meta.symbol,
             name: meta.longName ?? meta.shortName ?? meta.symbol,
             exchange: meta.fullExchangeName ?? "",
@@ -651,8 +659,50 @@ nonisolated enum MarketClient {
             post: session(current?.post),
             events: ChartCatalyst.corporateActions(result.events)
         )
+        if currency == "USD", ["EQUITY", "ETF"].contains(meta.instrumentType ?? ""), let trade = await night, trade.symbol == meta.symbol {
+            chart.overnightTrade = trade
+        }
+        return chart
     }
 }
+
+nonisolated enum Overnight {
+    static func inSession(_ date: Date = .now) -> Bool {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/New_York")!
+        let hour = calendar.component(.hour, from: date)
+        return hour >= 20 || hour < 4
+    }
+
+    static func trade(_ symbol: String) async -> MarketTick? { await trades([symbol])[symbol] }
+
+    static func trades(_ symbols: [String]) async -> [String: MarketTick] {
+        let eligible = symbols.filter { $0.range(of: #"^[A-Z]{1,5}(-[A-Z])?$"#, options: .regularExpression) != nil }
+        guard !eligible.isEmpty,
+              let url = URL(string: "https://api.robinhood.com/marketdata/quotes/?symbols=\(eligible.map { $0.replacingOccurrences(of: "-", with: ".") }.joined(separator: ","))&bounds=24_5"),
+              let response = try? await MarketClient.load(url), (200..<300).contains(response.1),
+              let rows = (try? JSONDecoder().decode(YValue.self, from: response.0))?["results"]?.array else { return [:] }
+        var trades: [String: MarketTick] = [:]
+        for row in rows {
+            guard let symbol = row["symbol"]?.text?.replacingOccurrences(of: ".", with: "-"), let trade = parse(row, symbol: symbol) else { continue }
+            trades[symbol] = trade
+        }
+        return trades
+    }
+
+    static func parse(_ row: YValue, symbol: String, now: Date = .now) -> MarketTick? {
+        guard let price = row["last_non_reg_trade_price"]?.text.flatMap(Double.init), price > 0,
+              let stamp = row["venue_last_non_reg_trade_time"]?.text, let date = parseDate(stamp),
+              inSession(date), date <= now.addingTimeInterval(60) else { return nil }
+        return MarketTick(symbol: symbol, price: price, date: date)
+    }
+
+    private static func parseDate(_ text: String) -> Date? {
+        let trimmed = text.replacingOccurrences(of: #"\.\d+"#, with: "", options: .regularExpression)
+        return try? Date(trimmed, strategy: .iso8601)
+    }
+}
+
 
 struct FlowLayout: Layout {
     var spacing: CGFloat

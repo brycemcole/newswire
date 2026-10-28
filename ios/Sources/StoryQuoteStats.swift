@@ -19,7 +19,7 @@ struct StoryQuoteStats: View {
                     .numericTextTransition(value: quote.changePercent).foregroundStyle(QuoteFormat.color(quote.changePercent))
             }
             if let extended = quotes[symbol]?.extended {
-                Text(extended.session == "pre" ? "Pre" : "AH").foregroundStyle(.secondary)
+                Text(extended.session == "pre" ? "Pre" : extended.session == "overnight" ? "Night" : "AH").foregroundStyle(.secondary)
                 Text(QuoteFormat.percent(extended.changePercent))
                     .numericTextTransition(value: extended.changePercent).foregroundStyle(QuoteFormat.color(extended.changePercent))
             }
