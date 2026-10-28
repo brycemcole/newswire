@@ -12,19 +12,6 @@ nonisolated struct Spark: Sendable, Hashable {
     let baseline: Double?
 }
 
-nonisolated enum MoverList: String, CaseIterable, Identifiable, Sendable {
-    case gainers = "day_gainers", losers = "day_losers", active = "most_actives"
-
-    var id: String { rawValue }
-    var title: String {
-        switch self {
-        case .gainers: "Gainers"
-        case .losers: "Losers"
-        case .active: "Active"
-        }
-    }
-}
-
 enum FinancialFreshnessPreview {
     static var active: Bool {
         #if DEBUG
@@ -254,12 +241,9 @@ nonisolated struct MarketQuote: Sendable, Hashable, Identifiable {
 
     private(set) var quotes: [String: MarketQuote] = [:]
     private(set) var sparks: [String: Spark] = [:]
-    private(set) var movers: [MoverList: [MarketQuote]] = [:]
-    private(set) var moversState = Dictionary(uniqueKeysWithValues: MoverList.allCases.map { ($0, MarketLoadState.loading) })
     private(set) var quoteStatus: [String: QuoteFetchStatus] = [:]
     private var quotedAt: [String: Date] = [:]
     private var sparkedAt: [String: Date] = [:]
-    private var moversAt: [MoverList: Date] = [:]
     @ObservationIgnored private let fetchQuotes: ([String]) async throws -> [MarketQuote]
     @ObservationIgnored private let fetchSparks: ([String]) async throws -> [String: Spark]
     @ObservationIgnored private let clock: () -> Date
@@ -331,28 +315,6 @@ nonisolated struct MarketQuote: Sendable, Hashable, Identifiable {
         for (symbol, spark) in s ?? [:] { sparks[symbol] = spark; sparkedAt[symbol] = clock() }
     }
 
-    func refresh(movers list: MoverList, force: Bool = false) async {
-        guard force || stale(moversAt[list], 60) else { return }
-        moversState[list] = .loading
-        let found: [MarketQuote]
-        do {
-            found = try await MarketClient.movers(list)
-            guard !Task.isCancelled else { return }
-            movers[list] = found
-            moversAt[list] = clock()
-            moversState[list] = .loaded
-        } catch {
-            guard !Task.isCancelled else { return }
-            moversState[list] = .unavailable
-            return
-        }
-        let stamp = clock()
-        for quote in found { quotes[quote.symbol] = quote; quotedAt[quote.symbol] = stamp; quoteStatus[quote.symbol] = .ok }
-        let symbols = found.prefix(6).map(\.symbol).filter { stale(sparkedAt[$0], 90) }
-        guard !symbols.isEmpty, let lines = try? await MarketClient.sparks(symbols) else { return }
-        for (symbol, spark) in lines { sparks[symbol] = spark; sparkedAt[symbol] = clock() }
-    }
-
     var upcomingEarnings: [MarketQuote] {
         let start = Calendar.current.startOfDay(for: .now)
         let end = start.addingTimeInterval(45 * 86_400)
@@ -380,8 +342,9 @@ struct MarketSearchSheet: View, Equatable {
     @State private var recents = MarketRecents.all
     @State private var showAllRecents = false
     @State private var showAllWatchlist = false
-    @State private var moverList = MoverList(rawValue: UserDefaults.standard.string(forKey: "marketMovers") ?? "") ?? .gainers
     @State private var board = MarketBoard.shared
+    @State private var screeners = ScreenerStore.shared
+    @State private var screenerPreset: ScreenerPreset?
     @State private var watchlist = Watchlist.shared
     @State private var selection: TextSelection?
     @FocusState private var searching: Bool
@@ -463,21 +426,20 @@ struct MarketSearchSheet: View, Equatable {
                 searchFailed = true
             }
         }
+        .sheet(item: $screenerPreset) { preset in
+            ScreenerSheet(preset: preset, store: screeners) { choose($0) }
+        }
         .task(id: phase == .active) {
             guard phase == .active else { return }
             while !Task.isCancelled {
                 if trimmed.isEmpty {
                     let pinned = MarketRecents.popular + recents + Self.financeSymbols.map(\.0) + watchlist.symbols
                     async let quotes: Void = board.refresh(quotes: pinned + MarketBoard.earningsWatch, sparks: pinned)
-                    async let movers: Void = board.refresh(movers: moverList)
-                    _ = await (quotes, movers)
+                    async let screeners: Void = refreshScreeners()
+                    _ = await (quotes, screeners)
                 }
                 do { try await Task.sleep(for: .seconds(30)) } catch { return }
             }
-        }
-        .task(id: moverList) {
-            UserDefaults.standard.set(moverList.rawValue, forKey: "marketMovers")
-            await board.refresh(movers: moverList)
         }
     }
 
@@ -637,6 +599,7 @@ struct MarketSearchSheet: View, Equatable {
                 section("Stocks") {
                     indices
                 }
+                movers
                 watchlistSection
                 section("Global & macro") {
                     financeCards
@@ -668,7 +631,6 @@ struct MarketSearchSheet: View, Equatable {
                     .accessibilityIdentifier("explore-data-tools")
                 }
                 if !recents.isEmpty && !searching { recentSection }
-                movers
                 earnings
             }
             .padding(.top, 8)
@@ -772,44 +734,55 @@ struct MarketSearchSheet: View, Equatable {
         }
     }
 
+    private func refreshScreeners() async {
+        for preset in screeners.pinnedPresets { Task { await screeners.refresh(preset) } }
+    }
+
     private var movers: some View {
-        let list = board.movers[moverList] ?? []
-        return section("Movers", accessory: {
-            Picker("Movers", selection: $moverList) {
-                ForEach(MoverList.allCases) { Text($0.title).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 210)
-        }) {
-            if list.isEmpty && board.moversState[moverList] == .loading {
-                ForEach(0..<4, id: \.self) { _ in
-                    MarketRow(symbol: "XXXX", title: "Loading market movers", tag: nil, quote: nil, spark: nil).redacted(reason: .placeholder)
-                }
-            } else if list.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(board.moversState[moverList] == .loaded ? "No market movers available" : "Market movers unavailable")
-                        .font(.subheadline).foregroundStyle(.secondary)
-                    Button("Try again") {
-                        Task { await board.refresh(movers: moverList, force: true) }
-                    }
-                    .buttonStyle(.bordered).tint(Color.wireAccent)
-                }
-                .padding(.horizontal, 20).padding(.vertical, 12)
-            } else {
-                if board.moversState[moverList] == .loading || board.moversState[moverList] == .unavailable {
-                    HStack(spacing: 6) {
-                        Text(board.moversState[moverList] == .loading ? "Refreshing cached movers" : "Showing cached movers")
-                        if board.moversState[moverList] == .unavailable {
-                            Button("Retry") { Task { await board.refresh(movers: moverList, force: true) } }
-                                .foregroundStyle(Color.wireAccent)
+        VStack(alignment: .leading, spacing: 22) {
+            ForEach(screeners.pinnedPresets) { preset in
+                let rows = screeners.rows(preset)
+                let state = screeners.state(preset)
+                section(preset.title, accessory: {
+                    Button("See all") { screenerPreset = preset }
+                        .font(.caption.weight(.semibold)).foregroundStyle(Color.wireAccent)
+                }) {
+                    if !rows.isEmpty {
+                        MoverPillRows(pills: rows.prefix(10).map { MoverPill($0, metric: preset.metric) }, onSelect: choose)
+                        if state == .unavailable {
+                            HStack(spacing: 6) {
+                                Text("Showing cached results")
+                                Button("Retry") { Task { await screeners.refresh(preset, force: true) } }.foregroundStyle(Color.wireAccent)
+                            }
+                            .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 20)
+                        } else if screeners.usesEstimatedVolatility(preset) {
+                            Text("Some IV estimated from last trades while options are closed")
+                                .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 20)
+                        } else if preset.isImpliedVolatility, let progress = screeners.volatilityProgress {
+                            Text("Checking options \(progress.done) of \(progress.total)")
+                                .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 20)
                         }
+                    } else if state == .loading || (preset.isImpliedVolatility && screeners.volatilityProgress != nil) {
+                        MoverPillRows(pills: (0..<8).map { MoverPill(symbol: "XXX\($0)", changePercent: 0.0) }, onSelect: { _ in })
+                            .redacted(reason: .placeholder).allowsHitTesting(false)
+                    } else {
+                        HStack(spacing: 8) {
+                            Text(state == .loaded ? "Nothing to show" : "\(preset.title) unavailable").font(.subheadline).foregroundStyle(.secondary)
+                            Button("Try again") { Task { await screeners.refresh(preset, force: true) } }
+                                .font(.subheadline).foregroundStyle(Color.wireAccent)
+                        }
+                        .padding(.horizontal, 20).padding(.vertical, 12)
                     }
-                    .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 20)
                 }
-                ForEach(list.prefix(6)) { quote in row(quote.symbol, quote: quote) }
             }
+            Button { screenerPreset = ScreenerPreset.all[0] } label: {
+                Label("All screeners", systemImage: "slider.horizontal.3").font(.subheadline.weight(.semibold))
+                    .padding(.horizontal, 16).frame(height: 40).contentShape(.capsule)
+                    .glassEffect(.regular.interactive(), in: .capsule)
+            }
+            .buttonStyle(PressSpringStyle())
+            .padding(.horizontal, 16)
         }
-        .animation(.easeOut(duration: 0.2), value: list)
     }
 
     @ViewBuilder
