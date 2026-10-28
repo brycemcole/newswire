@@ -10,6 +10,7 @@ struct TwilightSky: View {
     var scroll: SkyScroll
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.displayScale) private var displayScale
     @State private var start = Date.now
 
     var body: some View {
@@ -38,7 +39,8 @@ struct TwilightSky: View {
                         .float2(size.width, height),
                         .float(elapsed * min(SolarClock.speed, 40)),
                         .float4(sky.sunHourAngle, sky.sunElevation, sky.cloudCover, elapsed),
-                        .float4(sky.moonHourAngle, sky.moonElevation, sky.moonPhase, colorScheme == .light ? 1 : 0)
+                        .float4(sky.moonHourAngle, sky.moonElevation, sky.moonPhase, colorScheme == .light ? 1 : 0),
+                        .float(displayScale)
                     ))
                     .frame(height: height)
                     .frame(maxHeight: .infinity, alignment: .top)
