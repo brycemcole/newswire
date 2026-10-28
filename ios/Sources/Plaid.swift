@@ -149,6 +149,25 @@ nonisolated struct Position: Codable, Identifiable, Sendable, Hashable {
     func liveValue(underlying price: Double) -> Double? {
         option == nil ? quantity * price : nil
     }
+
+    /// An exchange-traded fund that tracks the same index, for plan funds (401(k) collective trusts) whose
+    /// brokerage symbol is an internal code with no market quote. Its move only estimates the fund's.
+    var proxySymbol: String? {
+        guard option == nil, symbol.filter({ $0 == "." }).count >= 2 || symbol.count > 6 else { return nil }
+        let words = " " + "\(symbol) \(name ?? "")".uppercased().split { !$0.isLetter && !$0.isNumber }.joined(separator: " ") + " "
+        func has(_ terms: String...) -> Bool { terms.contains { words.contains(" \($0) ") } }
+        if has("BOND", "AGG", "AGGREGATE", "FIXED") { return "AGG" }
+        if has("INTL", "INTERNATIONAL", "EAFE", "ACWI", "GLOBAL", "WORLD", "FOREIGN", "EMERGING") {
+            return has("EMERGING") ? "VWO" : has("EAFE") ? "EFA" : "VXUS"
+        }
+        if has("SMALL", "2000", "R2000") { return "IWM" }
+        if has("MID", "MIDCAP", "400") { return "IJH" }
+        if has("EXTENDED", "EXT", "COMPLETION") { return "VXF" }
+        if has("NASDAQ") { return "QQQ" }
+        if has("500", "SP500") { return "SPY" }
+        if has("TOTAL") { return "VTI" }
+        return nil
+    }
 }
 
 nonisolated struct BrokerageBalance: Codable, Sendable {
