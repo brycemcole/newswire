@@ -2,7 +2,7 @@ import ActivityKit
 import Foundation
 
 public nonisolated struct PriceWatchAttributes: ActivityAttributes {
-    public struct ContentState: Codable, Hashable {
+    public struct ContentState: Codable, Hashable, Sendable {
         var price: Double
         var currency: String
         var quotedAt: Date

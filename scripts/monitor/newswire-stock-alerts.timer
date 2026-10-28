@@ -1,0 +1,10 @@
+[Unit]
+Description=Check prices for alerts and Live Activities every 15 seconds
+
+[Timer]
+OnBootSec=15
+OnUnitInactiveSec=15
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

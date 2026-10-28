@@ -507,7 +507,8 @@ async function route(request: Request, env: Env, ctx?: ExecutionContext, ai?: AI
       if (sessionAlerts !== undefined && !validSessionAlerts(sessionAlerts)) invalid('Invalid session_alerts');
       if (watches !== undefined && (!Array.isArray(watches) || watches.length > 20 || watches.some(w =>
         !w || typeof w !== 'object' || typeof w.id !== 'string' || !/^[a-zA-Z0-9-]{1,64}$/.test(w.id) ||
-        typeof w.symbol !== 'string' || !/^[A-Z0-9.^=-]{1,30}$/.test(w.symbol) || !['above', 'below'].includes(w.direction) ||
+        typeof w.symbol !== 'string' || !/^[A-Z0-9.^=-]{1,30}$/.test(w.symbol) || !['above', 'below', ...(w.percent !== undefined ? ['either'] : [])].includes(w.direction) ||
+        (w.percent !== undefined && (typeof w.percent !== 'number' || !Number.isFinite(w.percent) || w.percent < 0.25 || w.percent > 50 || w.target !== undefined)) ||
         (w.target !== undefined && (typeof w.target !== 'number' || !Number.isFinite(w.target) || w.target <= 0))))) invalid('Invalid price_watches');
       if (Array.isArray(watches) && new Set(watches.map(w => w.id)).size !== watches.length) invalid('Duplicate price watch');
       if (activities !== undefined && (!Array.isArray(activities) || activities.length > 20 || activities.some(a =>

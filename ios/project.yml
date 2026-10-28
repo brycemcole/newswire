@@ -36,6 +36,7 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         ITSAppUsesNonExemptEncryption: false
         NSSupportsLiveActivities: true
+        NSSupportsLiveActivitiesFrequentUpdates: true
         UIBackgroundModes: [audio, fetch, processing, remote-notification]
         BGTaskSchedulerPermittedIdentifiers: [com.brycecole.newswire.refresh, com.brycecole.newswire.process]
         CADisableMinimumFrameDurationOnPhone: true

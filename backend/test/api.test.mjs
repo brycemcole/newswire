@@ -326,6 +326,14 @@ test('price watches and live activity tokens validate, persist and preserve olde
     assert.equal((await register({ price_watches })).status, 400);
   }
   assert.equal((await register({ price_watches: [watch], live_activities: [{ ...activity, watch_id: 'missing' }] })).status, 400);
+  const movement = { id: 'percent-watch', symbol: 'SPY', direction: 'either', percent: 1 };
+  assert.equal((await register({ price_watches: [movement], live_activities: [] })).status, 201);
+  const saved = (await (await request('/v1/devices', 'writer')).json()).devices.find(d => d.token === token);
+  assert.deepEqual(JSON.parse(saved.price_watches), [movement]);
+  for (const percent of [-1, 0, 0.1, 51, '1']) {
+    assert.equal((await register({ price_watches: [{ ...movement, percent }] })).status, 400);
+  }
+  assert.equal((await register({ price_watches: [{ ...movement, target: 500 }] })).status, 400);
   assert.equal((await register({ price_watches: [], live_activities: [] })).status, 201);
 });
 

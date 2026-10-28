@@ -12,7 +12,7 @@ struct PriceWatchActivityWidget: Widget {
                         Text("\(context.state.direction == "above" ? "At or above" : "At or below") \(target.formatted(.currency(code: context.state.currency)))")
                             .font(.caption).foregroundStyle(.secondary)
                     }
-                    Text(context.isStale ? "Quote delayed" : "Quoted \(context.state.quotedAt.formatted(date: .omitted, time: .shortened))")
+                    Text(context.isStale ? "Quote delayed" : "Quoted \(context.state.quotedAt.formatted(date: .omitted, time: .standard))")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 8)
@@ -35,7 +35,7 @@ struct PriceWatchActivityWidget: Widget {
                     HStack {
                         if context.state.reached { Label("Target met", systemImage: "checkmark.circle.fill") }
                         Spacer()
-                        Text(context.isStale ? "Quote delayed" : "Quoted \(context.state.quotedAt.formatted(date: .omitted, time: .shortened))")
+                        Text(context.isStale ? "Quote delayed" : "Quoted \(context.state.quotedAt.formatted(date: .omitted, time: .standard))")
                     }.font(.caption)
                 }
             } compactLeading: {
