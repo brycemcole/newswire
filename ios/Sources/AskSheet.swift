@@ -1,3 +1,4 @@
+import AuthenticationServices
 import SwiftUI
 
 /// What a chat is about: empty symbol means markets in general.
@@ -729,6 +730,10 @@ struct StockAISettings: View {
     @State private var hasKey = false
     @State private var saved = false
     @State private var error: String?
+    @State private var account = ChatGPTAccount.shared
+    @AppStorage(ChatGPTAccount.modelKey) private var chatGPTModel = ""
+    @AppStorage(ChatGPTAccount.webSearchKey) private var webSearch = true
+    @Environment(\.webAuthenticationSession) private var webAuthenticationSession
 
     var body: some View {
         Form {
@@ -737,6 +742,7 @@ struct StockAISettings: View {
                     Label("DeepSeek Free", systemImage: "sparkles").tag("newswire")
                     Label("Apple on device", systemImage: "apple.intelligence").tag("onDevice")
                     Label("DeepSeek · personal API key", systemImage: "key").tag("deepSeek")
+                    Label("ChatGPT · your plan", systemImage: "person.crop.circle").tag("chatGPT")
                 }
                 .pickerStyle(.inline)
                 .labelsHidden()
@@ -771,17 +777,18 @@ struct StockAISettings: View {
                     Text("The key is stored in this device's Keychain and sent only to DeepSeek. Saving a key doesn't switch providers; choose DeepSeek above to use it.")
                 }
             }
-            if provider == "deepSeek" || provider == "newswire" {
+            if provider == "chatGPT" { chatGPTSection }
+            if provider == "deepSeek" || provider == "newswire" || provider == "chatGPT" {
                 Section {
                     Toggle("Ask", isOn: $stock)
                     Toggle("Article summaries", isOn: $summaries)
                     Toggle("Why it moved", isOn: $moves)
                 } header: {
-                    Text("Use DeepSeek for")
+                    Text(provider == "chatGPT" ? "Use ChatGPT for" : "Use DeepSeek for")
                 } footer: {
                     Text("Features turned off here use Apple's models instead.")
                 }
-                .disabled(provider == "deepSeek" && !hasKey)
+                .disabled(provider == "deepSeek" && !hasKey || provider == "chatGPT" && !account.ready)
             }
             if let error { Text(error).foregroundStyle(.red) }
         }
@@ -792,10 +799,63 @@ struct StockAISettings: View {
         .onChange(of: provider) { _, value in
             UserDefaults.standard.set(value, forKey: AIRouter.providerKey)
         }
+        .task(id: provider) {
+            if provider == "chatGPT", account.ready, account.models.isEmpty { await account.loadModels() }
+        }
+    }
+
+    @ViewBuilder private var chatGPTSection: some View {
+        Section {
+            if let credential = account.credential, credential.signedIn {
+                LabeledContent("Account", value: credential.email ?? "ChatGPT")
+                if credential.planEnabled {
+                    Picker("Model", selection: $chatGPTModel) {
+                        if !account.models.contains(where: { $0.id == chatGPTModel }) {
+                            Text(chatGPTModel.isEmpty ? "Loading…" : chatGPTModel).tag(chatGPTModel)
+                        }
+                        ForEach(account.models) { Text($0.name).tag($0.id) }
+                    }
+                    Toggle("Search the web", isOn: $webSearch)
+                } else {
+                    Button("Enable plan usage") { signIn(consent: true) }
+                }
+                Button("Use a different account") { signIn(newAccount: true) }
+                Button("Sign out", role: .destructive) { Task { await account.signOut() } }
+            } else {
+                Button { signIn() } label: {
+                    HStack(spacing: 8) {
+                        if account.busy { ProgressView() }
+                        Text("Continue with ChatGPT")
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets())
+            }
+            if let message = account.error {
+                Text(message).font(.footnote).foregroundStyle(.red)
+            }
+        } header: {
+            Text("ChatGPT account")
+        } footer: {
+            Text("Sign-in happens on OpenAI's page; Newswire never sees your password and can't read your ChatGPT conversations. Tokens stay in this device's Keychain. Review usage or disconnect Newswire in ChatGPT settings.")
+        }
+        .disabled(account.busy)
+    }
+
+    private func signIn(newAccount: Bool = false, consent: Bool = false) {
+        Task {
+            await account.signIn(newAccount: newAccount, consent: consent) { url in
+                try await webAuthenticationSession.authenticate(using: url, callback: .customScheme("newswire"),
+                                                                preferredBrowserSession: .shared, additionalHeaderFields: [:])
+            }
+        }
     }
 
     private var footer: String {
         switch provider {
+        case "chatGPT": account.ready ? "Questions, article text and fetched market context go directly to OpenAI and count toward your ChatGPT plan's limits. On Plus, the five-hour limit is shared with every app that uses your plan. Your brokerage holdings are never included." : "Sign in below to answer with your ChatGPT plan. Until then Apple's models answer."
         case "newswire": "DeepSeek V4.1 Flash through OpenCode. Free, with a 200K context window and no API key needed. Questions, article text and fetched market context go through your Newswire server. Brokerage holdings are never included. Free availability and rate limits may change."
         case "deepSeek": hasKey ? "Questions, article text and fetched market context go directly to DeepSeek, billed to your account. Your brokerage holdings are never included." : "Add an API key below to use DeepSeek. Until then Apple's models answer."
         default: "Answers are generated on this device. Market research still needs an internet connection."

@@ -15,11 +15,12 @@ enum AIFeature: String, CaseIterable, Identifiable {
 }
 
 enum AIBackend: Equatable {
-    case newswire, deepSeek, onDevice
+    case newswire, deepSeek, chatGPT, onDevice
     var label: String {
         switch self {
         case .newswire: "DeepSeek Free"
         case .deepSeek: "DeepSeek"
+        case .chatGPT: "ChatGPT"
         case .onDevice: "Apple Intelligence"
         }
     }
@@ -47,6 +48,7 @@ enum AIRouter {
     static func backend(for feature: AIFeature) -> AIBackend? {
         if provider == "newswire", deepSeekEnabled(feature) { return .newswire }
         if provider == "deepSeek", hasDeepSeekKey, deepSeekEnabled(feature) { return .deepSeek }
+        if provider == "chatGPT", ChatGPTAccount.shared.ready, deepSeekEnabled(feature) { return .chatGPT }
         return onDeviceAvailable ? .onDevice : nil
     }
 
@@ -68,6 +70,11 @@ enum AIRouter {
             guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let choice = (root["choices"] as? [[String: Any]])?.first,
                   let text = (choice["message"] as? [String: Any])?["content"] as? String, !text.isEmpty else { throw StockAIError.incomplete }
+            onPartial?(text)
+            return text
+        }
+        if backend == .chatGPT {
+            let text = try await ChatGPTResponses.text(instructions: instructions, prompt: prompt)
             onPartial?(text)
             return text
         }
