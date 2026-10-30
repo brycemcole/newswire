@@ -447,6 +447,8 @@ struct StockChatMessage: Identifiable, Codable, Hashable {
                 let answer: String
                 if let responder {
                     answer = try await responder(question, symbol, name, price, history)
+                } else if backend == .chatGPT {
+                    answer = try await chatGPT(instructions: instructions, history: history, question: question, research: research, data: try await DataToolCatalog.functions(api))
                 } else if remote {
                     if backend == .deepSeek, key.isEmpty { throw StockAIError.missingKey }
                     answer = try await deepSeek(key: key, instructions: instructions, history: history, question: question, research: research, data: try await DataToolCatalog.functions(api), free: backend == .newswire)
@@ -485,7 +487,8 @@ struct StockChatMessage: Identifiable, Codable, Hashable {
     }
     #endif
 
-    func deepSeek(key: String, instructions: String, history: String, question: String, research: StockResearchTools, data: [[String: Any]] = [], stockTools: Bool = true, session: URLSession = .shared, free: Bool = false) async throws -> String {
+    /// Chat Completions function definitions for the research tools plus the Worker's data tools.
+    func functions(research: StockResearchTools, data: [[String: Any]], stockTools: Bool = true) -> [[String: Any]] {
         let properties: [String: Any] = ["kind": ["type": "string", "enum": ["quote", "company", "news", "options"]],
             "symbol": ["type": "string", "description": "Underlying ticker such as QQQ; empty for the selected stock. Required in market-wide chats."],
             "expiration": ["type": "string", "description": "YYYY-MM-DD or empty for nearest; options result lists all expiries"],
@@ -495,9 +498,31 @@ struct StockChatMessage: Identifiable, Codable, Hashable {
         let screen: [String: Any] = ["type": "function", "function": ["name": "current_screen",
             "description": CurrentScreenTool(research: research).description,
             "parameters": ["type": "object", "properties": ["reason": ["type": "string"]], "required": [], "additionalProperties": false]]]
-        let tools: [[String: Any]] = [["type": "function", "function": ["name": "stock_data",
+        return [["type": "function", "function": ["name": "stock_data",
             "description": StockDataTool(research: research).description,
             "parameters": ["type": "object", "properties": properties, "required": Array(properties.keys), "additionalProperties": false]]]].filter { _ in stockTools } + [screen] + data
+    }
+
+    func runTool(_ name: String, arguments: String?, research: StockResearchTools) async throws -> String {
+        if name == "stock_data", let arguments, let args = try? JSONDecoder().decode(StockToolArguments.self, from: Data(arguments.utf8)) {
+            return try await research.run(args)
+        } else if name == "current_screen" {
+            return await research.currentStory()
+        } else if name.hasPrefix("data_"), let arguments,
+                  let object = (try? JSONSerialization.jsonObject(with: Data(arguments.isEmpty ? "{}".utf8 : arguments.utf8))) as? [String: Any] {
+            return try await research.data(String(name.dropFirst(5)), arguments: object.compactMapValues { value in
+                switch value {
+                case let text as String: text
+                case let number as NSNumber: number.stringValue
+                default: nil
+                }
+            })
+        }
+        return "Invalid tool or arguments. Call stock_data or a data_ tool with valid fields."
+    }
+
+    func deepSeek(key: String, instructions: String, history: String, question: String, research: StockResearchTools, data: [[String: Any]] = [], stockTools: Bool = true, session: URLSession = .shared, free: Bool = false) async throws -> String {
+        let tools = functions(research: research, data: data, stockTools: stockTools)
         var messages: [[String: Any]] = [["role": "system", "content": instructions], ["role": "user", "content": "\(history)\n\(question)"]]
         while true {
             try Task.checkCancellation()
@@ -526,23 +551,7 @@ struct StockChatMessage: Identifiable, Codable, Hashable {
             }
             for call in calls {
                 guard let id = call["id"] as? String, let function = call["function"] as? [String: Any] else { throw StockAIError.incomplete }
-                let output: String
-                let name = function["name"] as? String ?? ""
-                if name == "stock_data", let arguments = function["arguments"] as? String,
-                   let args = try? JSONDecoder().decode(StockToolArguments.self, from: Data(arguments.utf8)) {
-                    output = try await research.run(args)
-                } else if name == "current_screen" {
-                    output = await research.currentStory()
-                } else if name.hasPrefix("data_"), let arguments = function["arguments"] as? String,
-                          let object = (try? JSONSerialization.jsonObject(with: Data(arguments.isEmpty ? "{}".utf8 : arguments.utf8))) as? [String: Any] {
-                    output = try await research.data(String(name.dropFirst(5)), arguments: object.compactMapValues { value in
-                        switch value {
-                        case let text as String: text
-                        case let number as NSNumber: number.stringValue
-                        default: nil
-                        }
-                    })
-                } else { output = "Invalid tool or arguments. Call stock_data or a data_ tool with valid fields." }
+                let output = try await runTool(function["name"] as? String ?? "", arguments: function["arguments"] as? String, research: research)
                 messages.append(["role": "tool", "tool_call_id": id, "content": output])
             }
         }
