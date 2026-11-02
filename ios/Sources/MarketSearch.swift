@@ -490,14 +490,13 @@ struct MarketSearchSheet: View, Equatable {
         }
     }
 
-    /// Opens the Ask sheet. Anything typed in the field is sent as the first question.
+    /// Opens a fresh Ask sheet; the search text is not sent as a question.
     private var askButton: some View {
         Button {
-            let prompt = trimmed
             query = ""
             searching = false
             detent = .peek
-            onAsk(prompt)
+            onAsk("")
         } label: {
             Image(systemName: "message")
                 .font(.body.weight(.semibold))
@@ -507,7 +506,7 @@ struct MarketSearchSheet: View, Equatable {
         }
         .buttonStyle(.plain)
         .glassEffect(.regular.interactive(), in: .circle)
-        .accessibilityLabel(trimmed.isEmpty ? "Ask the markets" : "Ask the markets about \(trimmed)")
+        .accessibilityLabel("Ask the markets")
     }
 
     private var suggestions: some View {
