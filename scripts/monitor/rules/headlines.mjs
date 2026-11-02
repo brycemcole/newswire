@@ -311,6 +311,7 @@ export async function run({ lookbackHours } = {}) {
     if (!entry.matched.length && topic) entry.matched.push(topic);
     entry.priority = verdict.priority;
     entry.significance = verdict.significance;
+    entry.format = verdict.format;
     if (verdict.duplicate) entry.duplicate = true;
   };
   for (const entry of seen.values()) if (verdicts[entry.key]) apply(entry, verdicts[entry.key]);
@@ -380,7 +381,7 @@ export async function run({ lookbackHours } = {}) {
     else if (Date.now() - entry.item.stamp < wait) entry.held = true;
   }));
 
-  for (const { key, item, matched, priority, significance } of publishable.filter(entry => !entry.held)) {
+  for (const { key, item, matched, priority, significance, format } of publishable.filter(entry => !entry.held)) {
     const best = matched.reduce((top, topic) => (rank[topic.priority ?? 'normal'] < rank[top.priority ?? 'normal'] ? topic : top), matched[0]);
     const labels = matched.map(topic => topic.label ?? topic.id).join(', ');
     const when = new Date(item.stamp).toISOString().replace('T', ' ').slice(0, 16);
@@ -398,7 +399,7 @@ export async function run({ lookbackHours } = {}) {
       category: best.category ?? 'general',
       priority: flow ? 'normal' : priority ?? best.priority ?? 'normal',
       tickers: [],
-      tags: [...new Set(['deterministic', item.x ? 'x' : 'headlines', ...matched.map(topic => topic.id), ...(significance ? [significance] : [])])],
+      tags: [...new Set(['deterministic', item.x ? 'x' : 'headlines', ...matched.map(topic => topic.id), ...(significance ? [significance] : []), ...(format === 'feature' ? ['feature'] : [])])],
     });
   }
 
