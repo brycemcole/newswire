@@ -30,3 +30,4 @@ CREATE TABLE IF NOT EXISTS learning_reports (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS learning_reports_recent ON learning_reports(kind, symbol, horizon, created_at DESC)
+;
