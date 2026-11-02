@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Newswire model diagnostics every Sunday evening
+
+[Timer]
+OnCalendar=Sun *-*-* 20:00:00 America/New_York
+Persistent=true
+AccuracySec=60
+
+[Install]
+WantedBy=timers.target

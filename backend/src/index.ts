@@ -3,7 +3,7 @@ import { AttestError, checkChallenge, fromBase64, makeChallenge, sha256, toBase6
 import { DataError, dataRoute, mcpRoute, shipAreas, pulseCalendar, pulseEarnings, refreshEarnings, storeEconEvents, storeEconHistory, storeEconSeries, storePublicSources } from './data';
 import { quotes, resolve, type Mention } from './quotes';
 import { impactChannels, loadPulse, loadPulseSnapshot, pulseModel, pulseTime } from './market-pulse';
-import { captureForecast, captureWindow, evaluateForecastCandidate, ForecastError, getResearch, listForecastTrainingRows, registerForecastCandidate, settleForecast } from './forecast';
+import { captureForecast, captureWindow, evaluateForecastCandidate, ForecastError, diagnosticsData, evaluateParamSet, getResearch, listForecastTrainingRows, listLearningReports, registerForecastCandidate, registerParamSet, saveLearningReport, settleForecast } from './forecast';
 import type { Horizon } from './forecast-model';
 import { researchPrices, researchSymbols, targetPrices } from './research-prices';
 import { AgentResearchError, getAgentResearch, pendingPredictionSymbols, recordAnswers, recordPredictions, settlePredictions } from './agent-research';
@@ -699,6 +699,46 @@ async function route(request: Request, env: Env, ctx?: ExecutionContext, ai?: AI
     const id = text(input?.candidate_id, 'candidate_id', 64);
     if (!/^[a-f0-9]{64}$/.test(id)) invalid('Invalid candidate_id');
     return json(await evaluateForecastCandidate(env.DB, id));
+  }
+  if (path === '/v1/research/diagnostics') {
+    if (request.method !== 'GET') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
+    const q = query(url.searchParams, ['symbol', 'horizon']);
+    const symbol = choice(q.symbol, 'symbol', ['SPY', 'QQQ']);
+    const horizon = q.horizon === undefined ? undefined : choice(q.horizon, 'horizon', ['opening_gap', 'cutoff_to_open', 'open_to_close']) as Horizon;
+    return json(await diagnosticsData(env.DB, symbol, horizon));
+  }
+  if (path === '/v1/research/param-sets') {
+    const q = query(url.searchParams, request.method === 'GET' ? ['symbol', 'horizon'] : []);
+    if (request.method === 'GET') {
+      const symbol = choice(q.symbol, 'symbol', ['SPY', 'QQQ']);
+      const horizon = choice(q.horizon, 'horizon', ['opening_gap', 'cutoff_to_open', 'open_to_close']);
+      return json({ param_sets: (await env.DB.prepare("SELECT id,symbol,horizon,status,params_json,evaluation_json,train_through,created_at,promoted_at FROM forecast_param_sets WHERE symbol=? AND horizon=? ORDER BY created_at DESC LIMIT 50").bind(symbol, horizon).all()).results });
+    }
+    if (request.method !== 'POST') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
+    const input = await readBody(request) as Parameters<typeof registerParamSet>[1];
+    if (!input || typeof input !== 'object' || Array.isArray(input)) invalid('Expected parameter set');
+    return json(await registerParamSet(env.DB, input));
+  }
+  if (path === '/v1/research/param-sets/evaluate') {
+    query(url.searchParams, []);
+    if (request.method !== 'POST') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
+    const input = await readBody(request) as Record<string, unknown>;
+    const id = text(input?.param_set_id, 'param_set_id', 64);
+    if (!/^[a-f0-9]{64}$/.test(id)) invalid('Invalid param_set_id');
+    return json(await evaluateParamSet(env.DB, id));
+  }
+  if (path === '/v1/research/reports') {
+    if (request.method === 'GET') {
+      const q = query(url.searchParams, ['kind', 'symbol', 'horizon', 'limit']);
+      const symbol = choice(q.symbol, 'symbol', ['SPY', 'QQQ']);
+      const horizon = choice(q.horizon, 'horizon', ['opening_gap', 'cutoff_to_open', 'open_to_close']) as Horizon;
+      return json(await listLearningReports(env.DB, text(q.kind ?? 'weekly_diagnostics', 'kind', 40), symbol, horizon, q.limit === undefined ? 2 : Number(q.limit)));
+    }
+    query(url.searchParams, []);
+    if (request.method !== 'POST') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');
+    const input = await readBody(request) as Parameters<typeof saveLearningReport>[1];
+    if (!input || typeof input !== 'object' || Array.isArray(input)) invalid('Expected report');
+    return json(await saveLearningReport(env.DB, input), 201);
   }
   if (path === '/v1/market-pulse') {
     if (request.method !== 'GET') throw new ApiError(405, 'method_not_allowed', 'Method not allowed');

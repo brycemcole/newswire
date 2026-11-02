@@ -418,11 +418,12 @@ export async function loadPulse(db: D1Database, asOf: string, symbol = 'SPY', ma
   const { now, iso, stories, truncated, impacts, impactInputsTruncated } = await loadPulseInputs(db, asOf, historyHours);
   const calendarRequiresVintage = historyHours > 0 || now < Date.now() - 60000;
   const outcomes = await learningOutcomes(db, symbol, iso);
-  const current = adaptPulse(calculatePulse(stories, iso, symbol, truncated || impactInputsTruncated, { market: marketAt?.(now), calendar, earnings, impacts, calendarRequiresVintage, impactInputsTruncated }), outcomes);
+  const tilt = await activeTiltParams(db, symbol);
+  const current = adaptPulse(calculatePulse(stories, iso, symbol, truncated || impactInputsTruncated, { market: marketAt?.(now), calendar, earnings, impacts, calendarRequiresVintage, impactInputsTruncated }), outcomes, tilt);
   if (!historyHours) return { ...current, ...explain(current) };
   const step = 30 * 60000, history = [];
   for (let t = Math.ceil((now - historyHours * hour) / step) * step; t < now; t += step) {
-    const p = adaptPulse(calculatePulse(stories, new Date(t).toISOString(), symbol, truncated || impactInputsTruncated, { market: marketAt?.(t), calendar, earnings, impacts, calendarRequiresVintage: true, impactInputsTruncated }), outcomes);
+    const p = adaptPulse(calculatePulse(stories, new Date(t).toISOString(), symbol, truncated || impactInputsTruncated, { market: marketAt?.(t), calendar, earnings, impacts, calendarRequiresVintage: true, impactInputsTruncated }), outcomes, tilt);
     history.push({ as_of: p.as_of, score: p.score, news_points: p.components.news.points, market_points: p.components.market?.points ?? 0,
       calendar_points: p.components.calendar?.points ?? 0, earnings_points: p.components.earnings?.points ?? 0, calendar_actuals_status: p.components.calendar?.actuals_status });
   }
@@ -431,4 +432,4 @@ export async function loadPulse(db: D1Database, asOf: string, symbol = 'SPY', ma
 }
 
 import { explain } from './pulse-text';
-import { adaptPulse, learningOutcomes } from './adaptive-forecast';
+import { activeTiltParams, adaptPulse, learningOutcomes } from './adaptive-forecast';

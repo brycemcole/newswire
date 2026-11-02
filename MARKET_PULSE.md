@@ -109,6 +109,33 @@ A read-only check of the live Mini monitor found its headline classifier returni
 
 This is a selected, retrospective single-session case study using rules written after the outcome. To evaluate predictive value, freeze the model and capture forward snapshots over many sessions, then compare subsequent returns and downside risk against neutral and price-only baselines. Do not tune the model on this day and report that as backtest success.
 
+## Continual learning
+
+Three layers adjust the outlook from what it got wrong, each gated so a change cannot ship unless it is at least as good as the model it replaces.
+
+1. **Daily weights.** `forecast-adaptive-v2` re-fits its ridge weights from settled forecasts. Rows from any adaptive version v2 or later are used because the score is recomputed from the stored features, so a model revision no longer restarts the 60-session wait.
+2. **Weekly diagnostics** (`scripts/market-pulse/diagnostics.mjs`, `newswire-diagnostics.timer`, Sunday 20:00 Eastern). For each symbol and horizon it stores a `learning_reports` row containing:
+   - a per-term miss report: how often each term (news, each market group, calendar, earnings) pointed the right way, its signed return and t-statistic, and a `helps`, `hurts`, `noise` or `insufficient` verdict (judged only after 30 active sessions);
+   - the worst calls, each with the terms that misled it;
+   - baselines: always-up, price-only and neutral;
+   - per-channel replay of the stored Jev impacts under 3, 6, 12, 24 and 48 hour half-lives, with a `keep`, `shrink`, `invert_or_drop` or half-life recommendation;
+   - a monotone score-to-probability map, withheld until 60 sessions exist;
+   - a walk-forward search over `eventShrink`, `gain` and the neutral `band` in which each choice uses only earlier sessions.
+   A push goes out only when a term or channel turns harmful, the last 30 calls fall 10 points below always-up, or recent skill goes negative while overall skill is positive.
+3. **Shadow parameter sets.** A walk-forward proposal is stored as a `shadow` set, scored alongside the live model at each capture (`forecast_param_predictions`), and compared with the tilt the live model published. After 60 forward sessions it is promoted if its paired gain is at least 0.01% per session with t of 1.28 or more, and rejected if it is no better with t at or below -0.5. Promotion retires the previous set and `activeTiltParams` feeds the new values into captures and the live display. Nothing is promoted automatically on fewer sessions.
+
+### Backtest gate
+
+Every candidate (a walk-forward proposal, a promotion, or a code change to the defaults) is replayed over all settled sessions and must match or beat the baseline on both mean signed return and hit rate. `backtestComparison` computes this; `tuneTilt` and `evaluateParamSet` enforce it; `backend/test/forecast-diagnostics.test.mjs` fails if the shipped `defaultTilt` is worse than `backend/test/fixtures/baseline-tilt.json` on `backend/test/fixtures/settled-forecasts.json`.
+
+```sh
+node scripts/market-pulse/backtest-gate.mjs --export     # refresh the fixture from production
+node scripts/market-pulse/backtest-gate.mjs --live       # compare the shipped parameters against the baseline
+node scripts/market-pulse/backtest-gate.mjs --candidate='{"eventShrink":0.4,"gain":1.25,"band":5}'
+```
+
+After a change passes and is accepted, update `baseline-tilt.json` to its parameters so the bar only rises. With few settled sessions the gate reports `inconclusive`: it blocks anything worse but cannot prove better. On 2026-11-02 production had 7 settled sessions per symbol and horizon, so no tuning proposal can pass the 120-session walk-forward minimum yet.
+
 ## Checks
 
 ```sh

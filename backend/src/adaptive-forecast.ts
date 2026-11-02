@@ -1,6 +1,10 @@
-import { forecastTilt, makeFeatures, marketGroupKeys, type Features, type Horizon } from './forecast-model';
+import { defaultTilt, forecastTilt, makeFeatures, marketGroupKeys, validTilt, type Features, type Horizon, type TiltParams } from './forecast-model';
 
 export const adaptiveVersion = 'forecast-adaptive-v2';
+// Rows keep raw features and the score is recomputed from them, so any adaptive version from v2 on can teach the current one; v1 rows stay excluded.
+const oldestCompatible = 2;
+export const compatibleVersionSql = (column: string) => `${column} LIKE 'forecast-adaptive-v%' AND CAST(substr(${column},20) AS INTEGER)>=${oldestCompatible}`;
+export const isCompatibleVersion = (version: string) => /^forecast-adaptive-v(\d+)$/.test(version) && Number(version.slice(19)) >= oldestCompatible;
 const coefficients: Record<string, number> = { news_points: 25, ...Object.fromEntries(marketGroupKeys.map(key => [key, 40])), calendar_points: 10, earnings_points: 10 };
 export type LearningOutcome = { id: string; session_date: string; horizon: Horizon; available_at: string; direction: number; return_pct: number; forecast_at: string; features: Features };
 const round = (value: number) => Math.round(value * 100) / 100;
@@ -15,8 +19,8 @@ export async function learningOutcomes(db: D1Database, symbol: string, asOf: str
   if (!['SPY', 'QQQ'].includes(symbol)) return [];
   const { results } = await db.prepare(`SELECT f.id,f.session_date,f.horizon,f.features_json,f.forecast_at,o.direction,o.return_pct,o.ingested_at AS available_at
     FROM forecasts f JOIN forecast_outcomes o ON o.forecast_id=f.id
-    WHERE f.symbol=? AND o.ingested_at<=? AND f.target_end_at<=? AND f.tilt!='unavailable' AND f.model_version=? AND (? IS NULL OR f.horizon=?)
-    ORDER BY f.session_date DESC,f.id LIMIT 540`).bind(symbol, asOf, asOf, adaptiveVersion, horizon ?? null, horizon ?? null).all<any>();
+    WHERE f.symbol=? AND o.ingested_at<=? AND f.target_end_at<=? AND f.tilt!='unavailable' AND ${compatibleVersionSql('f.model_version')} AND (? IS NULL OR f.horizon=?)
+    ORDER BY f.session_date DESC,f.id LIMIT 540`).bind(symbol, asOf, asOf, horizon ?? null, horizon ?? null).all<any>();
   return results.flatMap(row => {
     try {
       const features = JSON.parse(row.features_json);
@@ -25,12 +29,22 @@ export async function learningOutcomes(db: D1Database, symbol: string, asOf: str
   });
 }
 
-export function adaptiveForecast(liveFeatures: Features, allRows: LearningOutcome[], horizon: Horizon, asOf: string) {
-  const features = normalizeFeatures(liveFeatures), base = forecastTilt(features);
+export async function activeTiltParams(db: D1Database, symbol: string): Promise<Partial<Record<Horizon, TiltParams>>> {
+  if (!['SPY', 'QQQ'].includes(symbol)) return {};
+  const { results } = await db.prepare("SELECT horizon,params_json FROM forecast_param_sets WHERE symbol=? AND status='promoted' ORDER BY promoted_at ASC").bind(symbol).all<any>();
+  const out: Partial<Record<Horizon, TiltParams>> = {};
+  for (const row of results) {
+    try { const params = JSON.parse(row.params_json); if (validTilt(params)) out[row.horizon as Horizon] = params; } catch { /* ignore a corrupt row; the default applies */ }
+  }
+  return out;
+}
+
+export function adaptiveForecast(liveFeatures: Features, allRows: LearningOutcome[], horizon: Horizon, asOf: string, params: TiltParams = defaultTilt) {
+  const features = normalizeFeatures(liveFeatures), base = forecastTilt(features, params);
   const rows = allRows.map(row => ({ ...row, features: normalizeFeatures(row.features) }));
   const unique = new Map(rows.filter(row => row.horizon === horizon && row.available_at <= asOf
     && Number.isFinite(row.return_pct) && Object.values(row.features).every(Number.isFinite)
-    && forecastTilt(row.features).score !== null).map(row => [row.session_date, row]));
+    && forecastTilt(row.features, params).score !== null).map(row => [row.session_date, row]));
   const usable = [...unique.values()].sort((a, b) => a.session_date.localeCompare(b.session_date)).slice(-180);
   const normalized = usable.flatMap(row => {
     const prior = usable.filter(old => old.session_date < row.session_date && old.available_at <= row.forecast_at).slice(-20);
@@ -47,7 +61,7 @@ export function adaptiveForecast(liveFeatures: Features, allRows: LearningOutcom
   if (ready) for (const [index, { row, target }] of normalized.entries()) {
     const weight = 2 ** (-(normalized.length - 1 - index) / 60);
     const x = keys.map(key => bounded(row.features[key] ?? 0, 1));
-    const error = target - forecastTilt(row.features).score!;
+    const error = target - forecastTilt(row.features, params).score!;
     for (let i = 0; i < keys.length; i++) {
       rhs[i] += weight * x[i] * error;
       for (let j = 0; j < keys.length; j++) matrix[i][j] += weight * x[i] * x[j];
@@ -69,7 +83,7 @@ export function adaptiveForecast(liveFeatures: Features, allRows: LearningOutcom
   weights.market_points = round(marketWeights.reduce((sum, value) => sum + value, 0) / marketWeights.length);
   const adjustment = base.score === null ? 0 : round(bounded(keys.reduce((sum, key, i) => sum + rhs[i] * bounded(features[key] ?? 0, 1), 0), 12));
   const score = base.score === null ? null : round(Math.max(0, Math.min(100, base.score + adjustment)));
-  return { model: adaptiveVersion, score, tilt: score === null ? 'unavailable' : score >= 55 ? 'up' : score <= 45 ? 'down' : 'neutral',
+  return { model: adaptiveVersion, score, tilt: score === null ? 'unavailable' : score >= 50 + params.band ? 'up' : score <= 50 - params.band ? 'down' : 'neutral',
     probability_up: null, base_score: base.score, adjustment, horizon, settled: usable.length,
     same_horizon: usable.length, sessions: usable.length, training_sessions: normalized.length, minimum_sessions: 60,
     updated_through: usable.map(row => row.available_at).sort().at(-1) ?? null, weights,
@@ -78,10 +92,10 @@ export function adaptiveForecast(liveFeatures: Features, allRows: LearningOutcom
       : `${usable.length} saved ${usable.length === 1 ? "prediction checked" : "predictions checked"} for this forecast period. ${usable.length < 20 ? `Volatility warm-up: ${usable.length}/20 sessions.` : `Weight training: ${normalized.length}/60 eligible sessions.`} Predictions are active; automatic weight adjustments start after the warm-up and 60 eligible sessions. Experimental index, not a probability.` };
 }
 
-export function adaptPulse<T extends { symbol: string; as_of: string; horizon?: string; score: number | null; research_score: number | null; outlook: string }>(pulse: T, rows: LearningOutcome[]) {
+export function adaptPulse<T extends { symbol: string; as_of: string; horizon?: string; score: number | null; research_score: number | null; outlook: string }>(pulse: T, rows: LearningOutcome[], params: Partial<Record<Horizon, TiltParams>> = {}) {
   if (!['SPY', 'QQQ'].includes(pulse.symbol)) return { ...pulse, learning: null };
   const horizon = pulse.horizon === 'next open' ? 'opening_gap' : 'open_to_close';
-  const learning = adaptiveForecast(makeFeatures({ pulse }), rows, horizon, pulse.as_of);
+  const learning = adaptiveForecast(makeFeatures({ pulse }), rows, horizon, pulse.as_of, params[horizon] ?? defaultTilt);
   if (learning.status !== 'learning') return { ...pulse, learning };
   return { ...pulse, score: learning.score, research_score: learning.score,
     outlook: learning.score === null ? 'unavailable' : learning.score < 40 ? 'headwinds' : learning.score > 60 ? 'tailwinds' : 'balanced', learning };

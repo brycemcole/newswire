@@ -1,5 +1,6 @@
-import { brierScore, calibrationBins, forecastModel, forecastTilt, makeFeatures, predictCandidate, promotionGate, type Horizon } from './forecast-model';
-import { adaptiveForecast, adaptiveVersion, learningOutcomes } from './adaptive-forecast';
+import { brierScore, calibrationBins, defaultTilt, forecastModel, forecastTilt, makeFeatures, predictCandidate, promotionGate, validTilt, type Horizon, type TiltParams } from './forecast-model';
+import { backtestComparison, judgeParamSet } from './forecast-diagnostics';
+import { activeTiltParams, adaptiveForecast, adaptiveVersion, compatibleVersionSql, isCompatibleVersion, learningOutcomes } from './adaptive-forecast';
 
 type DB = D1Database;
 export class ForecastError extends Error {
@@ -193,7 +194,8 @@ export async function captureForecast(db: DB, input: { symbol: string; snapshot:
   if (!horizon || !target) return { inserted: 0, forecasts: [] };
   if (input.targetSession && input.targetSession !== (horizon === 'cutoff_to_open' ? target.date : today)) invalid('targetSession does not match the session window');
   const features = makeFeatures(input.snapshot), createdAt = iso(now), forecastAt = iso(asOf);
-  const forecast = adaptiveForecast(features, await learningOutcomes(db, symbol, forecastAt, horizon), horizon, forecastAt);
+  const outcomes = await learningOutcomes(db, symbol, forecastAt, horizon);
+  const forecast = adaptiveForecast(features, outcomes, horizon, forecastAt, (await activeTiltParams(db, symbol))[horizon] ?? defaultTilt);
   const frozen = JSON.stringify({ ...input.snapshot, learning: forecast }), inputVersion = await sha256(stable({ ...input.snapshot.inputs, learning: forecast }));
   const marketPoints = Number((input.snapshot.pulse as any).components?.market?.points ?? 0);
   const priceOnlyDirection = marketPoints > 0 ? 1 : marketPoints < 0 ? -1 : 0;
@@ -213,6 +215,16 @@ export async function captureForecast(db: DB, input: { symbol: string; snapshot:
     if (probability === null || priceOnlyProbability === null) continue;
     await db.prepare('INSERT INTO forecast_candidate_predictions (forecast_id,candidate_id,probability_up,price_only_probability_up,predicted_at) VALUES (?,?,?,?,?) ON CONFLICT(forecast_id,candidate_id) DO NOTHING')
       .bind(row.id,candidate.id,probability,priceOnlyProbability,forecastAt).run();
+    }
+  }
+  if (insertion.meta.changes > 0) {
+    const shadows = await db.prepare("SELECT id,params_json FROM forecast_param_sets WHERE symbol=? AND horizon=? AND status='shadow' ORDER BY created_at DESC LIMIT 5").bind(symbol,horizon).all<any>();
+    for (const shadow of shadows.results) {
+      const params = JSON.parse(shadow.params_json);
+      if (!validTilt(params)) continue;
+      const alt = adaptiveForecast(features, outcomes, horizon, forecastAt, params);
+      await db.prepare('INSERT INTO forecast_param_predictions (forecast_id,param_set_id,score,tilt,predicted_at) VALUES (?,?,?,?,?) ON CONFLICT(forecast_id,param_set_id) DO NOTHING')
+        .bind(row.id,shadow.id,alt.score,alt.tilt,forecastAt).run();
     }
   }
   for (const question of evidenceQuestionCandidates(input.snapshot)) {
@@ -289,7 +301,7 @@ export async function listForecastTrainingRows(db: DB, symbol: string, horizon: 
   symbol = String(symbol ?? '').toUpperCase();
   if (!symbolOK(symbol) || !(forecastModel.horizons as readonly string[]).includes(horizon)) invalid('symbol and horizon are invalid');
   const { results } = await db.prepare(`SELECT f.id,f.symbol,f.session_date,f.horizon,f.forecast_at,f.tilt,f.features_json,o.direction,o.return_pct
-    FROM forecasts f JOIN forecast_outcomes o ON o.forecast_id=f.id WHERE f.symbol=? AND f.horizon=? AND f.model_version=? ORDER BY f.session_date,f.forecast_at`).bind(symbol,horizon,adaptiveVersion).all<any>();
+    FROM forecasts f JOIN forecast_outcomes o ON o.forecast_id=f.id WHERE f.symbol=? AND f.horizon=? AND ${compatibleVersionSql('f.model_version')} ORDER BY f.session_date,f.forecast_at`).bind(symbol,horizon).all<any>();
   return { symbol, horizon, rows: results.map(row => ({ ...row, features: JSON.parse(row.features_json) })) };
 }
 
@@ -420,7 +432,7 @@ export async function getResearch(db: DB, symbol: string) {
     db.prepare("SELECT id,query,reason,status,created_at,event_id FROM research_questions WHERE status IN ('open','queued') ORDER BY created_at DESC LIMIT 30").all<any>(),
     db.prepare("SELECT * FROM forecast_models WHERE symbol=? AND model_version='ridge-logit-shadow-v2' AND status='promoted' ORDER BY created_at DESC LIMIT 1").bind(symbol).first<any>(),
   ]);
-  const rows = forecasts.results, settled = rows.filter(r => r.model_version === adaptiveVersion && r.return_pct !== null && r.return_pct !== undefined);
+  const rows = forecasts.results, settled = rows.filter(r => isCompatibleVersion(r.model_version) && r.return_pct !== null && r.return_pct !== undefined);
   const byHorizon = Object.fromEntries(forecastModel.horizons.map(h => [h, directionalScore(settled.filter(r => r.horizon === h))]));
   const latest = rows[0] ?? null;
   let latestDrivers: { evidence: any[]; contradictions: any[] } = { evidence: [], contradictions: [] };
@@ -434,8 +446,73 @@ export async function getResearch(db: DB, symbol: string) {
   const latestDTO = latest ? { ...compactForecast(latest, latestDrivers), probability_up: probabilityById.get(latest.id) ?? null } : null;
   return { symbol, status: latest ? (latest.tilt === 'unavailable' ? 'limited' : 'available') : 'collecting',
     summary: latest ? `${latest.tilt} research tilt; experimental and uncalibrated` : 'Collecting frozen forecasts; no probability estimate is validated.',
-    latest: latestDTO, performance: { model_version: adaptiveVersion, excluded_legacy: rows.filter(r => r.model_version !== adaptiveVersion && r.return_pct !== null && r.return_pct !== undefined).length, settled: settled.length, horizons: byHorizon, probability_metrics: null,
+    latest: latestDTO, performance: { model_version: adaptiveVersion, excluded_legacy: rows.filter(r => !isCompatibleVersion(r.model_version) && r.return_pct !== null && r.return_pct !== undefined).length, settled: settled.length, horizons: byHorizon, probability_metrics: null,
       candidate_status: 'adaptive learning', candidate: activeModel ? JSON.parse(activeModel.evaluation_json) : null },
     recent, questions: questions.results.map(({ event_id, ...q }) => ({ ...q, ...(event_id ? { event_id } : {}) })),
     model: { ...forecastModel, active_candidate: activeModel ? { version: activeModel.model_version, promoted_at: activeModel.promoted_at } : null } };
+}
+
+export async function registerParamSet(db: DB, input: { symbol: string; horizon: Horizon; params: unknown; evaluation: unknown; trainThrough: string }, now = Date.now()) {
+  const symbol = String(input.symbol ?? '').toUpperCase(), horizon = input.horizon;
+  if (!symbolOK(symbol) || !(forecastModel.horizons as readonly string[]).includes(horizon)) invalid('symbol and horizon are invalid');
+  if (!validTilt(input.params)) invalid('params must be finite and inside the allowed bounds');
+  if (!input.evaluation || typeof input.evaluation !== 'object' || !/^\d{4}-\d{2}-\d{2}$/.test(input.trainThrough)) invalid('parameter set requires evaluation and trainThrough');
+  const params = input.params as TiltParams, serial = JSON.stringify({ eventShrink: params.eventShrink, gain: params.gain, band: params.band });
+  const existing = await db.prepare("SELECT id,status FROM forecast_param_sets WHERE symbol=? AND horizon=? AND params_json=? AND status IN ('shadow','promoted')").bind(symbol,horizon,serial).first<any>();
+  if (existing) return { id: existing.id, symbol, horizon, status: existing.status, duplicate: true };
+  const live = (await activeTiltParams(db, symbol))[horizon] ?? defaultTilt;
+  if (JSON.stringify({ eventShrink: live.eventShrink, gain: live.gain, band: live.band }) === serial) invalid('parameter set equals the live parameters');
+  const id = await sha256(`tilt|${symbol}|${horizon}|${input.trainThrough}|${serial}`);
+  await db.prepare("INSERT INTO forecast_param_sets (id,symbol,horizon,status,params_json,evaluation_json,train_through,created_at) VALUES (?,?,?,'shadow',?,?,?,?) ON CONFLICT(id) DO NOTHING")
+    .bind(id,symbol,horizon,serial,JSON.stringify(input.evaluation),input.trainThrough,iso(now)).run();
+  return { id, symbol, horizon, status: 'shadow', duplicate: false };
+}
+
+export async function evaluateParamSet(db: DB, id: string, now = Date.now()) {
+  const set = await db.prepare("SELECT * FROM forecast_param_sets WHERE id=? AND status IN ('shadow','promoted')").bind(id).first<any>();
+  if (!set) invalid('parameter set not found');
+  const { results } = await db.prepare(`SELECT f.session_date,f.tilt AS live_tilt,p.tilt AS shadow_tilt,o.return_pct
+    FROM forecast_param_predictions p JOIN forecasts f ON f.id=p.forecast_id JOIN forecast_outcomes o ON o.forecast_id=f.id
+    WHERE p.param_set_id=? AND o.direction!=0 ORDER BY f.session_date`).bind(id).all<any>();
+  const forward = judgeParamSet(results);
+  const history = (await diagnosticsData(db, set.symbol, set.horizon)).forecasts;
+  const live = (await activeTiltParams(db, set.symbol))[set.horizon as Horizon] ?? defaultTilt;
+  const backtest = backtestComparison(history, JSON.parse(set.params_json), live);
+  const verdict = { ...forward, backtest, status: forward.status === 'promoted' && !backtest.not_worse ? 'shadow' : forward.status };
+  const status = set.status === 'promoted' ? 'promoted' : verdict.status;
+  if (status === 'promoted' && set.status !== 'promoted') {
+    await db.prepare("UPDATE forecast_param_sets SET status='retired' WHERE symbol=? AND horizon=? AND status='promoted' AND id!=?").bind(set.symbol,set.horizon,id).run();
+  }
+  await db.prepare("UPDATE forecast_param_sets SET status=?,evaluation_json=?,promoted_at=CASE WHEN ?='promoted' THEN COALESCE(promoted_at,?) ELSE promoted_at END WHERE id=?")
+    .bind(status,JSON.stringify({ ...JSON.parse(set.evaluation_json), forward: verdict }),status,iso(now),id).run();
+  return { id, status, forward: verdict };
+}
+
+export async function diagnosticsData(db: DB, symbol: string, horizon?: Horizon) {
+  symbol = String(symbol ?? '').toUpperCase();
+  if (!symbolOK(symbol) || (horizon !== undefined && !(forecastModel.horizons as readonly string[]).includes(horizon))) invalid('symbol and horizon are invalid');
+  const { results } = await db.prepare(`SELECT f.id,f.session_date,f.horizon,f.forecast_at,f.score,f.tilt,f.price_only_direction,f.features_json,o.return_pct,o.direction
+    FROM forecasts f JOIN forecast_outcomes o ON o.forecast_id=f.id WHERE f.symbol=? AND (? IS NULL OR f.horizon=?) AND ${compatibleVersionSql('f.model_version')}
+    ORDER BY f.session_date,f.forecast_at LIMIT 2000`).bind(symbol,horizon ?? null,horizon ?? null).all<any>();
+  const forecasts = results.flatMap(({ features_json, ...row }) => { try { return [{ ...row, features: JSON.parse(features_json) }]; } catch { return []; } });
+  const since = forecasts.length ? iso(Date.parse(forecasts[0].forecast_at) - 96 * 3600000) : iso(Date.now());
+  const impacts = await db.prepare('SELECT received_at,published_at,direction,channel,size,confidence FROM pulse_impacts WHERE received_at>=? AND direction!=0 AND confidence>=0.5 ORDER BY received_at LIMIT 30000').bind(since).all<any>();
+  return { symbol, horizon: horizon ?? null, forecasts, impacts: impacts.results, impacts_truncated: impacts.results.length >= 30000 };
+}
+
+export async function saveLearningReport(db: DB, input: { kind: string; symbol: string; horizon: Horizon; window_end: string; report: unknown }, now = Date.now()) {
+  const symbol = String(input.symbol ?? '').toUpperCase();
+  if (!symbolOK(symbol) || !(forecastModel.horizons as readonly string[]).includes(input.horizon) || !/^[a-z_]{1,40}$/.test(String(input.kind)) || !input.report || typeof input.report !== 'object' || !Number.isFinite(Date.parse(input.window_end))) invalid('report requires kind, symbol, horizon, window_end and report');
+  const body = JSON.stringify(input.report);
+  if (body.length > 500000) invalid('report is too large');
+  const id = await sha256(`${input.kind}|${symbol}|${input.horizon}|${input.window_end}|${body}`);
+  await db.prepare('INSERT INTO learning_reports (id,kind,symbol,horizon,window_end,report_json,created_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING').bind(id,input.kind,symbol,input.horizon,input.window_end,body,iso(now)).run();
+  return { id };
+}
+
+export async function listLearningReports(db: DB, kind: string, symbol: string, horizon: Horizon, limit = 2) {
+  symbol = String(symbol ?? '').toUpperCase();
+  if (!symbolOK(symbol) || !(forecastModel.horizons as readonly string[]).includes(horizon)) invalid('symbol and horizon are invalid');
+  const { results } = await db.prepare('SELECT id,kind,window_end,created_at,report_json FROM learning_reports WHERE kind=? AND symbol=? AND horizon=? ORDER BY created_at DESC LIMIT ?').bind(kind,symbol,horizon,Math.max(1, Math.min(limit, 10))).all<any>();
+  return { reports: results.map(({ report_json, ...row }) => ({ ...row, report: JSON.parse(report_json) })) };
 }

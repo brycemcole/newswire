@@ -52,7 +52,7 @@ test('historical requests and different history windows never reuse live inputs'
   const db = database([wireStory], [impact]);
   let reads = 0;
   const prepare = db.prepare;
-  db.prepare = sql => { if (!sql.includes('forecast_outcomes')) reads += 1; return prepare(sql); };
+  db.prepare = sql => { if (!sql.includes('forecast_outcomes') && !sql.includes('forecast_param_sets')) reads += 1; return prepare(sql); };
   await loadPulseSnapshot(db, new Date(now).toISOString());
   await loadPulse(db, new Date(now).toISOString(), 'SPY', undefined, 12);
   assert.equal(reads, 4);
