@@ -318,7 +318,7 @@ struct QuoteDetail: View {
                 .padding(14)
                 .glassEffect(.regular, in: .rect(cornerRadius: 22))
             } else {
-                Text(mapped.isEmpty ? "Hold and slide to inspect prices. Dated events appear when available." : "Hold and slide for events · E earnings · D dividend · S split · • news")
+                Text(mapped.isEmpty ? "Hold chart to inspect prices. Dated events appear when available." : "Hold chart for details · E earnings · D dividend · S split · • news")
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }

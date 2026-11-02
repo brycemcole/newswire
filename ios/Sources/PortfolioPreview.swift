@@ -44,6 +44,8 @@ struct PortfolioPreview: View {
     var body: some View {
         if CommandLine.arguments.contains("-portfolioCostPreview") {
             PortfolioCostPreview()
+        } else if CommandLine.arguments.contains("-holdingCardPreview") {
+            HoldingCardPreview()
         } else if CommandLine.arguments.contains("-portfolioWidgetPreview") {
             PortfolioWidgetView(portfolio: WidgetPortfolio(holdings: [], cash: 1200, other: 0, otherGain: nil, value: 1200,
                 dayBaseline: 1000, day: [WidgetPoint(date: LedgerPreview.day(-1), value: 1000), WidgetPoint(date: LedgerPreview.end, value: 1200)],
@@ -66,6 +68,28 @@ struct PortfolioPreview: View {
         } else { PortfolioView() }
     }
 }
+struct HoldingCardPreview: View {
+    private let option = Position(id: "preview|option", itemID: "test", institution: "Test", account: "[TEST]", symbol: "TEST", name: "[TEST] call",
+        option: OptionDetail(isCall: true, strike: 305, expiration: Date.now.addingTimeInterval(86400 * 4), contracts: 1), quantity: 1, price: nil, value: 38, reportedCost: 109.05, costEstimated: true)
+    private let shares = Position(id: "preview|shares", itemID: "test", institution: "Test", account: "[TEST]", symbol: "TEST", name: "[TEST]",
+        option: nil, quantity: 10, price: 280, value: 2800, reportedCost: 2400)
+    private let quote = OptionQuote(bid: 0, ask: 0, last: 0.38, lastTrade: Date.now.addingTimeInterval(-86400 * 3), change: -0.55, yahooVolatility: 0.41, regular: 282.32, pre: 281.77, post: nil, marketState: "PRE")
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 16) {
+                QuoteSection("Your Position") {
+                    PositionCard(symbol: "TEST", position: option, spot: ("Pre-market", 281.77), store: .shared, requestsOptionQuote: false, previewQuote: quote)
+                }
+                QuoteSection("Your Position") {
+                    PositionCard(symbol: "TEST", position: shares, spot: ("Last", 281.77), store: .shared, requestsOptionQuote: false)
+                }
+            }
+            .padding()
+        }
+    }
+}
+
 enum LedgerPreview {
     static let end = PortfolioLedger.calendar.startOfDay(for: .now)
     static func day(_ offset: Int) -> Date { PortfolioLedger.calendar.date(byAdding: .day, value: offset, to: end)! }
