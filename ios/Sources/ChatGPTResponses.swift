@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 nonisolated enum ChatGPTEvent: Sendable {
     /// Text of the current response so far.
@@ -8,12 +9,39 @@ nonisolated enum ChatGPTEvent: Sendable {
 
 enum ChatGPTResponses {
     nonisolated private static let endpoint = URL(string: "https://api.openai.com/v1/responses")!
+    nonisolated private static let logger = Logger(subsystem: "com.brycecole.newswire", category: "ChatGPT")
+
+    nonisolated static func terminalResponse(_ event: [String: Any], requestID: String?) throws -> Data {
+        guard let response = event["response"] as? [String: Any] else { throw ChatGPTError.incomplete }
+        if event["type"] as? String == "response.incomplete" {
+            let reason = (response["incomplete_details"] as? [String: Any])?["reason"] as? String ?? "unknown"
+            let category = ["max_output_tokens", "content_filter"].contains(reason) ? reason : "unknown"
+            logger.error("ChatGPT response incomplete: \(category, privacy: .public)")
+            throw ChatGPTError.responseIncomplete(reason, requestID)
+        }
+        return try JSONSerialization.data(withJSONObject: response)
+    }
+
+    static func answer(_ output: [[String: Any]]) throws -> (text: String, titles: [String: String]) {
+        let result = message(output)
+        guard !result.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            let refused = output.contains { item in
+                (item["content"] as? [[String: Any]] ?? []).contains { $0["type"] as? String == "refusal" }
+            }
+            logger.error("ChatGPT response has no answer; refusal: \(refused, privacy: .public), output items: \(output.count, privacy: .public)")
+            throw refused ? ChatGPTError.refused : ChatGPTError.missingAnswer
+        }
+        return result
+    }
 
     /// Sends one Responses request on the signed-in ChatGPT plan and returns the completed response's output items.
     static func respond(_ body: [String: Any], onEvent: @escaping @MainActor @Sendable (ChatGPTEvent) -> Void = { _ in }) async throws -> [[String: Any]] {
         var body = body
         body["store"] = false
         body["stream"] = true
+        var include = body["include"] as? [String] ?? []
+        if !include.contains("reasoning.encrypted_content") { include.append("reasoning.encrypted_content") }
+        body["include"] = include
         let data = try JSONSerialization.data(withJSONObject: body)
         let response: Data
         do {
@@ -29,9 +57,7 @@ enum ChatGPTResponses {
     static func text(instructions: String, prompt: String) async throws -> String {
         let model = try await ChatGPTAccount.shared.model()
         let output = try await respond(["model": model, "instructions": instructions, "input": [["role": "user", "content": prompt]]])
-        let text = message(output).text
-        guard !text.isEmpty else { throw ChatGPTError.incomplete }
-        return text
+        return try answer(output).text
     }
 
     static func message(_ output: [[String: Any]]) -> (text: String, titles: [String: String]) {
@@ -111,11 +137,8 @@ enum ChatGPTResponses {
                 await onEvent(.text(snapshot))
             case "response.output_item.added":
                 if (event["item"] as? [String: Any])?["type"] as? String == "web_search_call" { await onEvent(.searching) }
-            case "response.completed":
-                guard let completed = event["response"] else { throw ChatGPTError.incomplete }
-                return try JSONSerialization.data(withJSONObject: completed)
-            case "response.incomplete":
-                throw ChatGPTError.incomplete
+            case "response.completed", "response.incomplete":
+                return try terminalResponse(event, requestID: requestID)
             case "response.failed", "error":
                 let error = (event["response"] as? [String: Any])?["error"] ?? event["error"] ?? event
                 throw ChatGPTError.from(status: http.statusCode == 200 ? 400 : http.statusCode,
@@ -170,18 +193,13 @@ extension StockChat {
             }
             let calls = output.filter { $0["type"] as? String == "function_call" }
             if calls.isEmpty {
-                let (text, titles) = ChatGPTResponses.message(output)
-                guard !text.isEmpty else { throw ChatGPTError.incomplete }
+                let (text, titles) = try ChatGPTResponses.answer(output)
                 return await ChatGPTResponses.cite(text, titles: titles, research: research)
             }
             streamingText = ""
-            let preamble = ChatGPTResponses.message(output).text
-            if !preamble.isEmpty { input.append(["role": "assistant", "content": preamble]) }
+            input.append(contentsOf: output)
             for call in calls {
                 guard let id = call["call_id"] as? String, let name = call["name"] as? String else { throw ChatGPTError.incomplete }
-                var item = call
-                item["id"] = nil
-                input.append(item)
                 let tool = name.split(separator: ".").last.map(String.init) ?? name
                 let result = try await runTool(tool, arguments: call["arguments"] as? String, research: research)
                 input.append(["type": "function_call_output", "call_id": id, "output": result])
