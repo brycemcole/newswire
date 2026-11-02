@@ -13,7 +13,8 @@ const schema = await readFile(new URL('../migrations/0013_forecast_ledger.sql', 
 before(async () => {
   mf = new Miniflare(convertV4MiniflareOptions({ workers: [{ name: 'test', modules: true, script: 'export default { fetch() { return new Response() } }', compatibilityDate: '2026-09-06', d1Databases: ['DB'] }] }));
   db = await mf.getD1Database('DB');
-  await db.batch(schema.split(';').filter(s => s.trim()).map(s => db.prepare(s)));
+  for (const sql of [schema, await readFile(new URL('../migrations/0021_learning_loop.sql', import.meta.url), 'utf8')])
+    await db.batch(sql.split(';').filter(s => s.trim()).map(s => db.prepare(s)));
 });
 after(async () => { await mf?.dispose(); });
 const pulse = { status: 'available', score: 62, research_score: 62, components: { news: { status: 'available', points: 5 }, market: { status: 'available', points: 3, live_inputs: 7 }, calendar: { points: 0 } }, coverage: { headline_stories: 4 } };

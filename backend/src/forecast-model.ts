@@ -22,7 +22,12 @@ export const marketGroups: Record<string, string[]> = {
   overseas_points: ['europe', 'germany', 'asia', 'china'],
   commodity_points: ['oil', 'copper', 'gold', 'bitcoin'],
 };
-const eventShrink = 0.4;
+export type TiltParams = { eventShrink: number; gain: number; band: number };
+export const defaultTilt: TiltParams = { eventShrink: 0.4, gain: 1, band: 5 };
+export const tiltBounds = { eventShrink: [0, 0.8], gain: [0.5, 1.5], band: [2, 10] } as const;
+export function validTilt(value: any): value is TiltParams {
+  return !!value && (Object.keys(tiltBounds) as Array<keyof TiltParams>).every(key => Number.isFinite(value[key]) && value[key] >= tiltBounds[key][0] && value[key] <= tiltBounds[key][1]);
+}
 export const marketGroupKeys = [...Object.keys(marketGroups), 'market_other_points'];
 
 function marketFeatures(market: any, available: boolean): Features {
@@ -70,15 +75,15 @@ export function makeFeatures(snapshot: any): Features {
   };
 }
 
-export function forecastTilt(features: Features): { score: number | null; tilt: 'up' | 'down' | 'neutral' | 'unavailable'; probabilities: null } {
+export function forecastTilt(features: Features, params: TiltParams = defaultTilt): { score: number | null; tilt: 'up' | 'down' | 'neutral' | 'unavailable'; probabilities: null } {
   const available = features.score_available || features.news_available || features.market_available;
   if (!available) return { score: null, tilt: 'unavailable', probabilities: null };
   const hasGroups = marketGroupKeys.some(key => key in features);
   const marketPoints = hasGroups ? marketGroupKeys.reduce((sum, key) => sum + (features[key] ?? 0), 0) : (features.market_points ?? 0);
   const raw = 50 + 25 * (features.news_points ?? 0) + 40 * marketPoints + 10 * (features.calendar_points ?? 0) + 10 * (features.earnings_points ?? 0);
-  const shrunk = 50 + (raw - 50) * (1 - eventShrink * clamp(features.event_risk ?? 0, 0, 1));
+  const shrunk = 50 + (raw - 50) * params.gain * (1 - params.eventShrink * clamp(features.event_risk ?? 0, 0, 1));
   const score = Math.max(0, Math.min(100, Math.round(shrunk * 100) / 100));
-  const tilt = score >= 55 ? 'up' : score <= 45 ? 'down' : 'neutral';
+  const tilt = score >= 50 + params.band ? 'up' : score <= 50 - params.band ? 'down' : 'neutral';
   return { score, tilt, probabilities: null };
 }
 
