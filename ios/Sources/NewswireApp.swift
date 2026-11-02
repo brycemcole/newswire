@@ -63,17 +63,21 @@ import SwiftUI
                     StoryDesignPreview()
                 } else if CommandLine.arguments.contains("-portfolioTickerPreview") {
                     PortfolioTickerPreview()
+                } else if CommandLine.arguments.contains("-goalDetailPreview") {
+                    GoalDetailPreview()
                 } else if CommandLine.arguments.contains("-portfolioPreview") {
                     PortfolioPreview()
+                } else if CommandLine.arguments.contains("-goalsPreview") {
+                    GoalsPreview()
                 } else if CommandLine.arguments.contains("-portfolioAudit") {
                     PortfolioView()
                 } else if let index = CommandLine.arguments.firstIndex(of: "-widgetGallery") {
                     WidgetGallery(page: CommandLine.arguments.dropFirst(index + 1).first ?? "home")
                 } else {
-                    FeedView()
+                    AppTabs()
                 }
                 #else
-                FeedView()
+                AppTabs()
                 #endif
             }
             .task(id: scenePhase) {
@@ -290,7 +294,7 @@ struct FeedView: View {
     @State private var store = FeedStore.shared
     @State private var settings = false
     @State private var showingSaved = false
-    @State private var portfolio = false
+    @Environment(AppNavigator.self) private var navigator
     @State private var dock = DockDetent.peek
     @State private var dockFrame = DockFrame()
     @State private var quoteRoute: MarketSymbol?
@@ -325,6 +329,11 @@ struct FeedView: View {
         return "\(homeClock.formatted(.dateTime.weekday(.wide))) · \(MarketStatusLine.status(at: homeClock))"
     }
 
+    private var todayScreen: String {
+        let headlines = store.stories.prefix(8).map { "- \($0.title) (\($0.source))" }.joined(separator: "\n")
+        return "The Today home screen (\(subtitle)), a news feed. Top headlines:\n\(headlines)"
+    }
+
     private var showsHome: Bool { search.isEmpty && store.filters.isEmpty }
 
     private var myStories: [Story] {
@@ -343,7 +352,7 @@ struct FeedView: View {
                                    onStory: { store.path.append($0) }, onAlert: { alertSymbol = MarketSymbol(id: $0) },
                                    onFindSymbols: { dock = .large })
                 case .positions:
-                    PositionMoversCard(onQuote: { open(quote: $0) }, onAlert: { alertSymbol = MarketSymbol(id: $0) }, openPortfolio: { portfolio = true })
+                    PositionMoversCard(onQuote: { open(quote: $0) }, onAlert: { alertSymbol = MarketSymbol(id: $0) }, openPortfolio: { navigator.select(.portfolio) })
                 case .watchlist:
                     deckWatchlist
                 case .next:
@@ -473,6 +482,7 @@ struct FeedView: View {
                 .scrollContentBackground(.hidden)
                 .background { TwilightSky(scroll: skyScroll) }
                 .modifier(VisitTracking())
+                .asksAbout(AskContext(screen: todayScreen))
                 .refreshable { await store.sync(.replace) }
                 .onScrollGeometryChange(for: Bool.self) { geometry in
                     geometry.contentOffset.y + geometry.contentInsets.top < 24
@@ -493,14 +503,18 @@ struct FeedView: View {
                 .modifier(ConditionalWireSearch(presented: $searchPresented, text: $search, filters: $store.filters))
                 .navigationDestination(for: Story.self) { story in
                     StoryDetail(story: story)
+                        .asksAbout(AskContext(screen: "The story \"\(story.title)\" from \(story.source), published \(story.publishedAt.formatted(.dateTime.month().day().hour().minute())). Summary: \(story.summary.prefix(600))"))
                 }
                 .navigationDestination(for: MarketSymbol.self) { QuoteDetail(symbol: $0.id).id($0.id).dockClearance() }
                 .navigationDestination(for: DataRoute.self) { route in
-                    if DataScreen.designedPaths.contains(route.path) {
-                        DataScreen(route: route).id(route.id)
-                    } else {
-                        DataScreen(route: route).id(route.id).dockClearance()
+                    Group {
+                        if DataScreen.designedPaths.contains(route.path) {
+                            DataScreen(route: route).id(route.id)
+                        } else {
+                            DataScreen(route: route).id(route.id).dockClearance()
+                        }
                     }
+                    .asksAbout(AskContext(screen: "The Newswire data page \(route.path)" + (route.items.isEmpty ? "" : " with " + route.items.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ", ")) + "."))
                 }
                 .navigationDestination(for: FeedDestination.self) { _ in
                     TerminalExploreView { token in
@@ -520,7 +534,7 @@ struct FeedView: View {
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         Menu {
-                            Button { portfolio = true } label: { Label("Portfolio", systemImage: "briefcase") }
+                            Button { navigator.select(.portfolio) } label: { Label("Portfolio", systemImage: "briefcase") }
                             Button { settings = true } label: { Label("Settings", systemImage: "gearshape") }
                             Button { showingSaved = true } label: { Label("Saved Stories", systemImage: "bookmark") }
                             Divider()
@@ -536,7 +550,6 @@ struct FeedView: View {
             }
             .sheet(isPresented: $settings) { SettingsView(store: store) }
             .sheet(isPresented: $showingSaved) { SavedStoriesView() }
-            .sheet(isPresented: $portfolio) { PortfolioView() }
             .sheet(item: $alertSymbol) { PriceAlertComposer(symbol: $0.id) }
             .sheet(isPresented: $marketAlerts) { SessionAlertsView() }
             .sheet(item: $asking, onDismiss: { askPrompt = "" }) { AskSheet(context: $0, initialQuestion: askPrompt) }
@@ -574,6 +587,7 @@ struct FeedView: View {
             if (PortfolioStore.shared.snapshot.updated ?? .distantPast).timeIntervalSinceNow < -300 {
                 await PortfolioStore.shared.sync()
             }
+            GoalStore.shared.kick()
             await PriceWatchStore.shared.restoreActivities()
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(60)) } catch { return }
@@ -593,13 +607,14 @@ struct FeedView: View {
 
     var body: some View {
         navigation
+        .toolbarVisibility(dock == .peek ? .automatic : .hidden, for: .tabBar)
+        .animation(.easeOut(duration: 0.2), value: dock == .peek)
         .gesture(DockBackgroundInteraction(excludedFrame: dockFrame) {
             if dock != .peek {
                 withAnimation(selectionAnimation) { dock = .peek }
             }
         })
         .onChange(of: settings) { _, _ in dock = .peek }
-        .onChange(of: portfolio) { _, _ in dock = .peek }
         .overlay {
             if !hidesMarketDock {
                 StorySuggestionsReader(source: storySuggestions) { suggestedSymbols in
@@ -612,9 +627,6 @@ struct FeedView: View {
                         }
                         withAnimation(selectionAnimation) { dock = .medium }
                         open(quote: symbol)
-                    }, onAsk: { question in
-                        askPrompt = question
-                        asking = .markets
                     }, onSuggestionSelect: { symbol in
                         withAnimation(selectionAnimation) { dock = .peek }
                         open(quote: symbol)
@@ -629,13 +641,11 @@ struct FeedView: View {
             settings = false
             dock = .peek
             switch url.host() {
-            case "portfolio": portfolio = true
+            case "portfolio": navigator.select(.portfolio)
             case "quote":
                 guard let symbol = url.pathComponents.dropFirst().first else { return }
-                portfolio = false
                 open(quote: symbol)
             case "story":
-                portfolio = false
                 guard let id = url.pathComponents.dropFirst().first else { return }
                 if let story = store.story(id: id) {
                     store.path = NavigationPath([story])

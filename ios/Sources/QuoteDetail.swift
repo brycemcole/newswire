@@ -240,6 +240,8 @@ struct QuoteDetail: View {
             AskSheet(context: AskContext(symbol: symbol, name: name, price: model.live.map { $0.money($0.price) }))
         }
         .onAppear { MarketRecents.add(symbol) }
+        .asksAbout(AskContext(symbol: symbol, name: name, price: model.live.map { $0.money($0.price) },
+                              screen: "The quote page for \(symbol) (\(name))" + (model.live.map { ", showing a price of \($0.money($0.price))" } ?? "") + "."))
         #if DEBUG
         .task {
             if let index = CommandLine.arguments.firstIndex(of: "-chartRange"), let raw = CommandLine.arguments.dropFirst(index + 1).first, let range = ChartRange(rawValue: raw) { model.range = range }

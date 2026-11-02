@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct PortfolioView: View {
+    var embedded = false
     @Environment(\.dismiss) private var dismiss
     @State private var store = PortfolioStore.shared
     @State private var editingKeys = false
@@ -12,8 +13,10 @@ struct PortfolioView: View {
     @State private var showingPaper = false
     @State private var managingAccounts = false
 
-    init() {
+    init(embedded: Bool = false) {
+        self.embedded = embedded
         #if DEBUG
+        if CommandLine.arguments.contains("-goalsPreviewData") { GoalStore.shared.loadPreview() }
         if CommandLine.arguments.contains("-portfolioSelfDirected") {
             _account = State(initialValue: PortfolioAccount.group(PortfolioStore.shared.snapshot).first { $0.institution == "SoFi" && $0.name.contains("Self-directed") }?.id)
         }
@@ -125,6 +128,7 @@ struct PortfolioView: View {
                             .id(account)
                     }
                     .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+                    PortfolioGoalsSection()
                     Section {
                         ForEach(holdings) { holding in
                             PortfolioHoldingRow(holding: holding)
@@ -209,8 +213,9 @@ struct PortfolioView: View {
                     Button { editingKeys = true } label: { Image(systemName: "key") }
                         .accessibilityLabel("Plaid keys")
                 }
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+                if !embedded { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
             }
+            .asksAbout(AskContext(screen: askScreen))
             .sheet(isPresented: $editingKeys) { PlaidKeysView(store: store) }
             .confirmationDialog("Remove \(removing?.institution ?? "account")?", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }), titleVisibility: .visible) {
                 Button("Remove", role: .destructive) {
@@ -232,6 +237,14 @@ struct PortfolioView: View {
             }
         }
         .scrollEdgeEffectStyle(.soft, for: .all)
+    }
+
+    private var askScreen: String {
+        let positions = selectedPositions.filter { $0.value != nil }.sorted { ($0.value ?? 0) > ($1.value ?? 0) }
+        let total = positions.compactMap(\.value).reduce(0, +)
+        let top = positions.prefix(12).map { "\($0.symbol) \(Money.text($0.value ?? 0))" }.joined(separator: ", ")
+        let scope = account.flatMap { id in accounts.first { $0.id == id } }.map { "the \($0.name) account" } ?? "all accounts"
+        return "The Portfolio screen for \(scope): \(positions.count) positions worth \(Money.text(total)). Largest: \(top)."
     }
 
     private var subtitle: String {
