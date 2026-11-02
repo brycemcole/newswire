@@ -13,7 +13,9 @@ import SwiftUI
         WindowGroup {
             Group {
                 #if DEBUG
-                if CommandLine.arguments.contains("-sofiPreview") {
+                if CommandLine.arguments.contains("-askResearchPreview") {
+                    AskSheet()
+                } else if CommandLine.arguments.contains("-sofiPreview") {
                     NavigationStack { SoFiConnectionView(preview: true) }
                         .scrollEdgeEffectStyle(.soft, for: .all)
                 } else if CommandLine.arguments.contains("-sofi") {

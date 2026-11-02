@@ -187,6 +187,14 @@ struct AskSheet: View {
         .onDisappear { chat.cancel() }
         #if DEBUG
         .task {
+            if CommandLine.arguments.contains("-askResearchPreview") {
+                let url = URL.documentsDirectory.appending(path: "ask-research-preview.json")
+                do {
+                    chat.messages = try JSONDecoder().decode([StockChatMessage].self, from: Data(contentsOf: url))
+                } catch {
+                    chat.error = "Could not load the research preview: \(error.localizedDescription)"
+                }
+            }
             if CommandLine.arguments.contains("-stockAISettings") { showingSettings = true }
             if let index = CommandLine.arguments.firstIndex(of: "-askPrompt"), CommandLine.arguments.indices.contains(index + 1) {
                 chat.send(CommandLine.arguments[index + 1], symbol: context.symbol, name: context.name, price: context.price)
