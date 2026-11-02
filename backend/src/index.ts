@@ -798,7 +798,7 @@ export class Compute {
   }
 }
 
-function compute(env: Env, name = 'compute') { return env.COMPUTE!.get(env.COMPUTE!.idFromName(name)); }
+function compute(env: Env, name = 'compute-v2') { return env.COMPUTE!.get(env.COMPUTE!.idFromName(name)); }
 
 async function handle(request: Request, env: Env, ctx?: ExecutionContext, ai?: AIBroker): Promise<Response> {
   let response: Response;
@@ -835,7 +835,7 @@ export default {
       headers.set('X-Newswire-Origin', env.ORIGIN_TOKEN ?? '');
       return fetch(new Request(new URL(url.pathname + url.search, env.ORIGIN_URL), { method: request.method, headers, body: request.body, redirect: 'manual' }));
     }
-    if (env.COMPUTE && !isLight(new URL(request.url).pathname)) return compute(env, new URL(request.url).pathname.startsWith('/v1/ai/') ? 'ai-v2' : 'compute').fetch(request);
+    if (env.COMPUTE && !isLight(new URL(request.url).pathname)) return compute(env, new URL(request.url).pathname.startsWith('/v1/ai/') ? 'ai-v2' : 'compute-v2').fetch(request);
     return handle(request, env, ctx);
   },
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
