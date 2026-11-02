@@ -63,6 +63,16 @@ struct RankingTests {
         #expect(StoryRanking.rank(stories, seen: [], symbols: [], holdings: ["MSFT"], now: now).map(\.id) == ["cut", "held", "news", "routine"])
     }
 
+    @Test func feedDropsRoutinePayoutsUnlessWatched() {
+        let stories = [
+            story("routine", "Acme declares $0.12 quarterly dividend", hoursAgo: 0),
+            story("held", "Microsoft declares $0.90 quarterly dividend", hoursAgo: 1, tickers: ["MSFT"]),
+            story("news", "Scientists discover unusual planetary system", hoursAgo: 0),
+            story("opinion", "Why the Fed is wrong about rates", hoursAgo: 0, tags: ["feature"]),
+        ]
+        #expect(StoryRanking.rank(stories, seen: [], symbols: [], holdings: ["MSFT"], dropsFiller: true, now: now).map(\.id).sorted() == ["held", "news"])
+    }
+
     @Test func significanceIsSeparateFromUrgencyAndMaterialTagsOverrideFallback() {
         let stories = [
             story("fresh", "What is next for Micron stock?", hoursAgo: 0),
