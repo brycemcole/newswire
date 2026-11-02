@@ -6,7 +6,9 @@ struct AskContext: Identifiable, Hashable {
     var symbol = ""
     var name = "Markets"
     var price: String?
-    var id: String { symbol }
+    /// What the reader was looking at when they opened Ask, in words the model can use.
+    var screen = ""
+    var id: String { symbol + "|" + screen }
     static let markets = AskContext()
 }
 
@@ -54,6 +56,7 @@ struct ChatThread: Identifiable, Codable, Hashable {
 struct AskSheet: View {
     let context: AskContext
     let initialQuestion: String?
+    var embedded = false
     @State private var thread: ChatThread
     @State private var chat = StockChat()
     @State private var history = ChatHistory.shared
@@ -70,15 +73,25 @@ struct AskSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
 
-    init(context: AskContext = .markets, initialQuestion: String? = nil) {
+    init(context: AskContext = .markets, initialQuestion: String? = nil, embedded: Bool = false) {
         self.context = context
         self.initialQuestion = initialQuestion
-        _thread = State(initialValue: ChatThread(symbol: context.symbol, name: context.name))
+        self.embedded = embedded
+        // The Ask tab is one long conversation: it resumes the latest general thread instead of starting over.
+        if embedded, let latest = ChatHistory.shared.threads.first(where: { $0.symbol.isEmpty }) {
+            _thread = State(initialValue: latest)
+            let restored = StockChat()
+            restored.messages = latest.messages
+            _chat = State(initialValue: restored)
+        } else {
+            _thread = State(initialValue: ChatThread(symbol: embedded ? "" : context.symbol, name: embedded ? "Markets" : context.name))
+        }
     }
 
     private var market: Bool { thread.symbol.isEmpty }
     private var price: String? { thread.symbol == context.symbol ? context.price : nil }
     private var suggestions: [String] {
+        if market && !context.screen.isEmpty { return ["What matters on this screen?", "Explain what I'm looking at in plain terms", "What should I watch next?"] }
         return market ? generator.questions
             : ["Why is \(thread.symbol) moving today?", "What does \(thread.name) do, in plain terms?", "Compare bullish earnings trades with a $1,000 budget"]
     }
@@ -164,7 +177,7 @@ struct AskSheet: View {
                         .accessibilityLabel("AI settings")
                 }
                 ToolbarSpacer(.fixed, placement: .topBarTrailing)
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+                if !embedded { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
             }
             .navigationDestination(isPresented: $showingSettings) { StockAISettings() }
             .navigationDestination(item: $openedStory) { StoryDetail(story: $0) }
@@ -201,6 +214,7 @@ struct AskSheet: View {
             }
             if CommandLine.arguments.contains("-stockAISettings") { showingSettings = true }
             if let index = CommandLine.arguments.firstIndex(of: "-askPrompt"), CommandLine.arguments.indices.contains(index + 1) {
+                chat.screen = context.screen
                 chat.send(CommandLine.arguments[index + 1], symbol: context.symbol, name: context.name, price: context.price)
             }
             if CommandLine.arguments.contains("-askHistory") { showingHistory = true }
@@ -252,7 +266,7 @@ struct AskSheet: View {
     private func startNew() {
         chat.cancel()
         chat = StockChat()
-        thread = ChatThread(symbol: context.symbol, name: context.name)
+        thread = ChatThread(symbol: embedded ? "" : context.symbol, name: embedded ? "Markets" : context.name)
         question = ""
         focused = true
     }
@@ -394,7 +408,8 @@ struct AskSheet: View {
         let text = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !chat.busy else { return }
         focused = false
-        chat.send(String(text.prefix(4000)), symbol: thread.symbol, name: thread.name, price: price)
+        chat.screen = context.screen
+        chat.send(String(text.prefix(4000)), symbol: embedded ? context.symbol : thread.symbol, name: embedded ? context.name : thread.name, price: embedded ? context.price : price)
         question = ""
     }
 }
