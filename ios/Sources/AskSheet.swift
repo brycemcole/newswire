@@ -179,6 +179,7 @@ struct AskSheet: View {
         }
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
+        .presentationBackground { Rectangle().fill(.clear).glassEffect(.regular, in: .rect) }
         .onChange(of: chat.messages) { _, messages in
             thread.messages = messages
             thread.updated = .now
@@ -350,33 +351,26 @@ struct AskSheet: View {
         HStack(alignment: .bottom, spacing: 10) {
             TextField(market ? "Ask anything about the markets" : "Ask about \(thread.symbol)", text: $question, axis: .vertical)
                 .lineLimit(1...5).focused($focused)
-                .submitLabel(.send).onSubmit(send)
                 .padding(.vertical, 14)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                // A vertical-axis field types a newline for Return instead of submitting, so treat a typed trailing newline as Send.
-                .onChange(of: question) { old, new in
-                    guard let text = ComposerReturn.stripped(old: old, new: new) else { return }
-                    question = text
-                    send()
-                }
             Group {
                 if chat.busy {
                     Button { chat.cancel() } label: {
-                        Image(systemName: "stop.fill").font(.footnote.weight(.semibold))
+                        Image(systemName: "stop.fill").font(.subheadline.weight(.semibold))
                             .foregroundStyle(.primary)
-                            .frame(width: 30, height: 30)
+                            .frame(width: 38, height: 38)
                             .background(.fill.tertiary, in: Circle())
-                            .padding(7)
+                            .padding(.horizontal, 5).padding(.vertical, 6)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Stop answer")
                 } else if canSend {
                     Button(action: send) {
-                        Image(systemName: "arrow.up").font(.footnote.weight(.bold))
+                        Image(systemName: "arrow.up").font(.subheadline.weight(.bold))
                             .foregroundStyle(.white)
-                            .frame(width: 30, height: 30)
+                            .frame(width: 38, height: 38)
                             .background(.tint, in: Circle())
-                            .padding(7)
+                            .padding(.horizontal, 5).padding(.vertical, 6)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Send question")
@@ -399,14 +393,6 @@ struct AskSheet: View {
         focused = false
         chat.send(String(text.prefix(4000)), symbol: thread.symbol, name: thread.name, price: price)
         question = ""
-    }
-}
-
-nonisolated enum ComposerReturn {
-    /// The text without its trailing newline when one newline was just typed at the end; nil for any other edit, such as pasting several lines.
-    static func stripped(old: String, new: String) -> String? {
-        guard new.count == old.count + 1, new.hasSuffix("\n") else { return nil }
-        return String(new.dropLast())
     }
 }
 
