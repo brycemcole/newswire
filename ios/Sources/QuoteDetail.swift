@@ -464,8 +464,48 @@ struct QuoteDetail: View {
             if let low, let high, let price = day?.price, let day {
                 RangeBar(title: "52-week range", low: low, high: high, value: price, format: day.money)
             }
-            StatGrid(stats: trading)
+            StatGrid(stats: trading, notes: tradingNotes)
         }
+    }
+
+    private var tradingNotes: [String: StatNote] {
+        var notes: [String: StatNote] = [:]
+        let price = model.live?.price
+        func relative(_ base: Double?) -> Double? {
+            guard let price, let base, base > 0 else { return nil }
+            return price / base - 1
+        }
+        func percent(_ value: Double) -> String { QuoteFormat.percent(value * 100) }
+        if let open = summary?.raw("summaryDetail", "open") ?? model.live?.open,
+           let close = summary?.raw("summaryDetail", "previousClose") ?? model.live?.previousClose, close > 0 {
+            let gap = open / close - 1
+            notes["Open"] = StatNote(text: "\(percent(gap)) gap", tint: QuoteFormat.color(gap))
+        }
+        if let volume = summary?.raw("summaryDetail", "volume") ?? model.live?.volume,
+           let average = summary?.raw("summaryDetail", "averageVolume"), average > 0 {
+            let ratio = volume / average
+            let text = ratio.formatted(.number.precision(.fractionLength(ratio >= 10 ? 0 : 1)))
+            notes["Volume"] = StatNote(text: "\(ratio >= 1 ? "▲" : "▼") \(text)× avg", tint: ratio >= 1.5 ? .orange : .secondary)
+        }
+        if let move = dayMove, move > -1, let cap = summary?.raw("summaryDetail", "marketCap") ?? summary?.raw("price", "marketCap") {
+            let change = cap - cap / (1 + move)
+            let amount = abs(change).formatted(.number.notation(.compactName).precision(.fractionLength(0...1)))
+            notes["Market cap"] = StatNote(text: "\(change > 0 ? "+" : change < 0 ? "−" : "")\(amount) today", tint: QuoteFormat.color(change))
+        }
+        if let index = summary?.raw("defaultKeyStatistics", "SandP52WeekChange"),
+           let change = summary?.raw("defaultKeyStatistics", "52WeekChange") {
+            let lead = change - index
+            notes["52W change"] = StatNote(text: "\(percent(lead)) vs S&P", tint: QuoteFormat.color(lead))
+        }
+        for (label, key) in [("50-day avg", "fiftyDayAverage"), ("200-day avg", "twoHundredDayAverage")] {
+            if let move = relative(summary?.raw("summaryDetail", key)) {
+                notes[label] = StatNote(text: "Price \(percent(move))", tint: QuoteFormat.color(move))
+            }
+        }
+        if let move = relative(summary?.raw("summaryDetail", "allTimeHigh")) {
+            notes["All-time high"] = StatNote(text: "\(percent(move)) from high", tint: QuoteFormat.color(move))
+        }
+        return notes
     }
 
     @ViewBuilder
@@ -802,8 +842,14 @@ struct QuoteSection<Content: View>: View {
     }
 }
 
+struct StatNote {
+    let text: String
+    let tint: Color
+}
+
 struct StatGrid: View {
     let stats: [(String, String)]
+    var notes: [String: StatNote] = [:]
 
     var body: some View {
         LazyVGrid(columns: [GridItem(.flexible(), spacing: 16, alignment: .topLeading), GridItem(.flexible(), spacing: 16, alignment: .topLeading)], alignment: .leading, spacing: 14) {
@@ -811,6 +857,9 @@ struct StatGrid: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(label).font(.caption).foregroundStyle(.secondary)
                     Text(value).font(.subheadline.weight(.semibold)).monospacedDigit().lineLimit(2).minimumScaleFactor(0.85)
+                    if let note = notes[label] {
+                        Text(note.text).font(.caption.weight(.medium)).monospacedDigit().foregroundStyle(note.tint)
+                    }
                 }
                 .accessibilityElement(children: .combine)
             }
