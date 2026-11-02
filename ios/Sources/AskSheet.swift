@@ -92,7 +92,10 @@ struct AskSheet: View {
                         ForEach(chat.messages) { message in
                             if message.user { questionBubble(message.text) } else { answer(message) }
                         }
-                        if let activity = chat.activity {
+                        if !chat.streamingText.isEmpty {
+                            Text(chat.streamingText)
+                                .textSelection(.enabled)
+                        } else if let activity = chat.activity {
                             HStack(spacing: 8) {
                                 Image(systemName: "ellipsis.bubble").symbolEffect(.pulse)
                                 Text(activity)

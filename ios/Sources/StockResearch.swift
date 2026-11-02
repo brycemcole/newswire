@@ -355,6 +355,7 @@ struct StockChatMessage: Identifiable, Codable, Hashable {
     private let responder: Responder?
     var messages: [StockChatMessage] = []
     var activity: String?
+    var streamingText = ""
     var error: String?
     private var task: Task<Void, Never>?
     private var taskID = UUID()
@@ -384,7 +385,7 @@ struct StockChatMessage: Identifiable, Codable, Hashable {
     Before answering, check each proposed name against every requested criterion. Separate supported matches from unverified leads; never label a momentum-only list as low-attention matches. Return fewer than requested if fewer qualify, state the shortfall, and do not pad with unsupported names. Give each supported selection its relevant performance evidence, evidence for the other requested criteria, and a concise business driver or risk grounded in research. Briefly state the searched scope, period and material coverage gaps. Do not claim these are the best stocks across markets you did not inspect. For simple quotes, definitions or a single-company question, skip this discovery workflow and answer directly.
     """
 
-    func cancel() { taskID = UUID(); task?.cancel(); task = nil; activity = nil }
+    func cancel() { taskID = UUID(); task?.cancel(); task = nil; activity = nil; streamingText = "" }
 
     func send(_ question: String, symbol: String, name: String, price: String?) {
         guard !busy, !question.isEmpty else { return }
@@ -416,7 +417,7 @@ struct StockChatMessage: Identifiable, Codable, Hashable {
         let id = UUID()
         taskID = id
         task = Task { [self] in
-            defer { if taskID == id { task = nil; activity = nil } }
+            defer { if taskID == id { task = nil; activity = nil; streamingText = "" } }
             let research = StockResearchTools(symbol: symbol, name: name, api: api, options: messages.flatMap(\.options)) { [weak self] status in
                 guard let self, self.taskID == id else { return }
                 self.activity = status

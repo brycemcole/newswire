@@ -38,6 +38,24 @@ import Testing
         #expect(message.titles == ["https://a.example": "A"])
     }
 
+    @Test func researchContinuesBeyondSixteenToolRounds() async throws {
+        let research = StockResearchTools(symbol: "", name: "Markets") { _ in }
+        var requests = 0
+        let answer = try await StockChat().chatGPT(instructions: "test", history: "", question: "Find ten stocks", research: research, data: [], modelOverride: "test") { body, _ in
+            requests += 1
+            if requests <= 16 {
+                #expect(body["tool_choice"] as? String == "auto")
+                return [["type": "function_call", "call_id": "call-\(requests)", "name": "unknown", "arguments": "{}"]]
+            }
+            #expect(body["tool_choice"] as? String == "auto")
+            let input = body["input"] as? [[String: Any]] ?? []
+            #expect(input.filter { $0["type"] as? String == "function_call_output" }.count == 16)
+            return [["type": "message", "content": [["type": "output_text", "text": "Insufficient evidence to identify ten stocks."]]]]
+        }
+        #expect(requests == 17)
+        #expect(answer == "Insufficient evidence to identify ten stocks.")
+    }
+
     @Test func formEncodingEscapesReservedCharacters() {
         let body = String(decoding: ChatGPTAccount.form(["redirect_uri": "http://127.0.0.1:1455/auth/callback", "code": "a+b"]), as: UTF8.self)
         #expect(body == "code=a%2Bb&redirect_uri=http%3A%2F%2F127.0.0.1%3A1455%2Fauth%2Fcallback")

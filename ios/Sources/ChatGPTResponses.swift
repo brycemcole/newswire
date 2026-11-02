@@ -129,8 +129,11 @@ enum ChatGPTResponses {
 }
 
 extension StockChat {
-    func chatGPT(instructions: String, history: String, question: String, research: StockResearchTools, data: [[String: Any]]) async throws -> String {
-        let model = try await ChatGPTAccount.shared.model()
+    func chatGPT(instructions: String, history: String, question: String, research: StockResearchTools, data: [[String: Any]],
+                 modelOverride: String? = nil,
+                 respond: @escaping @MainActor ([String: Any], @escaping @MainActor @Sendable (ChatGPTEvent) -> Void) async throws -> [[String: Any]] = ChatGPTResponses.respond) async throws -> String {
+        let model: String
+        if let modelOverride { model = modelOverride } else { model = try await ChatGPTAccount.shared.model() }
         var webSearch = UserDefaults.standard.object(forKey: ChatGPTAccount.webSearchKey) as? Bool ?? true
         let definitions: [[String: Any]] = functions(research: research, data: data).compactMap { tool in
             guard let function = tool["function"] as? [String: Any], let name = function["name"] as? String else { return nil }
@@ -148,14 +151,18 @@ extension StockChat {
         }
         var input: [[String: Any]] = [["role": "user", "content": "\(history)\n\(question)"]]
         let progress = research.progress
-        for _ in 0..<16 {
+        while true {
             try Task.checkCancellation()
             let guidance = webSearch ? "\n\nWeb search: prefer Newswire tools for prices, filings and economic data. Use web_search for recent news, events or facts Newswire tools don't cover. Cite each web page as an inline Markdown link [publisher](url) right after the claim it supports; the app turns these links into numbered citations, so this is the one exception to the rule against writing URLs." : ""
+            streamingText = ""
             let output: [[String: Any]]
             do {
-                output = try await ChatGPTResponses.respond(["model": model, "instructions": instructions + guidance, "input": input,
+                output = try await respond(["model": model, "instructions": instructions + guidance, "input": input,
                     "tools": namespaces + (webSearch ? [["type": "web_search"]] : []), "tool_choice": "auto", "parallel_tool_calls": true]) { event in
-                    if case .searching = event { progress("Searching the web…") }
+                    switch event {
+                    case .searching: progress("Searching the web…")
+                    case .text(let text): self.streamingText = text
+                    }
                 }
             } catch ChatGPTError.unsupported(let param) where webSearch && (param.isEmpty || param.contains("tools")) {
                 webSearch = false
@@ -167,6 +174,7 @@ extension StockChat {
                 guard !text.isEmpty else { throw ChatGPTError.incomplete }
                 return await ChatGPTResponses.cite(text, titles: titles, research: research)
             }
+            streamingText = ""
             let preamble = ChatGPTResponses.message(output).text
             if !preamble.isEmpty { input.append(["role": "assistant", "content": preamble]) }
             for call in calls {
@@ -179,6 +187,5 @@ extension StockChat {
                 input.append(["type": "function_call_output", "call_id": id, "output": result])
             }
         }
-        throw ChatGPTError.incomplete
     }
 }
