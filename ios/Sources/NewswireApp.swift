@@ -1008,29 +1008,24 @@ struct StoryDetail: View {
                 if story.isTweet {
                     categoryRow
                     TweetCard(story: story, poster: Summarizer.shared.poster(for: story))
+                } else if Summarizer.shared.videos[key] == nil, let hero = Summarizer.shared.poster(for: story) {
+                    articleHeader(cover: true)
+                        .padding(20)
+                        .frame(maxWidth: .infinity, minHeight: 370, alignment: .bottomLeading)
+                        .background {
+                            ThumbnailImage(url: hero, size: ThumbnailLoader.large)
+                                .overlay {
+                                    LinearGradient(colors: [.black.opacity(0.1), .black.opacity(0.94)], startPoint: .center, endPoint: .bottom)
+                                }
+                        }
+                        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                        .environment(\.colorScheme, .dark)
                 } else {
-                    Text(story.title).font(.largeTitle.weight(.bold)).fixedSize(horizontal: false, vertical: true)
+                    articleHeader(cover: false)
                 }
-                if story.isTweet {
-                } else if let video = Summarizer.shared.videos[key] {
+                if !story.isTweet, let video = Summarizer.shared.videos[key] {
                     StoryVideoView(url: video, poster: Summarizer.shared.poster(for: story), page: story.url, title: story.title, source: story.source)
-                } else if let hero = Summarizer.shared.poster(for: story) {
-                    // Starts from the feed's already-decoded thumbnail, so the header is never blank during the push.
-                    Color.clear.frame(height: 210).frame(maxWidth: .infinity)
-                        .overlay { ThumbnailImage(url: hero, size: ThumbnailLoader.large) }
-                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                    .accessibilityHidden(true)
                 }
-                if !story.isTweet { categoryRow }
-                if !story.isTweet { HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    filterButton(.source(story.source)) {
-                        Text(story.source).fontWeight(.bold).foregroundStyle(.secondary).lineLimit(1)
-                    }
-                    Text("·").foregroundStyle(.tertiary)
-                    Text(story.publishedAt, format: .dateTime.weekday(.abbreviated).month(.abbreviated).day().hour().minute())
-                        .foregroundStyle(.secondary).lineLimit(1)
-                }
-                .font(.footnote) }
                 if !quotes.isEmpty {
                     QuoteStrip(quotes: quotes, selected: $selectedQuote, glass: true)
                         .transition(.opacity)
@@ -1038,9 +1033,9 @@ struct StoryDetail: View {
                     filterLinks(story.tickers.map(WireFilter.ticker), separator: "  ·  ")
                         .font(.system(.subheadline, design: .monospaced).weight(.semibold)).foregroundStyle(.secondary)
                 }
-                Divider()
                 if !story.isTweet, glance != nil || preparingGlance {
                     glanceCard.transition(.opacity)
+                } else {
                     Divider()
                 }
                 if story.isTweet {
@@ -1211,6 +1206,24 @@ struct StoryDetail: View {
         }
     }
 
+    private func articleHeader(cover: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            categoryRow
+            Text(story.title)
+                .font((cover ? Font.title : .title2).weight(.bold))
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                filterButton(.source(story.source)) {
+                    Text(story.source).fontWeight(.semibold).foregroundStyle(.primary).lineLimit(1)
+                }
+                Text("·").foregroundStyle(.tertiary)
+                Text(story.publishedAt, format: .dateTime.weekday(.abbreviated).month(.abbreviated).day().hour().minute())
+                    .foregroundStyle(.secondary).lineLimit(1)
+            }
+            .font(.subheadline)
+        }
+    }
+
     private var categoryRow: some View {
         HStack(spacing: 6) {
             filterButton(.category(story.category)) { Text(story.category.uppercased()) }
@@ -1222,13 +1235,16 @@ struct StoryDetail: View {
                 }
             }
         }
-        .font(.system(.caption, design: .monospaced).weight(.semibold))
+        .font(.footnote.weight(.semibold))
         .foregroundStyle(.secondary)
     }
 
     private var glanceCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Summary").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 14) {
+            Divider()
+            Text("Summary")
+                .font(.headline)
+                .foregroundStyle(.primary)
             if let glance {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(Array(glance.enumerated()), id: \.offset) { _, point in
@@ -1238,7 +1254,7 @@ struct StoryDetail: View {
                         }
                     }
                 }
-                .font(.body)
+                .font(.callout)
                 let brief = Summarizer.shared.briefs[key]
                 if moreDetail {
                     Group {
@@ -1251,10 +1267,13 @@ struct StoryDetail: View {
                     .font(.callout).padding(.top, 2).transition(.opacity)
                 }
                 if brief != nil || (Summarizer.shared.texts[key]?.count ?? 0) >= 800 {
-                    Button(moreDetail ? "Show Less" : "Show More") {
+                    Button {
                         withAnimation(.easeOut(duration: 0.2)) { moreDetail.toggle() }
+                    } label: {
+                        Label(moreDetail ? "Show Less" : "Show More", systemImage: moreDetail ? "chevron.up" : "chevron.down")
+                            .labelStyle(.titleAndIcon)
                     }
-                    .font(.subheadline).foregroundStyle(Color.wireAccent).buttonStyle(.plain)
+                    .font(.subheadline.weight(.semibold)).foregroundStyle(Color.wireAccent).buttonStyle(.plain)
                 }
             } else {
                 VStack(alignment: .leading, spacing: 8) {
@@ -1262,12 +1281,13 @@ struct StoryDetail: View {
                     Text("Another line standing in for a point")
                     Text("A third, shorter placeholder line")
                 }
-                .font(.body).redacted(reason: .placeholder)
+                .font(.callout).redacted(reason: .placeholder)
                 .phaseAnimator([0.35, 0.7]) { view, opacity in view.opacity(opacity) } animation: { _ in .easeInOut(duration: 0.9) }
                 .accessibilityLabel("Summarizing")
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.bottom, 4)
         .animation(.easeOut(duration: 0.2), value: glance)
     }
 
