@@ -4,6 +4,7 @@ struct HoldingSection: View {
     let symbol: String
     let chart: MarketChart?
     @State private var store = PortfolioStore.shared
+    @Environment(\.scenePhase) private var phase
 
     private var spot: (label: String, price: Double)? {
         guard let chart else { return nil }
@@ -11,10 +12,17 @@ struct HoldingSection: View {
     }
 
     var body: some View {
-        let positions = store.snapshot.positions(for: symbol)
+        content.task(id: phase == .active) {
+            guard phase == .active, !store.syncing, (store.snapshot.updated ?? .distantPast).timeIntervalSinceNow < -60 else { return }
+            await store.sync()
+        }
+    }
+
+    @ViewBuilder private var content: some View {
+        let positions = store.snapshot.positions(for: symbol).filter { ($0.option?.daysLeft ?? 0) >= 0 }
         if !positions.isEmpty {
             QuoteSection("Your Position") {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 12) {
                     ForEach(positions) { position in
                         VStack(alignment: .leading, spacing: 6) {
                             PositionCard(symbol: symbol, position: position, spot: spot, store: store)
@@ -85,23 +93,20 @@ struct PositionCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
-                Text(heading).font(.subheadline.weight(.semibold))
+                Text(heading).font(.subheadline.weight(.semibold)).lineLimit(1).minimumScaleFactor(0.8)
                 Spacer()
                 Text(position.institution).font(.caption).foregroundStyle(.secondary)
             }
             summary
             if let option = position.option {
-                if let estimate, let spot {
-                    Divider()
-                    scenarioView(option: option, estimate: estimate, spot: spot)
-                }
-                if position.costBasis == nil { costSection }
-                Divider()
-                DisclosureGroup("Cost & details", isExpanded: $showingDetails) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        if position.costBasis != nil { costSection }
+                DisclosureGroup("Scenario, cost & details", isExpanded: $showingDetails) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        if let estimate, let spot {
+                            scenarioView(option: option, estimate: estimate, spot: spot)
+                        }
+                        costSection
                         StatRows(stats: optionDetails(option))
                         if estimate != nil {
                             Text("Est. values use Black-Scholes with the option's implied volatility.")
