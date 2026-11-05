@@ -351,6 +351,7 @@ nonisolated struct PlaidClient: Sendable {
     }
 
     func holdings(_ item: PlaidItem) async throws -> HoldingsResponse.Parsed {
+        _ = try? await post("/investments/refresh", ["access_token": item.accessToken], as: Empty.self)
         var parsed = try await post("/investments/holdings/get", ["access_token": item.accessToken], as: HoldingsResponse.self).positions(item: item)
         do {
             parsed.history = try await transactions(item)

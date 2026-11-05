@@ -1,9 +1,11 @@
 import SwiftUI
+import Charts
 
 struct HoldingSection: View {
     let symbol: String
     let chart: MarketChart?
     @State private var store = PortfolioStore.shared
+    @Environment(\.scenePhase) private var phase
 
     private var spot: (label: String, price: Double)? {
         guard let chart else { return nil }
@@ -11,23 +13,39 @@ struct HoldingSection: View {
     }
 
     var body: some View {
-        let positions = store.snapshot.positions(for: symbol)
+        content.task(id: phase == .active) {
+            guard phase == .active, !store.syncing, (store.snapshot.updated ?? .distantPast).timeIntervalSinceNow < -60 else { return }
+            await store.sync()
+        }
+    }
+
+    @ViewBuilder private var content: some View {
+        let positions = store.snapshot.positions(for: symbol).filter { ($0.option?.daysLeft ?? 0) >= 0 }
         if !positions.isEmpty {
-            QuoteSection("Your Position") {
-                VStack(alignment: .leading, spacing: 16) {
-                    ForEach(positions) { position in
-                        VStack(alignment: .leading, spacing: 6) {
-                            PositionCard(symbol: symbol, position: position, spot: spot, store: store)
-                            if store.snapshot.isStale(position.itemID) {
-                                Text("Brokerage not refreshed · showing cached values")
-                                    .font(.caption).foregroundStyle(.orange)
-                            }
-                        }
-                    }
-                    if let updated = store.snapshot.aggregateSyncedAt {
-                        Text("Brokerages synced \(updated.formatted(.relative(presentation: .named)))")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
+            HoldingPositions(symbol: symbol, positions: positions, spot: spot, store: store)
+        }
+    }
+}
+
+struct HoldingPositions: View {
+    let symbol: String
+    let positions: [Position]
+    let spot: (label: String, price: Double)?
+    let store: PortfolioStore
+    var requestsOptionQuote = true
+    var previewQuotes: [String: OptionQuote] = [:]
+
+    var body: some View {
+        QuoteSection {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(Array(positions.enumerated()), id: \.element.id) { index, position in
+                    if index > 0 { Divider() }
+                    PositionCard(symbol: symbol, position: position, spot: spot, store: store,
+                                 requestsOptionQuote: requestsOptionQuote, previewQuote: previewQuotes[position.id])
+                }
+                if positions.contains(where: { store.snapshot.isStale($0.itemID) }) {
+                    Text("Brokerage not refreshed · cached")
+                        .font(.caption).foregroundStyle(.orange)
                 }
             }
         }
@@ -71,10 +89,18 @@ struct PositionCard: View {
     var previewQuote: OptionQuote?
     @State private var fetchedQuote: OptionQuote?
     @State private var scenario: Double?
-    @State private var showingDetails = false
+    @State private var showingDetails = PositionCard.startsExpanded
     @State private var editingCost = false
     @State private var costText = ""
     @Environment(\.scenePhase) private var phase
+
+    private static var startsExpanded: Bool {
+        #if DEBUG
+        CommandLine.arguments.contains("-expandHoldings")
+        #else
+        false
+        #endif
+    }
 
     private var quote: OptionQuote? { fetchedQuote ?? previewQuote }
     private var estimated: String { position.isEstimated ? "≈" : "" }
@@ -85,35 +111,31 @@ struct PositionCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(heading).font(.subheadline.weight(.semibold))
-                Spacer()
-                Text(position.institution).font(.caption).foregroundStyle(.secondary)
-            }
+        VStack(alignment: .leading, spacing: 8) {
             summary
-            if let option = position.option {
-                if let estimate, let spot {
-                    Divider()
-                    scenarioView(option: option, estimate: estimate, spot: spot)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    guard position.option != nil else { return }
+                    withAnimation(.snappy) { showingDetails.toggle() }
                 }
-                if position.costBasis == nil { costSection }
-                Divider()
-                DisclosureGroup("Cost & details", isExpanded: $showingDetails) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        if position.costBasis != nil { costSection }
-                        StatRows(stats: optionDetails(option))
-                        if estimate != nil {
-                            Text("Est. values use Black-Scholes with the option's implied volatility.")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
+            if let option = position.option, showingDetails {
+                VStack(alignment: .leading, spacing: 12) {
+                    if let estimate, let spot {
+                        scenarioView(option: option, estimate: estimate, spot: spot)
                     }
-                    .padding(.top, 8)
+                    if let breakeven = position.breakeven {
+                        Text("Breaks even at \(estimated)\(Money.text(breakeven))\(breakevenMove(breakeven)) at expiry")
+                            .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                    }
+                    costSection
+                    StatRows(stats: optionDetails(option))
                 }
-                .font(.footnote.weight(.medium))
-            } else {
-                costSection
+                .padding(.top, 4)
+                .transition(.opacity)
             }
+        }
+        .contextMenu {
+            Button("Edit cost", systemImage: "pencil") { beginEditingCost() }
         }
         .alert(position.option == nil ? "Average cost per share" : "Premium paid per share", isPresented: $editingCost) {
             TextField("0.00", text: $costText).keyboardType(.decimalPad)
@@ -137,17 +159,6 @@ struct PositionCard: View {
                 do { try await Task.sleep(for: .seconds(quote?.liveMarket == true ? 20 : 120)) } catch { return }
             }
         }
-    }
-
-    private var heading: String {
-        guard let option = position.option else {
-            return "\(position.quantity.formatted(.number.precision(.fractionLength(0...4)))) shares"
-        }
-        let sameYear = Calendar.current.isDate(option.expiration, equalTo: .now, toGranularity: .year)
-        let date = sameYear ? option.expiration.formatted(.dateTime.month(.abbreviated).day()) : option.expiration.formatted(.dateTime.month(.abbreviated).day().year(.twoDigits))
-        let left = option.daysLeft < 0 ? "Expired" : option.daysLeft == 0 ? "Expires today" : option.daysLeft == 1 ? "1 day left" : "\(option.daysLeft) days left"
-        let count = option.contracts == 1 ? "" : " · ×\(option.contracts.formatted(.number.precision(.fractionLength(0...2))))"
-        return "\(option.title) · \(date) · \(left)\(count)"
     }
 
     private func gain(_ value: Double) -> (text: String, tint: Color)? {
@@ -174,34 +185,43 @@ struct PositionCard: View {
         return position.value.map { ("Brokerage value", $0, "Unrealized gain") }
     }
 
+    private var shortHeading: String {
+        guard let option = position.option else {
+            return "\(position.quantity.formatted(.number.precision(.fractionLength(0...4)))) shares"
+        }
+        let date = option.expiration.formatted(.dateTime.month(.abbreviated).day())
+        let left = option.daysLeft <= 0 ? "today" : "\(option.daysLeft)d"
+        let count = option.contracts == 1 ? "" : " ×\(option.contracts.formatted(.number.precision(.fractionLength(0...2))))"
+        return "\(option.title) · \(date) · \(left)\(count)"
+    }
+
+    private func beginEditingCost() {
+        costText = position.costBasis.map { (abs($0) / multiplier).formatted(.number.precision(.fractionLength(2...4)).grouping(.never)) } ?? ""
+        editingCost = true
+    }
+
     private var summary: some View {
         let result = current.flatMap { gain($0.value) }
-        return VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                if let current {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(current.label).font(.caption).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8)
-                        Text(Money.text(current.value)).font(.title2.weight(.semibold)).monospacedDigit()
-                            .lineLimit(1).minimumScaleFactor(0.7)
-                            .numericTextTransition(text: Money.text(current.value))
-                    }
-                    .accessibilityElement(children: .combine)
-                }
-                Spacer(minLength: 0)
-                VStack(alignment: .trailing, spacing: 1) {
-                    Text(current?.gainLabel ?? "Unrealized gain").font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    Text(result?.text ?? "Unavailable").font(.headline).monospacedDigit()
-                        .foregroundStyle(result?.tint ?? .secondary)
-                        .lineLimit(1).minimumScaleFactor(0.7)
-                        .numericTextTransition(text: result?.text ?? "Unavailable")
-                }
-                .accessibilityElement(children: .combine)
+        let approx = current?.label.hasPrefix("Est.") == true ? "≈" : ""
+        let sub = [current.map { approx + Money.text($0.value) }, position.institution].compactMap { $0 }.joined(separator: " · ")
+        return HStack(alignment: .firstTextBaseline, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(shortHeading).font(.subheadline.weight(.semibold)).lineLimit(1).minimumScaleFactor(0.8)
+                Text(sub).font(.caption).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
+                    .numericTextTransition(text: sub)
             }
-            if position.option != nil, let breakeven = position.breakeven {
-                Text("Breaks even at \(estimated)\(Money.text(breakeven))\(breakevenMove(breakeven)) at expiry")
-                    .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+            Spacer(minLength: 0)
+            if let result {
+                Text(result.text).font(.headline).monospacedDigit().foregroundStyle(result.tint)
+                    .lineLimit(1).minimumScaleFactor(0.7)
+                    .numericTextTransition(text: result.text)
+            } else {
+                Button("Set cost") { beginEditingCost() }
+                    .buttonStyle(.bordered).buttonBorderShape(.capsule).controlSize(.small)
+                    .disabled(multiplier == 0 || !multiplier.isFinite)
             }
         }
+        .accessibilityElement(children: .combine)
     }
 
     private func breakevenMove(_ breakeven: Double) -> String {
@@ -215,10 +235,7 @@ struct PositionCard: View {
                 Text(costLabel).foregroundStyle(.secondary)
                 Spacer(minLength: 8)
                 Text(costValue).fontWeight(.medium).monospacedDigit()
-                Button(position.manualCost == nil ? "Set cost" : "Edit cost") {
-                    costText = position.costBasis.map { (abs($0) / multiplier).formatted(.number.precision(.fractionLength(2...4)).grouping(.never)) } ?? ""
-                    editingCost = true
-                }
+                Button(position.manualCost == nil ? "Set cost" : "Edit cost") { beginEditingCost() }
                 .buttonStyle(.bordered)
                 .buttonBorderShape(.capsule)
                 .controlSize(.mini)
@@ -270,8 +287,9 @@ struct PositionCard: View {
         let today = estimate.perShare(at: price) * contracts
         let expiry = option.intrinsic(at: price)
         VStack(alignment: .leading, spacing: 6) {
+            payoffChart(option: option, estimate: estimate, spot: spot.price, selected: scenario)
             scenarioHeader(price: price, spot: spot.price)
-            Slider(value: Binding(get: { price }, set: { scenario = $0 }), in: (spot.price * 0.75)...(spot.price * 1.25))
+            Slider(value: Binding(get: { price }, set: { scenario = $0 }), in: (spot.price * 0.85)...(spot.price * 1.15))
                 .accessibilityLabel("\(symbol) price")
                 .accessibilityValue(Money.text(price))
             HStack(alignment: .top, spacing: 16) {
@@ -280,6 +298,37 @@ struct PositionCard: View {
             }
         }
         .sensoryFeedback(.selection, trigger: scenario.map { ($0 / max(spot.price * 0.01, 0.01)).rounded() })
+    }
+
+    private func payoffChart(option: OptionDetail, estimate: OptionEstimate, spot: Double, selected: Double?) -> some View {
+        let contracts = 100 * option.contracts
+        let basis = position.costBasis.map { option.contracts < 0 ? -abs($0) : abs($0) } ?? 0
+        let prices = stride(from: spot * 0.85, through: spot * 1.15, by: spot * 0.3 / 40).map { $0 }
+        let today = prices.map { ($0, estimate.perShare(at: $0) * contracts - basis) }
+        let expiry = prices.map { ($0, option.intrinsic(at: $0) - basis) }
+        let values = (today + expiry).map(\.1) + [0]
+        let low = values.min() ?? 0, high = values.max() ?? 0
+        let pad = max((high - low) * 0.08, 1)
+        let yDomain = (low - pad)...(high + pad)
+        return Chart {
+            RuleMark(y: .value("Zero", 0)).foregroundStyle(.secondary.opacity(0.4)).lineStyle(StrokeStyle(lineWidth: 0.5))
+            ForEach(expiry, id: \.0) { point in
+                LineMark(x: .value("Price", point.0), y: .value("P/L", point.1), series: .value("When", "At expiry"))
+                    .foregroundStyle(.secondary).lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+            }
+            ForEach(today, id: \.0) { point in
+                LineMark(x: .value("Price", point.0), y: .value("P/L", point.1), series: .value("When", "Today"))
+                    .foregroundStyle(Color.accentColor).lineStyle(StrokeStyle(lineWidth: 2))
+            }
+            RuleMark(x: .value("Now", selected ?? spot)).foregroundStyle(.primary.opacity(0.35)).lineStyle(StrokeStyle(lineWidth: 1))
+        }
+        .chartXScale(domain: (spot * 0.85)...(spot * 1.15))
+        .chartYScale(domain: yDomain)
+        .chartLegend(.hidden)
+        .chartXAxis { AxisMarks(values: .automatic(desiredCount: 4)) { AxisValueLabel(format: .currency(code: "USD").precision(.fractionLength(0))) } }
+        .chartYAxis { AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { AxisGridLine(stroke: StrokeStyle(lineWidth: 0.3)); AxisValueLabel(format: .currency(code: "USD").notation(.compactName).precision(.fractionLength(0))) } }
+        .frame(height: 120)
+        .accessibilityLabel("Profit or loss by \(symbol) price, today and at expiry")
     }
 
     private func scenarioHeader(price: Double, spot: Double) -> some View {

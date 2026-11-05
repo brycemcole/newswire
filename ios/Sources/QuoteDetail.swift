@@ -822,7 +822,7 @@ struct QuoteDetail: View {
 }
 
 struct QuoteSection<Content: View>: View {
-    let title: String
+    let title: String?
     @ViewBuilder let content: Content
 
     init(_ title: String, @ViewBuilder content: () -> Content) {
@@ -830,11 +830,18 @@ struct QuoteSection<Content: View>: View {
         self.content = content()
     }
 
+    init(@ViewBuilder content: () -> Content) {
+        self.title = nil
+        self.content = content()
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(title.uppercased())
-                .font(.system(.caption, design: .monospaced).weight(.semibold))
-                .foregroundStyle(.secondary)
+            if let title {
+                Text(title.uppercased())
+                    .font(.system(.caption, design: .monospaced).weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
             content
         }
         .padding(.horizontal, 16)
