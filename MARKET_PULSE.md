@@ -124,6 +124,8 @@ Three layers adjust the outlook from what it got wrong, each gated so a change c
    A push goes out only when a term or channel turns harmful, the last 30 calls fall 10 points below always-up, or recent skill goes negative while overall skill is positive.
 3. **Shadow parameter sets.** A walk-forward proposal is stored as a `shadow` set, scored alongside the live model at each capture (`forecast_param_predictions`), and compared with the tilt the live model published. After 60 forward sessions it is promoted if its paired gain is at least 0.01% per session with t of 1.28 or more, and rejected if it is no better with t at or below -0.5. Promotion retires the previous set and `activeTiltParams` feeds the new values into captures and the live display. Nothing is promoted automatically on fewer sessions.
 
+Production runs on the Mini (`backend/node/README.md`), whose server applies `migrations/` at start. Deploy this by rebuilding the bundle, copying it with `node/server.mjs` and `migrations/` to `~/newswire-server/`, restarting `newswire-server`, and running the smoke check there. Deploying the Cloudflare Worker alone does not ship these routes, and the D1 copy is not current.
+
 ### Backtest gate
 
 Every candidate (a walk-forward proposal, a promotion, or a code change to the defaults) is replayed over all settled sessions and must match or beat the baseline on both mean signed return and hit rate. `backtestComparison` computes this; `tuneTilt` and `evaluateParamSet` enforce it; `backend/test/forecast-diagnostics.test.mjs` fails if the shipped `defaultTilt` is worse than `backend/test/fixtures/baseline-tilt.json` on `backend/test/fixtures/settled-forecasts.json`.

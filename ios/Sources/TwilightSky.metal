@@ -204,6 +204,10 @@ static float2 skyPosition(float hourAngle, float elevation, float horizon) {
         }
     }
 
+    // Keep daylight atmospheric in dark appearance rather than letting the sun and clouds wash out the interface.
+    float3 subduedDay = sky / (1.0 + sky) * 0.65;
+    sky = mix(sky, subduedDay, day);
+
     // Dither below one 8-bit step so the long dark gradient never bands.
     sky += (twilightHash(position) - 0.5) / 255.0;
 

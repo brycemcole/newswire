@@ -332,6 +332,7 @@ struct MarketSearchSheet: View, Equatable {
                                                               ("^TNX", "US 10Y"), ("DX-Y.NYB", "DOLLAR"), ("JPY=X", "USD/JPY"), ("CL=F", "WTI"), ("GC=F", "GOLD")]
     @Binding var detent: DockDetent
     let onSelect: (String) -> Void
+    var onAsk: (String) -> Void = { _ in }
     @State private var query = ""
     @State private var matches: [TickerMatch] = []
     @State private var matchesQuery = ""
@@ -443,7 +444,12 @@ struct MarketSearchSheet: View, Equatable {
     }
 
     private var searchBar: some View {
-        searchField
+        GlassEffectContainer(spacing: 10) {
+            HStack(spacing: 10) {
+                searchField
+                askButton
+            }
+        }
     }
 
     private var searchField: some View {
@@ -482,6 +488,24 @@ struct MarketSearchSheet: View, Equatable {
             guard searching, !query.isEmpty else { return }
             selection = TextSelection(range: query.startIndex..<query.endIndex)
         }
+    }
+
+    private var askButton: some View {
+        Button {
+            query = ""
+            searching = false
+            detent = .peek
+            onAsk("")
+        } label: {
+            Image(systemName: "message")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(Color.wireAccent)
+                .frame(width: 48, height: 48)
+                .contentShape(.circle)
+        }
+        .buttonStyle(.plain)
+        .glassEffect(.regular.interactive(), in: .circle)
+        .accessibilityLabel("Ask the markets")
     }
 
     private var suggestions: some View {

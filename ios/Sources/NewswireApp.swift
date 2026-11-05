@@ -13,7 +13,11 @@ import SwiftUI
         WindowGroup {
             Group {
                 #if DEBUG
-                if CommandLine.arguments.contains("-askResearchPreview") {
+                if CommandLine.arguments.contains("-articleMockups") {
+                    ArticleMockupGallery()
+                } else if CommandLine.arguments.contains("-goalsMockup") {
+                    GoalsMockupGallery()
+                } else if CommandLine.arguments.contains("-askResearchPreview") {
                     AskSheet()
                 } else if CommandLine.arguments.contains("-sofiPreview") {
                     NavigationStack { SoFiConnectionView(preview: true) }
@@ -74,10 +78,10 @@ import SwiftUI
                 } else if let index = CommandLine.arguments.firstIndex(of: "-widgetGallery") {
                     WidgetGallery(page: CommandLine.arguments.dropFirst(index + 1).first ?? "home")
                 } else {
-                    AppTabs()
+                    FeedView()
                 }
                 #else
-                AppTabs()
+                FeedView()
                 #endif
             }
             .task(id: scenePhase) {
@@ -294,7 +298,7 @@ struct FeedView: View {
     @State private var store = FeedStore.shared
     @State private var settings = false
     @State private var showingSaved = false
-    @Environment(AppNavigator.self) private var navigator
+    @State private var portfolio = false
     @State private var dock = DockDetent.peek
     @State private var dockFrame = DockFrame()
     @State private var quoteRoute: MarketSymbol?
@@ -315,8 +319,6 @@ struct FeedView: View {
     @AppStorage("homeOrder") private var homeOrder = "marketsFirst"
     @AppStorage("homeTab") private var homeTab = HomeTab.positions
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Namespace private var pillNamespace
-    private let categories = ["", "general", "markets", "technology", "economy", "politics", "world", "science"]
 
     private var hidesMarketDock: Bool {
         TerminalExploreVisibility.shared.isVisible || DataScreen.designedPaths.contains(dataRoute?.path ?? "")
@@ -352,7 +354,7 @@ struct FeedView: View {
                                    onStory: { store.path.append($0) }, onAlert: { alertSymbol = MarketSymbol(id: $0) },
                                    onFindSymbols: { dock = .large })
                 case .positions:
-                    PositionMoversCard(onQuote: { open(quote: $0) }, onAlert: { alertSymbol = MarketSymbol(id: $0) }, openPortfolio: { navigator.select(.portfolio) })
+                    PositionMoversCard(onQuote: { open(quote: $0) }, onAlert: { alertSymbol = MarketSymbol(id: $0) }, openPortfolio: { portfolio = true })
                 case .watchlist:
                     deckWatchlist
                 case .next:
@@ -410,10 +412,6 @@ struct FeedView: View {
                             .listRowSeparator(.hidden)
                             .listRowBackground(Color.clear)
                     }
-                    filterBar
-                    .listRowInsets(EdgeInsets())
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(Color.clear)
                     if !store.configured && store.stories.isEmpty {
                         state("CONNECT YOUR WIRE", message: "Add your HTTPS server URL to start reading.", icon: "antenna.radiowaves.left.and.right.slash")
                         Button("Open settings") { settings = true }
@@ -534,7 +532,7 @@ struct FeedView: View {
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         Menu {
-                            Button { navigator.select(.portfolio) } label: { Label("Portfolio", systemImage: "briefcase") }
+                            Button { portfolio = true } label: { Label("Portfolio", systemImage: "briefcase") }
                             Button { settings = true } label: { Label("Settings", systemImage: "gearshape") }
                             Button { showingSaved = true } label: { Label("Saved Stories", systemImage: "bookmark") }
                             Divider()
@@ -550,6 +548,7 @@ struct FeedView: View {
             }
             .sheet(isPresented: $settings) { SettingsView(store: store) }
             .sheet(isPresented: $showingSaved) { SavedStoriesView() }
+            .sheet(isPresented: $portfolio) { PortfolioView() }
             .sheet(item: $alertSymbol) { PriceAlertComposer(symbol: $0.id) }
             .sheet(isPresented: $marketAlerts) { SessionAlertsView() }
             .sheet(item: $asking, onDismiss: { askPrompt = "" }) { AskSheet(context: $0, initialQuestion: askPrompt) }
@@ -607,14 +606,13 @@ struct FeedView: View {
 
     var body: some View {
         navigation
-        .toolbarVisibility(dock == .peek ? .automatic : .hidden, for: .tabBar)
-        .animation(.easeOut(duration: 0.2), value: dock == .peek)
         .gesture(DockBackgroundInteraction(excludedFrame: dockFrame) {
             if dock != .peek {
                 withAnimation(selectionAnimation) { dock = .peek }
             }
         })
         .onChange(of: settings) { _, _ in dock = .peek }
+        .onChange(of: portfolio) { _, _ in dock = .peek }
         .overlay {
             if !hidesMarketDock {
                 StorySuggestionsReader(source: storySuggestions) { suggestedSymbols in
@@ -627,6 +625,9 @@ struct FeedView: View {
                         }
                         withAnimation(selectionAnimation) { dock = .medium }
                         open(quote: symbol)
+                    }, onAsk: { question in
+                        askPrompt = question
+                        asking = .markets
                     }, onSuggestionSelect: { symbol in
                         withAnimation(selectionAnimation) { dock = .peek }
                         open(quote: symbol)
@@ -641,11 +642,13 @@ struct FeedView: View {
             settings = false
             dock = .peek
             switch url.host() {
-            case "portfolio": navigator.select(.portfolio)
+            case "portfolio": portfolio = true
             case "quote":
+                portfolio = false
                 guard let symbol = url.pathComponents.dropFirst().first else { return }
                 open(quote: symbol)
             case "story":
+                portfolio = false
                 guard let id = url.pathComponents.dropFirst().first else { return }
                 if let story = store.story(id: id) {
                     store.path = NavigationPath([story])
@@ -751,57 +754,6 @@ struct FeedView: View {
             open(quote: symbol)
         }
         .buttonStyle(.plain)
-    }
-
-    private var filterBar: some View {
-        ScrollViewReader { pills in
-            ScrollView(.horizontal, showsIndicators: false) {
-                GlassEffectContainer(spacing: 8) {
-                    HStack(spacing: 8) {
-                        ForEach(categories, id: \.self) { category in
-                            categoryPill(category).id(category)
-                        }
-                    }
-                }
-                .padding(.vertical, 4)
-            }
-            .contentMargins(.horizontal, 16, for: .scrollContent)
-            .onChange(of: store.category) { _, category in
-                withAnimation(selectionAnimation) { pills.scrollTo(category, anchor: .center) }
-            }
-        }
-        .animation(reduceMotion ? nil : selectionAnimation, value: store.category)
-        .sensoryFeedback(.selection, trigger: store.category)
-    }
-
-    private func categoryPill(_ category: String) -> some View {
-        let selected = store.category == category
-        return Button {
-            store.selectCategory(category)
-        } label: {
-            categoryLabel(category)
-                .foregroundStyle(selected ? Theme.shared.accent.onColor : Color.primary)
-                .padding(.horizontal, 14)
-                .frame(minHeight: 36)
-                .background {
-                    if selected {
-                        Capsule()
-                            .fill(Color.wireAccent)
-                            .matchedGeometryEffect(id: reduceMotion ? category : "selectedCategory", in: pillNamespace)
-                    }
-                }
-                .contentShape(.capsule)
-                .glassEffect(.regular, in: .capsule)
-        }
-        .buttonStyle(PressSpringStyle())
-        .accessibilityIdentifier("news-topic-\(category.isEmpty ? "all" : category)")
-        .accessibilityAddTraits(selected ? .isSelected : [])
-    }
-
-    private func categoryLabel(_ category: String) -> some View {
-        Text(category.isEmpty ? "All" : category.capitalized)
-            .font(.subheadline.weight(.semibold))
-            .lineLimit(1)
     }
 
     private func state(_ title: String, message: String, icon: String) -> some View {

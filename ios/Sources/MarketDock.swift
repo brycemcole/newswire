@@ -65,13 +65,12 @@ struct MarketDock: View {
     static let floatGap: CGFloat = 24
     /// Side margin of the floating dock, matching the content margin of the screens under it.
     static let sideInset: CGFloat = 16
-    /// The tab bar floats beneath the resting dock; it hides while the dock is expanded.
-    static let tabBarHeight: CGFloat = 62
     /// How much room screens under the dock reserve at the bottom (dock top edge, less the home-indicator inset it already sits above).
-    static let clearance: CGFloat = peekHeight + 8
+    static let clearance: CGFloat = peekHeight + floatGap - 34
 
     @Binding var detent: DockDetent
     let onSelect: (String) -> Void
+    var onAsk: (String) -> Void = { _ in }
     var onSuggestionSelect: ((String) -> Void)?
     var suggestedSymbols: [String] = []
     var onFrameChange: (CGRect) -> Void = { _ in }
@@ -95,7 +94,7 @@ struct MarketDock: View {
                                             bottomLeadingCorner: .concentric(minimum: 20), bottomTrailingCorner: .concentric(minimum: 20))
             VStack(spacing: suggestedSymbols.isEmpty ? 0 : 8) {
                 if !suggestedSymbols.isEmpty { storySuggestions.padding(.horizontal, 22) }
-                MarketSearchSheet(detent: $detent, onSelect: onSelect)
+                MarketSearchSheet(detent: $detent, onSelect: onSelect, onAsk: onAsk)
                     .equatable()
                     .padding(.top, Self.barInset + 8 * docked)
                     .overlay(alignment: .top) { handle(stops) }
@@ -105,7 +104,7 @@ struct MarketDock: View {
                     .glassEffect(.regular, in: shape)
                     .shadow(color: .black.opacity(0.10), radius: 14, y: 4)
                     .padding(.horizontal, Self.sideInset * (1 - docked))
-                    .padding(.bottom, (Self.floatGap + Self.tabBarHeight) * (1 - docked))
+                    .padding(.bottom, Self.floatGap * (1 - docked))
             }
             .animation(animation, value: detent)
             .animation(.easeOut(duration: 0.18), value: suggestedSymbols)
