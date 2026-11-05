@@ -94,31 +94,27 @@ struct PositionCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(heading).font(.subheadline.weight(.semibold)).lineLimit(1).minimumScaleFactor(0.8)
-                Spacer()
-                Text(position.institution).font(.caption).foregroundStyle(.secondary)
-            }
             summary
             if let option = position.option {
-                DisclosureGroup("Scenario, cost & details", isExpanded: $showingDetails) {
+                DisclosureGroup("Details", isExpanded: $showingDetails) {
                     VStack(alignment: .leading, spacing: 12) {
                         if let estimate, let spot {
                             scenarioView(option: option, estimate: estimate, spot: spot)
                         }
+                        if let breakeven = position.breakeven {
+                            Text("Breaks even at \(estimated)\(Money.text(breakeven))\(breakevenMove(breakeven)) at expiry")
+                                .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                        }
                         costSection
                         StatRows(stats: optionDetails(option))
-                        if estimate != nil {
-                            Text("Est. values use Black-Scholes with the option's implied volatility.")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
                     }
                     .padding(.top, 8)
                 }
                 .font(.footnote.weight(.medium))
-            } else {
-                costSection
             }
+        }
+        .contextMenu {
+            Button("Edit cost", systemImage: "pencil") { beginEditingCost() }
         }
         .alert(position.option == nil ? "Average cost per share" : "Premium paid per share", isPresented: $editingCost) {
             TextField("0.00", text: $costText).keyboardType(.decimalPad)
@@ -142,17 +138,6 @@ struct PositionCard: View {
                 do { try await Task.sleep(for: .seconds(quote?.liveMarket == true ? 20 : 120)) } catch { return }
             }
         }
-    }
-
-    private var heading: String {
-        guard let option = position.option else {
-            return "\(position.quantity.formatted(.number.precision(.fractionLength(0...4)))) shares"
-        }
-        let sameYear = Calendar.current.isDate(option.expiration, equalTo: .now, toGranularity: .year)
-        let date = sameYear ? option.expiration.formatted(.dateTime.month(.abbreviated).day()) : option.expiration.formatted(.dateTime.month(.abbreviated).day().year(.twoDigits))
-        let left = option.daysLeft < 0 ? "Expired" : option.daysLeft == 0 ? "Expires today" : option.daysLeft == 1 ? "1 day left" : "\(option.daysLeft) days left"
-        let count = option.contracts == 1 ? "" : " · ×\(option.contracts.formatted(.number.precision(.fractionLength(0...2))))"
-        return "\(option.title) · \(date) · \(left)\(count)"
     }
 
     private func gain(_ value: Double) -> (text: String, tint: Color)? {
@@ -179,34 +164,43 @@ struct PositionCard: View {
         return position.value.map { ("Brokerage value", $0, "Unrealized gain") }
     }
 
+    private var shortHeading: String {
+        guard let option = position.option else {
+            return "\(position.quantity.formatted(.number.precision(.fractionLength(0...4)))) shares"
+        }
+        let date = option.expiration.formatted(.dateTime.month(.abbreviated).day())
+        let left = option.daysLeft <= 0 ? "today" : "\(option.daysLeft)d"
+        let count = option.contracts == 1 ? "" : " ×\(option.contracts.formatted(.number.precision(.fractionLength(0...2))))"
+        return "\(option.title) · \(date) · \(left)\(count)"
+    }
+
+    private func beginEditingCost() {
+        costText = position.costBasis.map { (abs($0) / multiplier).formatted(.number.precision(.fractionLength(2...4)).grouping(.never)) } ?? ""
+        editingCost = true
+    }
+
     private var summary: some View {
         let result = current.flatMap { gain($0.value) }
-        return VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                if let current {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(current.label).font(.caption).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8)
-                        Text(Money.text(current.value)).font(.title2.weight(.semibold)).monospacedDigit()
-                            .lineLimit(1).minimumScaleFactor(0.7)
-                            .numericTextTransition(text: Money.text(current.value))
-                    }
-                    .accessibilityElement(children: .combine)
-                }
-                Spacer(minLength: 0)
-                VStack(alignment: .trailing, spacing: 1) {
-                    Text(current?.gainLabel ?? "Unrealized gain").font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    Text(result?.text ?? "Unavailable").font(.headline).monospacedDigit()
-                        .foregroundStyle(result?.tint ?? .secondary)
-                        .lineLimit(1).minimumScaleFactor(0.7)
-                        .numericTextTransition(text: result?.text ?? "Unavailable")
-                }
-                .accessibilityElement(children: .combine)
+        let approx = current?.label.hasPrefix("Est.") == true ? "≈" : ""
+        let sub = [current.map { approx + Money.text($0.value) }, position.institution].compactMap { $0 }.joined(separator: " · ")
+        return HStack(alignment: .firstTextBaseline, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(shortHeading).font(.subheadline.weight(.semibold)).lineLimit(1).minimumScaleFactor(0.8)
+                Text(sub).font(.caption).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
+                    .numericTextTransition(text: sub)
             }
-            if position.option != nil, let breakeven = position.breakeven {
-                Text("Breaks even at \(estimated)\(Money.text(breakeven))\(breakevenMove(breakeven)) at expiry")
-                    .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+            Spacer(minLength: 0)
+            if let result {
+                Text(result.text).font(.headline).monospacedDigit().foregroundStyle(result.tint)
+                    .lineLimit(1).minimumScaleFactor(0.7)
+                    .numericTextTransition(text: result.text)
+            } else {
+                Button("Set cost") { beginEditingCost() }
+                    .buttonStyle(.bordered).buttonBorderShape(.capsule).controlSize(.small)
+                    .disabled(multiplier == 0 || !multiplier.isFinite)
             }
         }
+        .accessibilityElement(children: .combine)
     }
 
     private func breakevenMove(_ breakeven: Double) -> String {
@@ -220,10 +214,7 @@ struct PositionCard: View {
                 Text(costLabel).foregroundStyle(.secondary)
                 Spacer(minLength: 8)
                 Text(costValue).fontWeight(.medium).monospacedDigit()
-                Button(position.manualCost == nil ? "Set cost" : "Edit cost") {
-                    costText = position.costBasis.map { (abs($0) / multiplier).formatted(.number.precision(.fractionLength(2...4)).grouping(.never)) } ?? ""
-                    editingCost = true
-                }
+                Button(position.manualCost == nil ? "Set cost" : "Edit cost") { beginEditingCost() }
                 .buttonStyle(.bordered)
                 .buttonBorderShape(.capsule)
                 .controlSize(.mini)
