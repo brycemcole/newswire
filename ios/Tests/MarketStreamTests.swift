@@ -73,6 +73,27 @@ struct MarketStreamTests {
         #expect(sampled.points.last?.close == 199)
     }
 
+    @Test func overnightChartTradeRequiresNewerValidObservation() {
+        let now = Date(timeIntervalSince1970: 1_790_800_000)
+        var chart = MarketChart(symbol: "MU", name: "Micron", exchange: "", currency: "USD", instrument: "EQUITY", price: 100,
+                                previousClose: 99, dayHigh: nil, dayLow: nil, volume: nil, yearHigh: nil, yearLow: nil, decimals: 2,
+                                timeZone: .current, points: [PricePoint(id: 0, date: now - 3600, open: 100, close: 100, extended: true, run: 0)],
+                                slots: 2, pre: nil, regular: nil, post: nil)
+        chart.overnightTrade = MarketTick(symbol: "MU", price: 105, date: now - 60)
+        #expect(chart.currentOvernightTrade(now: now)?.price == 105)
+        #expect(chart.currentOvernightTrade(now: now)?.date == now - 60)
+        chart.overnightTrade = MarketTick(symbol: "MU", price: 105, date: now - 3600)
+        #expect(chart.currentOvernightTrade(now: now) == nil)
+        chart.overnightTrade = MarketTick(symbol: "MU", price: 105, date: now + 1)
+        #expect(chart.currentOvernightTrade(now: now) == nil)
+        chart.overnightTrade = MarketTick(symbol: "OTHER", price: 105, date: now - 60)
+        #expect(chart.currentOvernightTrade(now: now) == nil)
+        chart.overnightTrade = MarketTick(symbol: "MU", price: 105, date: now - 60)
+        #expect(chart.currentOvernightTrade(now: now + 8 * 3600) == nil)
+        chart.overnightTrade = nil
+        #expect(chart.currentOvernightTrade(now: now) == nil)
+    }
+
     private func tick(_ price: Float, at date: Date) -> MarketTick {
         var bytes: [UInt8] = [0x0a, 2] + Array("MU".utf8) + [0x15]
         withUnsafeBytes(of: price.bitPattern.littleEndian) { bytes += $0 }
