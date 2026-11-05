@@ -1320,14 +1320,18 @@ private struct PriceChart: View {
         let points = chart.points
         let markers = ChartCatalyst.mapped(catalysts, chart: chart, range: range)
         let reference = chart.reference(for: range)
-        let up = (points.last?.close ?? 0) >= (reference ?? points.first?.close ?? 0)
+        let overnight = range == .day ? chart.currentOvernightTrade() : nil
+        let overnightX = overnight.flatMap { trade in
+            points.last.map { $0.id + max(1, Int(ceil(trade.date.timeIntervalSince($0.date) / 120))) }
+        }
+        let up = (overnight?.price ?? points.last?.close ?? 0) >= (reference ?? points.first?.close ?? 0)
         let tint = up ? Color.green : Color.red
-        let closes = points.map(\.close) + (range == .day ? [reference].compactMap { $0 } : [])
+        let closes = points.map(\.close) + (range == .day ? [reference, overnight?.price].compactMap { $0 } : [])
         let low = closes.min() ?? 0, high = closes.max() ?? 1
         let pad = max((high - low) * 0.08, high * 0.0005)
         let floor = low - pad
         let split = points.contains(where: \.extended)
-        let domain = max(chart.slots, points.count)
+        let domain = max(chart.slots, points.count, (overnightX ?? -1) + 2)
         let ticks = range.ticks(for: points, zone: chart.timeZone, domain: domain)
         let digits = high >= 1000 ? 0 : chart.decimals
         Chart {
@@ -1366,7 +1370,17 @@ private struct PriceChart: View {
                         }
                     }
             }
-            if live, scrub.index == nil, let last = points.last {
+            if let overnight, let overnightX {
+                PointMark(x: .value("Time", overnightX), y: .value("Overnight price", overnight.price))
+                    .symbolSize(55)
+                    .foregroundStyle(tint)
+                    .annotation(position: .top, alignment: .trailing, spacing: 5) {
+                        Text("Overnight · " + overnight.date.formatted(range.stampStyle(chart.timeZone)))
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+            }
+            if live, overnight == nil, scrub.index == nil, let last = points.last {
                 PointMark(x: .value("Time", last.id), y: .value("Price", last.close))
                     .symbolSize(150)
                     .foregroundStyle(tint.opacity(0.25))
@@ -1413,6 +1427,7 @@ private struct PriceChart: View {
             ScrubOverlay(proxy: proxy, chart: chart, range: range, tint: tint, scrub: scrub)
         }
         .accessibilityLabel("\(chart.symbol) price chart, \(range.caption)")
+        .accessibilityValue(overnight.map { "Overnight \(chart.money($0.price)), \($0.date.formatted(range.stampStyle(chart.timeZone)))" } ?? "")
         .accessibilityIdentifier("stock-price-chart")
     }
 }

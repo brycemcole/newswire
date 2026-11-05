@@ -111,8 +111,15 @@ nonisolated struct MarketChart: Sendable {
     var low: Double? { points.map(\.close).min() }
     var open: Double? { points.first { !$0.extended }?.open ?? points.first?.open }
 
+    func currentOvernightTrade(now: Date = .now) -> MarketTick? {
+        guard let trade = overnightTrade, trade.symbol == symbol, trade.price.isFinite, trade.price > 0,
+              let last = points.last, trade.date > last.date, trade.date <= now,
+              now.timeIntervalSince(trade.date) < 8 * 3600 else { return nil }
+        return trade
+    }
+
     var extendedQuote: (label: String, price: Double)? {
-        if let trade = overnightTrade, let last = points.last, trade.date > last.date, Date.now.timeIntervalSince(trade.date) < 8 * 3600 {
+        if let trade = currentOvernightTrade() {
             return ("Overnight", trade.price)
         }
         guard let last = points.last, last.extended else { return nil }
