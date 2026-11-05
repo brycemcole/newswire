@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { credentials, devices, send } from './apns.mjs';
 import { token } from './publish.mjs';
-import { getJson, day } from './fetch.mjs';
+import { getJson, day, marketSession } from './fetch.mjs';
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 
 export function movements(symbol, quote, state, now = Date.now()) {
@@ -26,7 +26,10 @@ export function movements(symbol, quote, state, now = Date.now()) {
     const rapid = (quote.price / baseline.price - 1) * 100;
     const rapidDirection = rapid >= 0 ? 'up' : 'down';
     const key = `${symbol}:rapid:${rapidDirection}`;
-    if (Math.abs(rapid) >= 2 && now - Date.parse(state[key]?.at ?? '1970-01-01') >= 1800000 && !events.length) {
+    const threshold = marketSession(quote.at) === 'open' ? 2 : 4;
+    const last = samples[samples.length - 1];
+    const sustained = last && last.at !== baseline.at && (last.price / baseline.price - 1) * 100 * Math.sign(rapid) >= threshold / 2;
+    if (Math.abs(rapid) >= threshold && sustained && now - Date.parse(state[key]?.at ?? '1970-01-01') >= 1800000 && !events.length) {
       events.push({ key, title: `${symbol} moving fast: ${rapidDirection} ${Math.abs(rapid).toFixed(2)}% in ${Math.round((quote.at - baseline.at) / 60000)} min · $${quote.price.toFixed(2)}`, marks: [key] });
     }
   }
@@ -81,9 +84,41 @@ export function activityPayload(watch, quote, now = Date.now()) {
       target: watch.target ?? null, direction: watch.direction, reached: targetReached(watch, quote, now) } } };
 }
 
+export function priorSessionClose(daily, quote) {
+  const closes = daily?.indicators?.quote?.[0]?.close ?? [];
+  const divisor = ['GBp', 'GBX', 'ILA', 'ZAc', 'ZAC'].includes(daily?.meta?.currency) ? 100 : 1;
+  const session = day(quote.at, quote.zone);
+  for (let i = closes.length - 1; i >= 0; i--) {
+    const at = daily.timestamp?.[i] * 1000;
+    if (Number.isFinite(closes[i]) && closes[i] > 0 && Number.isFinite(at) && day(at, quote.zone) < session) return closes[i] / divisor;
+  }
+  return null;
+}
+
+const closesFile = join(homedir(), '.config', 'newswire', 'prior-close.json');
+let closes;
+
 async function liveQuote(symbol) {
-  const data = await getJson(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=1d&interval=1m&includePrePost=true`, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-  return quoteFromChart(data.chart?.result?.[0]);
+  const headers = { 'User-Agent': 'Mozilla/5.0' };
+  const base = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`;
+  const data = await getJson(`${base}?range=1d&interval=1m&includePrePost=true`, { headers });
+  const quote = quoteFromChart(data.chart?.result?.[0]);
+  if (symbol.endsWith('=F')) return quote;
+  const session = day(quote.at, quote.zone);
+  closes ??= JSON.parse(await readFile(closesFile, 'utf8').catch(() => '{}'));
+  const cached = closes[symbol];
+  if (cached?.session === session && cached.close > 0) quote.previousClose = cached.close;
+  else {
+    const daily = (await getJson(`${base}?range=5d&interval=1d`, { headers })).chart?.result?.[0];
+    quote.previousClose = priorSessionClose(daily, quote);
+    if (quote.previousClose) {
+      closes[symbol] = { session, close: quote.previousClose };
+      await mkdir(join(homedir(), '.config', 'newswire'), { recursive: true, mode: 0o700 });
+      await writeFile(closesFile + '.tmp', JSON.stringify(closes), { mode: 0o600 });
+      await rename(closesFile + '.tmp', closesFile);
+    }
+  }
+  return quote;
 }
 
 export async function runStockAlerts() {
