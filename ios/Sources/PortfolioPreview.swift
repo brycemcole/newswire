@@ -75,15 +75,20 @@ struct HoldingCardPreview: View {
         option: nil, quantity: 10, price: 280, value: 2800, reportedCost: 2400)
     private let quote = OptionQuote(bid: 0, ask: 0, last: 0.38, lastTrade: Date.now.addingTimeInterval(-86400 * 3), change: -0.55, yahooVolatility: 0.41, regular: 282.32, pre: 281.77, post: nil, marketState: "PRE")
 
+    private func call(_ id: String, strike: Double, days: Double, contracts: Double, cost: Double?) -> Position {
+        Position(id: "preview|\(id)", itemID: "test", institution: "Test", account: "[TEST]", symbol: "TEST", name: "[TEST] call",
+            option: OptionDetail(isCall: true, strike: strike, expiration: Date.now.addingTimeInterval(86400 * days), contracts: contracts),
+            quantity: contracts, price: nil, value: 38, reportedCost: cost, costEstimated: cost != nil)
+    }
+
     var body: some View {
+        let calls = [option, call("c2", strike: 290, days: 11, contracts: 2, cost: 640), call("c3", strike: 320, days: 32, contracts: 1, cost: nil)]
+        let positions = calls + [shares]
         ScrollView {
             VStack(spacing: 16) {
-                QuoteSection("Your Position") {
-                    PositionCard(symbol: "TEST", position: option, spot: ("Pre-market", 281.77), store: .shared, requestsOptionQuote: false, previewQuote: quote)
-                }
-                QuoteSection("Your Position") {
-                    PositionCard(symbol: "TEST", position: shares, spot: ("Last", 281.77), store: .shared, requestsOptionQuote: false)
-                }
+                HoldingPositions(symbol: "TEST", positions: positions, spot: ("Pre-market", 281.77), store: .shared, requestsOptionQuote: false,
+                                 previewQuotes: Dictionary(uniqueKeysWithValues: calls.map { ($0.id, quote) }))
+                HoldingPositions(symbol: "TEST", positions: [shares], spot: ("Last", 281.77), store: .shared, requestsOptionQuote: false)
             }
             .padding()
         }

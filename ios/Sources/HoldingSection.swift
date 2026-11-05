@@ -21,21 +21,30 @@ struct HoldingSection: View {
     @ViewBuilder private var content: some View {
         let positions = store.snapshot.positions(for: symbol).filter { ($0.option?.daysLeft ?? 0) >= 0 }
         if !positions.isEmpty {
-            QuoteSection("Your Position") {
-                VStack(alignment: .leading, spacing: 12) {
-                    ForEach(positions) { position in
-                        VStack(alignment: .leading, spacing: 6) {
-                            PositionCard(symbol: symbol, position: position, spot: spot, store: store)
-                            if store.snapshot.isStale(position.itemID) {
-                                Text("Brokerage not refreshed · showing cached values")
-                                    .font(.caption).foregroundStyle(.orange)
-                            }
-                        }
-                    }
-                    if let updated = store.snapshot.aggregateSyncedAt {
-                        Text("Brokerages synced \(updated.formatted(.relative(presentation: .named)))")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
+            HoldingPositions(symbol: symbol, positions: positions, spot: spot, store: store)
+        }
+    }
+}
+
+struct HoldingPositions: View {
+    let symbol: String
+    let positions: [Position]
+    let spot: (label: String, price: Double)?
+    let store: PortfolioStore
+    var requestsOptionQuote = true
+    var previewQuotes: [String: OptionQuote] = [:]
+
+    var body: some View {
+        QuoteSection {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(Array(positions.enumerated()), id: \.element.id) { index, position in
+                    if index > 0 { Divider() }
+                    PositionCard(symbol: symbol, position: position, spot: spot, store: store,
+                                 requestsOptionQuote: requestsOptionQuote, previewQuote: previewQuotes[position.id])
+                }
+                if positions.contains(where: { store.snapshot.isStale($0.itemID) }) {
+                    Text("Brokerage not refreshed · cached")
+                        .font(.caption).foregroundStyle(.orange)
                 }
             }
         }
@@ -95,22 +104,25 @@ struct PositionCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             summary
-            if let option = position.option {
-                DisclosureGroup("Details", isExpanded: $showingDetails) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        if let estimate, let spot {
-                            scenarioView(option: option, estimate: estimate, spot: spot)
-                        }
-                        if let breakeven = position.breakeven {
-                            Text("Breaks even at \(estimated)\(Money.text(breakeven))\(breakevenMove(breakeven)) at expiry")
-                                .font(.caption).foregroundStyle(.secondary).monospacedDigit()
-                        }
-                        costSection
-                        StatRows(stats: optionDetails(option))
-                    }
-                    .padding(.top, 8)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    guard position.option != nil else { return }
+                    withAnimation(.snappy) { showingDetails.toggle() }
                 }
-                .font(.footnote.weight(.medium))
+            if let option = position.option, showingDetails {
+                VStack(alignment: .leading, spacing: 12) {
+                    if let estimate, let spot {
+                        scenarioView(option: option, estimate: estimate, spot: spot)
+                    }
+                    if let breakeven = position.breakeven {
+                        Text("Breaks even at \(estimated)\(Money.text(breakeven))\(breakevenMove(breakeven)) at expiry")
+                            .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                    }
+                    costSection
+                    StatRows(stats: optionDetails(option))
+                }
+                .padding(.top, 4)
+                .transition(.opacity)
             }
         }
         .contextMenu {
