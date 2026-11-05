@@ -1,4 +1,5 @@
 import SwiftUI
+import Charts
 
 struct HoldingSection: View {
     let symbol: String
@@ -88,10 +89,18 @@ struct PositionCard: View {
     var previewQuote: OptionQuote?
     @State private var fetchedQuote: OptionQuote?
     @State private var scenario: Double?
-    @State private var showingDetails = false
+    @State private var showingDetails = PositionCard.startsExpanded
     @State private var editingCost = false
     @State private var costText = ""
     @Environment(\.scenePhase) private var phase
+
+    private static var startsExpanded: Bool {
+        #if DEBUG
+        CommandLine.arguments.contains("-expandHoldings")
+        #else
+        false
+        #endif
+    }
 
     private var quote: OptionQuote? { fetchedQuote ?? previewQuote }
     private var estimated: String { position.isEstimated ? "≈" : "" }
@@ -278,8 +287,9 @@ struct PositionCard: View {
         let today = estimate.perShare(at: price) * contracts
         let expiry = option.intrinsic(at: price)
         VStack(alignment: .leading, spacing: 6) {
+            payoffChart(option: option, estimate: estimate, spot: spot.price, selected: scenario)
             scenarioHeader(price: price, spot: spot.price)
-            Slider(value: Binding(get: { price }, set: { scenario = $0 }), in: (spot.price * 0.75)...(spot.price * 1.25))
+            Slider(value: Binding(get: { price }, set: { scenario = $0 }), in: (spot.price * 0.85)...(spot.price * 1.15))
                 .accessibilityLabel("\(symbol) price")
                 .accessibilityValue(Money.text(price))
             HStack(alignment: .top, spacing: 16) {
@@ -288,6 +298,37 @@ struct PositionCard: View {
             }
         }
         .sensoryFeedback(.selection, trigger: scenario.map { ($0 / max(spot.price * 0.01, 0.01)).rounded() })
+    }
+
+    private func payoffChart(option: OptionDetail, estimate: OptionEstimate, spot: Double, selected: Double?) -> some View {
+        let contracts = 100 * option.contracts
+        let basis = position.costBasis.map { option.contracts < 0 ? -abs($0) : abs($0) } ?? 0
+        let prices = stride(from: spot * 0.85, through: spot * 1.15, by: spot * 0.3 / 40).map { $0 }
+        let today = prices.map { ($0, estimate.perShare(at: $0) * contracts - basis) }
+        let expiry = prices.map { ($0, option.intrinsic(at: $0) - basis) }
+        let values = (today + expiry).map(\.1) + [0]
+        let low = values.min() ?? 0, high = values.max() ?? 0
+        let pad = max((high - low) * 0.08, 1)
+        let yDomain = (low - pad)...(high + pad)
+        return Chart {
+            RuleMark(y: .value("Zero", 0)).foregroundStyle(.secondary.opacity(0.4)).lineStyle(StrokeStyle(lineWidth: 0.5))
+            ForEach(expiry, id: \.0) { point in
+                LineMark(x: .value("Price", point.0), y: .value("P/L", point.1), series: .value("When", "At expiry"))
+                    .foregroundStyle(.secondary).lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+            }
+            ForEach(today, id: \.0) { point in
+                LineMark(x: .value("Price", point.0), y: .value("P/L", point.1), series: .value("When", "Today"))
+                    .foregroundStyle(Color.accentColor).lineStyle(StrokeStyle(lineWidth: 2))
+            }
+            RuleMark(x: .value("Now", selected ?? spot)).foregroundStyle(.primary.opacity(0.35)).lineStyle(StrokeStyle(lineWidth: 1))
+        }
+        .chartXScale(domain: (spot * 0.85)...(spot * 1.15))
+        .chartYScale(domain: yDomain)
+        .chartLegend(.hidden)
+        .chartXAxis { AxisMarks(values: .automatic(desiredCount: 4)) { AxisValueLabel(format: .currency(code: "USD").precision(.fractionLength(0))) } }
+        .chartYAxis { AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { AxisGridLine(stroke: StrokeStyle(lineWidth: 0.3)); AxisValueLabel(format: .currency(code: "USD").notation(.compactName).precision(.fractionLength(0))) } }
+        .frame(height: 120)
+        .accessibilityLabel("Profit or loss by \(symbol) price, today and at expiry")
     }
 
     private func scenarioHeader(price: Double, spot: Double) -> some View {
