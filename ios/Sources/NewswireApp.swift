@@ -338,11 +338,6 @@ struct FeedView: View {
 
     private var showsHome: Bool { search.isEmpty && store.filters.isEmpty }
 
-    private var myStories: [Story] {
-        guard showsHome, store.category.isEmpty else { return [] }
-        return HomeSymbols.stories(store.stories)
-    }
-
     /// One section at a time, so the market strip and this card stay within the top half of the screen.
     private var homeDeck: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -430,26 +425,7 @@ struct FeedView: View {
                         }.font(.system(.caption, design: .monospaced)).padding(.vertical, 8)
                     }
                     let olderTrigger = store.olderTriggerID
-                    let mine = myStories
-                    let mineIDs = Set(mine.map(\.id))
-                    if !mine.isEmpty {
-                        HomeListHeader(title: "Your symbols", trailing: HomeSymbols.arrivals(since: VisitLedger.shared.since, in: store.stories, now: homeClock))
-                            .listRowInsets(EdgeInsets(top: 14, leading: 16, bottom: 0, trailing: 16))
-                            .listRowSeparator(.hidden)
-                            .listRowBackground(Color.clear)
-                        ForEach(mine) { story in
-                            StoryRow(story: story, showSummary: !headlinesOnly)
-                                .background { NavigationLink(value: story) { EmptyView() }.opacity(0) }
-                                .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 12))
-                                .listRowBackground(Color.clear)
-                                .listRowSeparator(.visible)
-                        }
-                        HomeListHeader(title: "All news")
-                            .listRowInsets(EdgeInsets(top: 18, leading: 16, bottom: 0, trailing: 16))
-                            .listRowSeparator(.hidden)
-                            .listRowBackground(Color.clear)
-                    }
-                    ForEach(mineIDs.isEmpty ? store.stories : store.stories.filter { !mineIDs.contains($0.id) }) { story in
+                    ForEach(store.stories) { story in
                         StoryRow(story: story, showSummary: !headlinesOnly)
                             .background { NavigationLink(value: story) { EmptyView() }.opacity(0) }
                             .id(story.id)
@@ -872,6 +848,12 @@ struct StoryRow: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .accessibilityLabel("Urgent")
+                }
+                if HomeSymbols.isYours(story) {
+                    Image(systemName: "star.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(Color.wireAccent)
+                        .accessibilityLabel("Your symbol")
                 }
                 if story.isBrain {
                     Image(systemName: "brain")
