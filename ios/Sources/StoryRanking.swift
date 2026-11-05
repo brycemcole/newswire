@@ -8,10 +8,10 @@ nonisolated enum StoryRanking {
 
     /// Ranking compares every pair of titles, so the feed calls this variant to keep it off the main thread.
     @concurrent static func ranked(_ stories: [Story], symbols: Set<String>, holdings: Set<String> = [], companyNames: [String: String] = [:]) async -> [Story] {
-        rank(stories, seen: [], symbols: symbols, holdings: holdings, companyNames: companyNames)
+        rank(stories, seen: [], symbols: symbols, holdings: holdings, companyNames: companyNames, dropsFiller: true)
     }
 
-    static func rank(_ stories: [Story], seen: Set<String>, symbols: Set<String>, holdings: Set<String> = [], companyNames: [String: String] = [:], now: Date = .now) -> [Story] {
+    static func rank(_ stories: [Story], seen: Set<String>, symbols: Set<String>, holdings: Set<String> = [], companyNames: [String: String] = [:], dropsFiller: Bool = false, now: Date = .now) -> [Story] {
         guard stories.count > 1 else { return stories }
         let holdings = Set(holdings.map { $0.uppercased() })
         let interests = Set(symbols.map { $0.uppercased() }).union(holdings)
@@ -20,6 +20,13 @@ nonisolated enum StoryRanking {
             let name = normalized(TickerNews.core(name, symbol: symbol))
             return name.count >= 4 ? (symbol.uppercased(), " \(name) ") : nil
         }
+        let stories = dropsFiller ? stories.filter { story in
+            guard isRoutine(story) else { return true }
+            let text = "\(story.title)\n\(story.summary)"
+            let searchable = " \(normalized(text)) "
+            let tickers = Set((story.tickers + TickerScanner.symbols(in: text)).map { $0.uppercased() })
+            return !tickers.isDisjoint(with: interests) || names.contains { searchable.contains($0.1) }
+        } : stories
         let words = stories.map(keywords)
         var cluster = Array(stories.indices)
         func root(_ index: Int) -> Int {
