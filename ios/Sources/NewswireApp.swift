@@ -13,7 +13,11 @@ import SwiftUI
         WindowGroup {
             Group {
                 #if DEBUG
-                if CommandLine.arguments.contains("-askResearchPreview") {
+                if CommandLine.arguments.contains("-articleMockups") {
+                    ArticleMockupGallery()
+                } else if CommandLine.arguments.contains("-goalsMockup") {
+                    GoalsMockupGallery()
+                } else if CommandLine.arguments.contains("-askResearchPreview") {
                     AskSheet()
                 } else if CommandLine.arguments.contains("-sofiPreview") {
                     NavigationStack { SoFiConnectionView(preview: true) }
@@ -63,8 +67,12 @@ import SwiftUI
                     StoryDesignPreview()
                 } else if CommandLine.arguments.contains("-portfolioTickerPreview") {
                     PortfolioTickerPreview()
+                } else if CommandLine.arguments.contains("-goalDetailPreview") {
+                    GoalDetailPreview()
                 } else if CommandLine.arguments.contains("-portfolioPreview") {
                     PortfolioPreview()
+                } else if CommandLine.arguments.contains("-goalsPreview") {
+                    GoalsPreview()
                 } else if CommandLine.arguments.contains("-portfolioAudit") {
                     PortfolioView()
                 } else if let index = CommandLine.arguments.firstIndex(of: "-widgetGallery") {
@@ -311,8 +319,6 @@ struct FeedView: View {
     @AppStorage("homeOrder") private var homeOrder = "marketsFirst"
     @AppStorage("homeTab") private var homeTab = HomeTab.positions
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Namespace private var pillNamespace
-    private let categories = ["", "general", "markets", "technology", "economy", "politics", "world", "science"]
 
     private var hidesMarketDock: Bool {
         TerminalExploreVisibility.shared.isVisible || DataScreen.designedPaths.contains(dataRoute?.path ?? "")
@@ -323,6 +329,11 @@ struct FeedView: View {
     private var subtitle: String {
         guard store.configured else { return "Not connected" }
         return "\(homeClock.formatted(.dateTime.weekday(.wide))) · \(MarketStatusLine.status(at: homeClock))"
+    }
+
+    private var todayScreen: String {
+        let headlines = store.stories.prefix(8).map { "- \($0.title) (\($0.source))" }.joined(separator: "\n")
+        return "The Today home screen (\(subtitle)), a news feed. Top headlines:\n\(headlines)"
     }
 
     private var showsHome: Bool { search.isEmpty && store.filters.isEmpty }
@@ -401,10 +412,6 @@ struct FeedView: View {
                             .listRowSeparator(.hidden)
                             .listRowBackground(Color.clear)
                     }
-                    filterBar
-                    .listRowInsets(EdgeInsets())
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(Color.clear)
                     if !store.configured && store.stories.isEmpty {
                         state("CONNECT YOUR WIRE", message: "Add your HTTPS server URL to start reading.", icon: "antenna.radiowaves.left.and.right.slash")
                         Button("Open settings") { settings = true }
@@ -473,6 +480,7 @@ struct FeedView: View {
                 .scrollContentBackground(.hidden)
                 .background { TwilightSky(scroll: skyScroll) }
                 .modifier(VisitTracking())
+                .asksAbout(AskContext(screen: todayScreen))
                 .refreshable { await store.sync(.replace) }
                 .onScrollGeometryChange(for: Bool.self) { geometry in
                     geometry.contentOffset.y + geometry.contentInsets.top < 24
@@ -493,14 +501,18 @@ struct FeedView: View {
                 .modifier(ConditionalWireSearch(presented: $searchPresented, text: $search, filters: $store.filters))
                 .navigationDestination(for: Story.self) { story in
                     StoryDetail(story: story)
+                        .asksAbout(AskContext(screen: "The story \"\(story.title)\" from \(story.source), published \(story.publishedAt.formatted(.dateTime.month().day().hour().minute())). Summary: \(story.summary.prefix(600))"))
                 }
                 .navigationDestination(for: MarketSymbol.self) { QuoteDetail(symbol: $0.id).id($0.id).dockClearance() }
                 .navigationDestination(for: DataRoute.self) { route in
-                    if DataScreen.designedPaths.contains(route.path) {
-                        DataScreen(route: route).id(route.id)
-                    } else {
-                        DataScreen(route: route).id(route.id).dockClearance()
+                    Group {
+                        if DataScreen.designedPaths.contains(route.path) {
+                            DataScreen(route: route).id(route.id)
+                        } else {
+                            DataScreen(route: route).id(route.id).dockClearance()
+                        }
                     }
+                    .asksAbout(AskContext(screen: "The Newswire data page \(route.path)" + (route.items.isEmpty ? "" : " with " + route.items.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ", ")) + "."))
                 }
                 .navigationDestination(for: FeedDestination.self) { _ in
                     TerminalExploreView { token in
@@ -574,6 +586,7 @@ struct FeedView: View {
             if (PortfolioStore.shared.snapshot.updated ?? .distantPast).timeIntervalSinceNow < -300 {
                 await PortfolioStore.shared.sync()
             }
+            GoalStore.shared.kick()
             await PriceWatchStore.shared.restoreActivities()
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(60)) } catch { return }
@@ -631,8 +644,8 @@ struct FeedView: View {
             switch url.host() {
             case "portfolio": portfolio = true
             case "quote":
-                guard let symbol = url.pathComponents.dropFirst().first else { return }
                 portfolio = false
+                guard let symbol = url.pathComponents.dropFirst().first else { return }
                 open(quote: symbol)
             case "story":
                 portfolio = false
@@ -741,57 +754,6 @@ struct FeedView: View {
             open(quote: symbol)
         }
         .buttonStyle(.plain)
-    }
-
-    private var filterBar: some View {
-        ScrollViewReader { pills in
-            ScrollView(.horizontal, showsIndicators: false) {
-                GlassEffectContainer(spacing: 8) {
-                    HStack(spacing: 8) {
-                        ForEach(categories, id: \.self) { category in
-                            categoryPill(category).id(category)
-                        }
-                    }
-                }
-                .padding(.vertical, 4)
-            }
-            .contentMargins(.horizontal, 16, for: .scrollContent)
-            .onChange(of: store.category) { _, category in
-                withAnimation(selectionAnimation) { pills.scrollTo(category, anchor: .center) }
-            }
-        }
-        .animation(reduceMotion ? nil : selectionAnimation, value: store.category)
-        .sensoryFeedback(.selection, trigger: store.category)
-    }
-
-    private func categoryPill(_ category: String) -> some View {
-        let selected = store.category == category
-        return Button {
-            store.selectCategory(category)
-        } label: {
-            categoryLabel(category)
-                .foregroundStyle(selected ? Theme.shared.accent.onColor : Color.primary)
-                .padding(.horizontal, 14)
-                .frame(minHeight: 36)
-                .background {
-                    if selected {
-                        Capsule()
-                            .fill(Color.wireAccent)
-                            .matchedGeometryEffect(id: reduceMotion ? category : "selectedCategory", in: pillNamespace)
-                    }
-                }
-                .contentShape(.capsule)
-                .glassEffect(.regular, in: .capsule)
-        }
-        .buttonStyle(PressSpringStyle())
-        .accessibilityIdentifier("news-topic-\(category.isEmpty ? "all" : category)")
-        .accessibilityAddTraits(selected ? .isSelected : [])
-    }
-
-    private func categoryLabel(_ category: String) -> some View {
-        Text(category.isEmpty ? "All" : category.capitalized)
-            .font(.subheadline.weight(.semibold))
-            .lineLimit(1)
     }
 
     private func state(_ title: String, message: String, icon: String) -> some View {
@@ -998,29 +960,24 @@ struct StoryDetail: View {
                 if story.isTweet {
                     categoryRow
                     TweetCard(story: story, poster: Summarizer.shared.poster(for: story))
+                } else if Summarizer.shared.videos[key] == nil, let hero = Summarizer.shared.poster(for: story) {
+                    articleHeader(cover: true)
+                        .padding(20)
+                        .frame(maxWidth: .infinity, minHeight: 370, alignment: .bottomLeading)
+                        .background {
+                            ThumbnailImage(url: hero, size: ThumbnailLoader.large)
+                                .overlay {
+                                    LinearGradient(colors: [.black.opacity(0.1), .black.opacity(0.94)], startPoint: .center, endPoint: .bottom)
+                                }
+                        }
+                        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                        .environment(\.colorScheme, .dark)
                 } else {
-                    Text(story.title).font(.largeTitle.weight(.bold)).fixedSize(horizontal: false, vertical: true)
+                    articleHeader(cover: false)
                 }
-                if story.isTweet {
-                } else if let video = Summarizer.shared.videos[key] {
+                if !story.isTweet, let video = Summarizer.shared.videos[key] {
                     StoryVideoView(url: video, poster: Summarizer.shared.poster(for: story), page: story.url, title: story.title, source: story.source)
-                } else if let hero = Summarizer.shared.poster(for: story) {
-                    // Starts from the feed's already-decoded thumbnail, so the header is never blank during the push.
-                    Color.clear.frame(height: 210).frame(maxWidth: .infinity)
-                        .overlay { ThumbnailImage(url: hero, size: ThumbnailLoader.large) }
-                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                    .accessibilityHidden(true)
                 }
-                if !story.isTweet { categoryRow }
-                if !story.isTweet { HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    filterButton(.source(story.source)) {
-                        Text(story.source).fontWeight(.bold).foregroundStyle(.secondary).lineLimit(1)
-                    }
-                    Text("·").foregroundStyle(.tertiary)
-                    Text(story.publishedAt, format: .dateTime.weekday(.abbreviated).month(.abbreviated).day().hour().minute())
-                        .foregroundStyle(.secondary).lineLimit(1)
-                }
-                .font(.footnote) }
                 if !quotes.isEmpty {
                     QuoteStrip(quotes: quotes, selected: $selectedQuote, glass: true)
                         .transition(.opacity)
@@ -1028,9 +985,9 @@ struct StoryDetail: View {
                     filterLinks(story.tickers.map(WireFilter.ticker), separator: "  ·  ")
                         .font(.system(.subheadline, design: .monospaced).weight(.semibold)).foregroundStyle(.secondary)
                 }
-                Divider()
                 if !story.isTweet, glance != nil || preparingGlance {
                     glanceCard.transition(.opacity)
+                } else {
                     Divider()
                 }
                 if story.isTweet {
@@ -1201,6 +1158,24 @@ struct StoryDetail: View {
         }
     }
 
+    private func articleHeader(cover: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            categoryRow
+            Text(story.title)
+                .font((cover ? Font.title : .title2).weight(.bold))
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                filterButton(.source(story.source)) {
+                    Text(story.source).fontWeight(.semibold).foregroundStyle(.primary).lineLimit(1)
+                }
+                Text("·").foregroundStyle(.tertiary)
+                Text(story.publishedAt, format: .dateTime.weekday(.abbreviated).month(.abbreviated).day().hour().minute())
+                    .foregroundStyle(.secondary).lineLimit(1)
+            }
+            .font(.subheadline)
+        }
+    }
+
     private var categoryRow: some View {
         HStack(spacing: 6) {
             filterButton(.category(story.category)) { Text(story.category.uppercased()) }
@@ -1212,13 +1187,16 @@ struct StoryDetail: View {
                 }
             }
         }
-        .font(.system(.caption, design: .monospaced).weight(.semibold))
+        .font(.footnote.weight(.semibold))
         .foregroundStyle(.secondary)
     }
 
     private var glanceCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Summary").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 14) {
+            Divider()
+            Text("Summary")
+                .font(.headline)
+                .foregroundStyle(.primary)
             if let glance {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(Array(glance.enumerated()), id: \.offset) { _, point in
@@ -1228,7 +1206,7 @@ struct StoryDetail: View {
                         }
                     }
                 }
-                .font(.body)
+                .font(.callout)
                 let brief = Summarizer.shared.briefs[key]
                 if moreDetail {
                     Group {
@@ -1241,10 +1219,13 @@ struct StoryDetail: View {
                     .font(.callout).padding(.top, 2).transition(.opacity)
                 }
                 if brief != nil || (Summarizer.shared.texts[key]?.count ?? 0) >= 800 {
-                    Button(moreDetail ? "Show Less" : "Show More") {
+                    Button {
                         withAnimation(.easeOut(duration: 0.2)) { moreDetail.toggle() }
+                    } label: {
+                        Label(moreDetail ? "Show Less" : "Show More", systemImage: moreDetail ? "chevron.up" : "chevron.down")
+                            .labelStyle(.titleAndIcon)
                     }
-                    .font(.subheadline).foregroundStyle(Color.wireAccent).buttonStyle(.plain)
+                    .font(.subheadline.weight(.semibold)).foregroundStyle(Color.wireAccent).buttonStyle(.plain)
                 }
             } else {
                 VStack(alignment: .leading, spacing: 8) {
@@ -1252,12 +1233,13 @@ struct StoryDetail: View {
                     Text("Another line standing in for a point")
                     Text("A third, shorter placeholder line")
                 }
-                .font(.body).redacted(reason: .placeholder)
+                .font(.callout).redacted(reason: .placeholder)
                 .phaseAnimator([0.35, 0.7]) { view, opacity in view.opacity(opacity) } animation: { _ in .easeInOut(duration: 0.9) }
                 .accessibilityLabel("Summarizing")
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.bottom, 4)
         .animation(.easeOut(duration: 0.2), value: glance)
     }
 

@@ -490,7 +490,6 @@ struct MarketSearchSheet: View, Equatable {
         }
     }
 
-    /// Opens a fresh Ask sheet; the search text is not sent as a question.
     private var askButton: some View {
         Button {
             query = ""

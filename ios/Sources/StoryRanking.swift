@@ -72,7 +72,7 @@ nonisolated enum StoryRanking {
 
     private static func isRoutine(_ story: Story) -> Bool {
         if story.tags.contains("systemic-event") || story.tags.contains("material-company-event") { return false }
-        if story.tags.contains("routine-company-update") { return true }
+        if story.tags.contains("routine-company-update") || story.tags.contains("feature") { return true }
         let title = story.title.lowercased()
         // Older headlines predate significance tags. A payout change must not be treated as a routine declaration.
         if title.range(of: #"\b(cuts?|cutting|suspend\w*|slash\w*|halt\w*|scrap\w*|eliminat\w*|rais\w*|hik\w*|increas\w*|reduc\w*|special)\b"#, options: .regularExpression) != nil { return false }

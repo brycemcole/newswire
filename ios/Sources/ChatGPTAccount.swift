@@ -31,6 +31,8 @@ nonisolated enum ChatGPTError: LocalizedError, Equatable {
     case unsupported(String)
     case signIn(String)
     case rejected(Int, String)
+    case responseIncomplete(String, String?)
+    case missingAnswer, refused
 
     var errorDescription: String? {
         switch self {
@@ -42,11 +44,23 @@ nonisolated enum ChatGPTError: LocalizedError, Equatable {
         case .usageLimit: "You've reached the ChatGPT usage limit for apps. Check Settings → Usage in ChatGPT."
         case .unavailable: "ChatGPT is temporarily unavailable. Try again shortly."
         case .noModel: "No ChatGPT models are available for this account."
-        case .incomplete: "ChatGPT didn't finish its answer. Try a more focused question."
+        case .incomplete: "ChatGPT returned an incomplete or invalid response. Try again."
+        case .missingAnswer: "ChatGPT ended the response without an answer or a tool call. Try again."
+        case .refused: "ChatGPT declined to answer this request."
+        case .responseIncomplete(let reason, let requestID):
+            Self.incompleteDescription(reason) + (requestID.map { " Request: \($0)." } ?? "")
         case .interrupted: "The connection to ChatGPT dropped before the answer finished. Try again."
         case .unsupported(let param): "ChatGPT plan usage doesn't support part of this request\(param.isEmpty ? "" : " (\(param))")."
         case .signIn(let reason): "Couldn't sign in with ChatGPT: \(reason)"
         case .rejected(let status, let message): "ChatGPT returned an error (\(status))\(message.isEmpty ? "." : ": \(message)")"
+        }
+    }
+
+    private static func incompleteDescription(_ reason: String) -> String {
+        switch reason {
+        case "max_output_tokens": "ChatGPT reached its response token limit before finishing. Reasoning also counts toward this limit."
+        case "content_filter": "ChatGPT stopped the response because of its content filter."
+        default: "ChatGPT stopped before finishing its response."
         }
     }
 
