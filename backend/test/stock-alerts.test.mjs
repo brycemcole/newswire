@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { movements } from '../../scripts/monitor/stock-alerts.mjs';
+import { movements, priorSessionClose } from '../../scripts/monitor/stock-alerts.mjs';
 const now = Date.parse('2026-09-30T15:00:00Z');
 const quote = price => ({ price, previousClose: 100, at: now, zone: 'America/New_York' });
 test('5 and 10 percent in both directions, dedup and stale rejection', () => {
@@ -17,6 +17,8 @@ test('5 and 10 percent in both directions, dedup and stale rejection', () => {
 test('rapid movement uses recent samples and cooldown', () => {
   const state = {};
   movements('AAPL', { ...quote(100), at: now - 180000 }, state, now - 180000);
+  assert.equal(movements('AAPL', { ...quote(103), at: now - 30000 }, state, now - 30000).length, 0, 'a single jump is not sustained');
+  movements('AAPL', { ...quote(102.5), at: now - 20000 }, state, now - 20000);
   const event = movements('AAPL', quote(103), state, now)[0];
   assert.match(event.title, /moving fast/);
   state[event.key] = { at: new Date(now).toISOString() };
@@ -82,4 +84,19 @@ test('percentage watches require fresh quotes and a valid baseline, cross and re
     assert.equal(watchMovement(watch, { ...quote(price), at: now + 1800000 }, state, now + 1800000).length, 1);
     assert.equal(watchMovement(watch, { ...quote(price), at: now + 86400000 }, state, now + 86400000).length, 1);
   }
+});
+
+test('premarket baseline is the last close before the quote session, not the chart window baseline', () => {
+  const zone = 'America/New_York';
+  const daily = { meta: { currency: 'USD' }, timestamp: [Date.UTC(2026, 10, 3, 14, 30) / 1000, Date.UTC(2026, 10, 4, 14, 30) / 1000], indicators: { quote: [{ close: [100, 105] }] } };
+  assert.equal(priorSessionClose(daily, { at: Date.UTC(2026, 10, 5, 9, 5), zone }), 105);
+  assert.equal(priorSessionClose(daily, { at: Date.UTC(2026, 10, 4, 15, 0), zone }), 100);
+  assert.equal(priorSessionClose({ ...daily, timestamp: [] }, { at: Date.UTC(2026, 10, 5, 9, 5), zone }), null);
+});
+
+test('extended-hours rapid moves need 4 percent', () => {
+  const pre = Date.parse('2026-09-30T12:00:00Z'), state = {};
+  movements('AAPL', { ...quote(100), at: pre - 180000 }, state, pre - 180000);
+  movements('AAPL', { ...quote(102.6), at: pre - 20000 }, state, pre - 20000);
+  assert.equal(movements('AAPL', { ...quote(103), at: pre }, state, pre).length, 0);
 });
