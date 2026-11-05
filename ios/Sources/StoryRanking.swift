@@ -54,7 +54,7 @@ nonisolated enum StoryRanking {
             let routine = isRoutine(story)
             let priority = routine ? 0.0 : story.priority == "breaking" ? 7.0 : story.priority == "urgent" ? 3.0 : 0
             let systemic = story.tags.contains("systemic-event") ? 3.0 : 0
-            let personal = held ? 1.5 : watched ? 0.5 : 0
+            let personal = held ? 2.5 : watched ? 1.5 : 0
             let relevance = routine ? (held ? 0.8 : watched ? 0.5 : 0.15) : 1.0
             return freshness * (1 + max(priority, systemic) + personal) * relevance
         }

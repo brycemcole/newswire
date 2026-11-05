@@ -82,6 +82,12 @@ enum HomeSymbols {
         return count == 0 ? nil : "\(count) new since \(HomeFormat.since(date, now: now))"
     }
 
+    static func isYours(_ story: Story) -> Bool {
+        let names = Set(tracked)
+        guard !names.isEmpty else { return false }
+        return story.tickers.contains { names.contains(normalize($0)) } || story.textSymbols.contains { names.contains(normalize($0)) }
+    }
+
     static func normalize(_ ticker: String) -> String {
         ticker.trimmingCharacters(in: CharacterSet(charactersIn: "$ ")).uppercased()
     }
