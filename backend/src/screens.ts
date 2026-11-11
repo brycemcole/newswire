@@ -50,16 +50,3 @@ export function parseRating(value: unknown): Rating | null {
   const match = /^\s*([1-5](?:\.\d+)?)\s*-\s*(.+?)\s*$/.exec(value);
   return match ? { score: Number(match[1]), label: match[2] } : null;
 }
-
-export interface Earnings { at: number; start: number | null; end: number | null }
-export type EarningsResult = { ok: true; value: Earnings } | { ok: false; reason: string };
-/** A report date inside [now, now + days]. Yahoo keeps the last report's timestamp until the next is scheduled, so a past one is not an upcoming date. */
-export function upcomingEarnings(quote: Record<string, unknown>, now: number, days: number): EarningsResult {
-  const num = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
-  const at = num(quote.earningsTimestamp) ?? num(quote.earningsTimestampStart);
-  if (at === null) return { ok: false, reason: 'no earnings date' };
-  const seconds = now / 1000;
-  if (at < seconds) return { ok: false, reason: 'last report only, next date not set' };
-  if (at > seconds + days * day) return { ok: false, reason: 'after window' };
-  return { ok: true, value: { at, start: num(quote.earningsTimestampStart), end: num(quote.earningsTimestampEnd) } };
-}

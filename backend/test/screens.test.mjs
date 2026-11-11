@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { build } from 'esbuild';
 
 const bundle = async entry => import(`data:text/javascript,${encodeURIComponent((await build({ entryPoints: [entry], bundle: true, format: 'esm', write: false })).outputFiles[0].text)}`);
-const { lastCompletedSession, windowReturn, parseRating, upcomingEarnings, tally } = await bundle('src/screens.ts');
+const { lastCompletedSession, windowReturn, parseRating, tally } = await bundle('src/screens.ts');
 const { runTool } = await bundle('src/data.ts');
 
 const day = 86400;
@@ -43,12 +43,6 @@ test('rating and earnings helpers keep unavailable apart from out of range', () 
   assert.equal(parseRating('2.0 - Strong Buy').label, 'Strong Buy');
   assert.equal(parseRating(undefined), null);
   assert.equal(parseRating('-'), null);
-  const seconds = now / 1000;
-  assert.equal(upcomingEarnings({}, now, 14).reason, 'no earnings date');
-  assert.equal(upcomingEarnings({ earningsTimestamp: seconds - day }, now, 14).reason, 'last report only, next date not set');
-  assert.equal(upcomingEarnings({ earningsTimestamp: seconds + 20 * day }, now, 14).reason, 'after window');
-  assert.deepEqual(upcomingEarnings({ earningsTimestamp: seconds + 2 * day, earningsTimestampStart: seconds + 2 * day, earningsTimestampEnd: seconds + 5 * day }, now, 14).value,
-    { at: seconds + 2 * day, start: seconds + 2 * day, end: seconds + 5 * day });
   assert.deepEqual(tally(['a', 'b', 'a']), [{ reason: 'a', count: 2 }, { reason: 'b', count: 1 }]);
 });
 
@@ -67,6 +61,21 @@ function yahoo({ quotes, spark }) {
   };
   return { calls, restore: () => { globalThis.fetch = original; } };
 }
+function nasdaqCalendar(rowsByDate) {
+  const original = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async input => {
+    const url = String(input);
+    calls.push(url);
+    if (!url.startsWith('https://api.nasdaq.com/api/calendar/earnings')) throw new Error(`unexpected ${url}`);
+    const date = new URL(url).searchParams.get('date');
+    if (rowsByDate[date] === 'fail') return new Response('', { status: 503 });
+    return Response.json({ data: { rows: rowsByDate[date] ?? null } });
+  };
+  return { calls, restore: () => { globalThis.fetch = original; } };
+}
+const nasdaqRow = (symbol, cap, extra = {}) => ({ symbol, name: `${symbol} Inc`, marketCap: `$${cap.toLocaleString('en-US')}`, time: 'time-pre-market', epsForecast: '$1.00', noOfEsts: '3', ...extra });
+const newYorkDay = offset => new Date(Date.now() + offset * day * 1000).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
 const run = (preset, args = {}) => runTool('stock_screens', { preset, ...args }, {});
 const fresh = Math.floor(Date.now() / 1000) - 60;
 const q = (symbol, extra = {}) => ({ symbol, longName: `${symbol} Inc`, regularMarketPrice: 100, regularMarketChangePercent: 1.5, regularMarketTime: fresh, marketCap: 50e9, ...extra });
@@ -94,25 +103,22 @@ test('screens flag a pool whose newest quote predates the last session', async (
   } finally { mock.restore(); }
 });
 
-test('earnings_soon lists future dates in order and separates ranges and missing dates', async () => {
-  const seconds = Math.floor(Date.now() / 1000);
-  const mock = yahoo({ quotes: [
-    q('LATE', { earningsTimestamp: seconds + 6 * day }),
-    q('SOON', { earningsTimestamp: seconds + 2 * day }),
-    q('RNG', { earningsTimestamp: seconds + 3 * day, earningsTimestampStart: seconds + 3 * day, earningsTimestampEnd: seconds + 8 * day }),
-    q('PAST', { earningsTimestamp: seconds - 30 * day }),
-    q('FAR', { earningsTimestamp: seconds + 40 * day }),
-    q('NONE'),
-  ] });
+test('earnings_soon reads the Nasdaq calendar in date order, keeps market cap of $10B or more, and reports days it could not load', async () => {
+  const weekdays = [];
+  for (let offset = 0; weekdays.length < 3; offset++) if (![0, 6].includes(new Date(`${newYorkDay(offset)}T12:00:00Z`).getUTCDay())) weekdays.push(newYorkDay(offset));
+  const [first, second, failed] = weekdays;
+  const mock = nasdaqCalendar({
+    [first]: [nasdaqRow('SOON', 20e9), nasdaqRow('BIG', 300e9, { time: 'time-after-hours' }), nasdaqRow('SMALL', 5e9), nasdaqRow('PBR.A', 80e9), nasdaqRow('NOCAP', 0, { marketCap: '' })],
+    [second]: [nasdaqRow('LATE', 50e9)],
+    [failed]: 'fail',
+  });
   try {
     const result = await run('earnings_soon', { days: 14 });
-    const rows = result.sections[0].rows;
-    assert.deepEqual(rows.map(r => r.symbol), ['SOON', 'RNG', 'LATE']);
-    assert.match(rows[1].detail, /Date range, not confirmed/);
-    assert.equal(rows[0].date, new Date(Math.floor(seconds + 2 * day) * 1000).toISOString());
-    assert.match(result.note, /1 last report only, next date not set/);
-    assert.match(result.note, /1 no earnings date/);
-    assert.doesNotMatch(result.note, /after window/);
+    assert.deepEqual(result.sections[0].rows.map(r => r.symbol), ['BIG', 'SOON', 'LATE']);
+    assert.match(result.sections[0].rows[0].detail, /^After close · cap \$300\.0B/);
+    assert.equal(result.source, 'Nasdaq earnings calendar (unofficial)');
+    assert.match(result.note, /^3 qualifying calendar entries with a market cap of \$10B or more/);
+    assert.match(result.note, new RegExp(`Could not load ${failed}`));
     assert.equal((await run('earnings_soon', { days: 45 }).catch(e => e)).status, 400);
   } finally { mock.restore(); }
 });

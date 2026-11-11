@@ -11,13 +11,16 @@ enum ChatGPTResponses {
     nonisolated private static let endpoint = URL(string: "https://api.openai.com/v1/responses")!
     nonisolated private static let logger = Logger(subsystem: "com.brycecole.newswire", category: "ChatGPT")
 
-    nonisolated static func terminalResponse(_ event: [String: Any], requestID: String?) throws -> Data {
-        guard let response = event["response"] as? [String: Any] else { throw ChatGPTError.incomplete }
+    nonisolated static func terminalResponse(_ event: [String: Any], requestID: String?, streamedItems: [Int: [String: Any]] = [:]) throws -> Data {
+        guard var response = event["response"] as? [String: Any] else { throw ChatGPTError.incomplete }
         if event["type"] as? String == "response.incomplete" {
             let reason = (response["incomplete_details"] as? [String: Any])?["reason"] as? String ?? "unknown"
             let category = ["max_output_tokens", "content_filter"].contains(reason) ? reason : "unknown"
             logger.error("ChatGPT response incomplete: \(category, privacy: .public)")
             throw ChatGPTError.responseIncomplete(reason, requestID)
+        }
+        if (response["output"] as? [[String: Any]] ?? []).isEmpty, !streamedItems.isEmpty {
+            response["output"] = streamedItems.sorted { $0.key < $1.key }.map(\.value)
         }
         return try JSONSerialization.data(withJSONObject: response)
     }
@@ -124,6 +127,7 @@ enum ChatGPTResponses {
             throw ChatGPTError.from(status: http.statusCode, body: data, requestID: requestID)
         }
         var text = ""
+        var items: [Int: [String: Any]] = [:]
         for try await line in bytes.lines {
             guard line.hasPrefix("data:") else { continue }
             let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
@@ -137,8 +141,10 @@ enum ChatGPTResponses {
                 await onEvent(.text(snapshot))
             case "response.output_item.added":
                 if (event["item"] as? [String: Any])?["type"] as? String == "web_search_call" { await onEvent(.searching) }
+            case "response.output_item.done":
+                if let item = event["item"] as? [String: Any] { items[event["output_index"] as? Int ?? items.count] = item }
             case "response.completed", "response.incomplete":
-                return try terminalResponse(event, requestID: requestID)
+                return try terminalResponse(event, requestID: requestID, streamedItems: items)
             case "response.failed", "error":
                 let error = (event["response"] as? [String: Any])?["error"] ?? event["error"] ?? event
                 throw ChatGPTError.from(status: http.statusCode == 200 ? 400 : http.statusCode,
@@ -174,6 +180,7 @@ extension StockChat {
         }
         var input: [[String: Any]] = [["role": "user", "content": "\(history)\n\(question)"]]
         let progress = research.progress
+        var emptyTurns = 0
         while true {
             try Task.checkCancellation()
             let guidance = webSearch ? "\n\nWeb search: prefer Newswire tools for prices, filings and economic data. Use web_search for recent news, events or facts Newswire tools don't cover. Cite each web page as an inline Markdown link [publisher](url) right after the claim it supports; the app turns these links into numbered citations, so this is the one exception to the rule against writing URLs." : ""
@@ -193,6 +200,12 @@ extension StockChat {
             }
             let calls = output.filter { $0["type"] as? String == "function_call" }
             if calls.isEmpty {
+                if ChatGPTResponses.message(output).text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                   !output.isEmpty, !output.contains(where: { $0["type"] as? String == "message" }), emptyTurns < 2 {
+                    emptyTurns += 1
+                    input.append(contentsOf: output)
+                    continue
+                }
                 let (text, titles) = try ChatGPTResponses.answer(output)
                 return await ChatGPTResponses.cite(text, titles: titles, research: research)
             }

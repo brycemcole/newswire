@@ -42,7 +42,9 @@ nonisolated enum StoryRanking {
             }
         }
         let groups = Dictionary(grouping: stories.indices, by: root)
-        var base: [Double] = stories.map { story in
+        var shielded = [Bool](repeating: false, count: stories.count)
+        var base: [Double] = stories.indices.map { index in
+            let story = stories[index]
             let hours = max(now.timeIntervalSince(story.publishedAt), 0) / 3600
             let freshness = pow(0.5, hours / 8)
             let text = "\(story.title)\n\(story.summary)"
@@ -54,6 +56,7 @@ nonisolated enum StoryRanking {
             let routine = isRoutine(story)
             let priority = routine ? 0.0 : story.priority == "breaking" ? 7.0 : story.priority == "urgent" ? 3.0 : 0
             let systemic = story.tags.contains("systemic-event") ? 3.0 : 0
+            shielded[index] = watched || priority > 0 || systemic > 0
             let personal = held ? 2.5 : watched ? 1.5 : 0
             let relevance = routine ? (held ? 0.8 : watched ? 0.5 : 0.15) : 1.0
             return freshness * (1 + max(priority, systemic) + personal) * relevance
@@ -63,6 +66,16 @@ nonisolated enum StoryRanking {
             let boost = 1 + min(Double(max(0, sources - 1)) * 0.3, 0.9)
             let lead = members.max { base[$0] < base[$1] }!
             for index in members { base[index] *= index == lead ? boost : 0.55 }
+        }
+        // One publisher's burst (Seeking Alpha posts dozens of guidance items an hour in earnings season) must not fill the feed.
+        // Each further story from a source counts less unless it concerns a holding or watched symbol or is breaking or systemic.
+        var perSource: [String: Int] = [:]
+        for index in stories.indices.sorted(by: { base[$0] > base[$1] }) where !shielded[index] {
+            let source = normalized(stories[index].source)
+            guard !source.isEmpty else { continue }
+            let rank = perSource[source, default: 0]
+            perSource[source] = rank + 1
+            base[index] /= 1 + 0.35 * Double(rank)
         }
         for index in stories.indices where seen.contains(stories[index].id) { base[index] *= 0.3 }
         return stories.indices.sorted {
