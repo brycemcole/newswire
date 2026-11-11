@@ -1,7 +1,7 @@
 import { cached, quote, type Quote } from './quotes';
 import { bellwethers, loadPulse, pulseModel, pulseTime, type EarningsEvent } from './market-pulse';
 import { filingTools, readerRoute } from './filings';
-import { lastCompletedSession, parseRating, tally, upcomingEarnings, windowReturn } from './screens';
+import { lastCompletedSession, parseRating, tally, windowReturn } from './screens';
 
 import { optionContracts, providerData, type MarketDataEnv } from './market-providers';
 
@@ -441,6 +441,47 @@ export async function pulseEarnings(env: DataEnv): Promise<EarningsFeed> {
   if (!row) return { events: [], loaded: 0, requested: Object.keys(bellwethers).length, error: 'Earnings calendar has not been collected yet' };
   const feed = JSON.parse(row.payload) as EarningsFeed;
   return Date.now() - Date.parse(row.updated_at) > 2 * 3600000 ? { ...feed, error: `Earnings calendar last refreshed ${row.updated_at}` } : feed;
+}
+
+const newYorkDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' });
+// Nasdaq's calendar lists every company with a scheduled report on a day, with market cap. Unlike a ranked screener pool, it does not drop a large company for being ranked too low.
+async function nasdaqEarningsDay(date: string): Promise<{ rows: Record<string, string>[]; fetchedAt: number }> {
+  return cached(`nasdaq/earnings/v2/${date}`, 3600, async () => {
+    const response = await fetch(`https://api.nasdaq.com/api/calendar/earnings?date=${date}`, { headers: { 'User-Agent': agent, Accept: 'application/json', Origin: 'https://www.nasdaq.com', Referer: 'https://www.nasdaq.com/' }, signal: AbortSignal.timeout(8000) });
+    if (!response.ok) throw new DataError(502, `Nasdaq returned ${response.status}`);
+    const body = await response.json() as { data?: { rows?: Record<string, string>[] | null } };
+    if (!body.data || !(body.data.rows === null || Array.isArray(body.data.rows))) throw new DataError(502, 'Nasdaq returned an invalid calendar');
+    return { rows: body.data.rows ?? [], fetchedAt: Date.now() };
+  });
+}
+
+async function nasdaqEarningsSoon(days: number, limit: number): Promise<Draft> {
+  const fetched = Date.now();
+  const dates = Array.from({ length: days + 1 }, (_, i) => newYorkDate.format(new Date(fetched + i * day)))
+    .filter(date => ![0, 6].includes(new Date(`${date}T12:00:00Z`).getUTCDay()));
+  const loaded = await Promise.allSettled(dates.map(nasdaqEarningsDay));
+  const failedDays = dates.filter((_, i) => loaded[i].status === 'rejected');
+  const listed: { date: string; symbol: string; name: string; cap: number; time: string; eps: string; estimates: string }[] = [];
+  const seen = new Set<string>();
+  loaded.forEach((result, i) => {
+    if (result.status !== 'fulfilled') return;
+    for (const r of result.value.rows) {
+      const symbol = r.symbol ?? '', cap = Number((r.marketCap ?? '').replace(/[$,]/g, ''));
+      if (!/^[A-Z]{1,5}$/.test(symbol) || !Number.isFinite(cap) || cap < 10e9 || seen.has(`${dates[i]}:${symbol}`)) continue;
+      seen.add(`${dates[i]}:${symbol}`);
+      listed.push({ date: dates[i], symbol, name: r.name || symbol, cap, time: r.time ?? '', eps: r.epsForecast ?? '', estimates: r.noOfEsts ?? '' });
+    }
+  });
+  listed.sort((a, b) => a.date.localeCompare(b.date) || b.cap - a.cap);
+  const timing: Record<string, string> = { 'time-pre-market': 'Before open', 'time-after-hours': 'After close' };
+  const rows = listed.slice(0, limit).map(e => {
+    const when = new Date(`${e.date}T12:00:00Z`);
+    return { label: e.name, symbol: e.symbol, value: when.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }), date: when.toISOString(),
+      detail: [timing[e.time] ?? 'Time not given', `cap ${money(e.cap)}`, e.eps && `EPS estimate ${e.eps}`, e.estimates && `${e.estimates} estimates`].filter(Boolean).join(' · ') };
+  });
+  const fetchedTimes = loaded.flatMap(result => result.status === 'fulfilled' ? [result.value.fetchedAt] : []);
+  const note = `${listed.length} qualifying calendar entries with a market cap of $10B or more are scheduled to report from ${dates[0]} to ${dates[dates.length - 1]}; showing ${rows.length}, nearest date first and largest first within a day. Entries with missing market cap or tickers outside 1–5 letters are excluded. Nasdaq does not say whether dates are confirmed, so they can move.${failedDays.length ? ` Could not load ${failedDays.join(', ')}, so companies scheduled on those days are missing.` : ''}${fetchedTimes.length ? ` Calendar data fetched between ${iso(Math.min(...fetchedTimes))} and ${iso(Math.max(...fetchedTimes))}.` : ' No calendar data was available.'} Calculated ${iso(fetched)}.`;
+  return { title: `Reporting in the next ${days} days`, source: 'Nasdaq earnings calendar (unofficial)', url: 'https://www.nasdaq.com/market-activity/earnings', note, sections: [{ title: 'Results', rows }] };
 }
 
 function eventRow(e: EconEvent, a?: Actual): Row {
@@ -1104,7 +1145,7 @@ const tools: Tool[] = [
     },
   },
   {
-    name: 'stock_screens', path: 'screens', description: 'Preset US stock screens: momentum_3m (largest 3-month price gains among large, liquid stocks), earnings_soon (large companies reporting in the next days) and analyst_buy (large companies whose consensus analyst rating is Buy or Strong Buy). Each screen ranks a stated candidate pool, not every listed stock.',
+    name: 'stock_screens', path: 'screens', description: 'Preset US stock screens: momentum_3m (largest 3-month price gains among large, liquid stocks), earnings_soon (US companies with a market cap of $10B or more and a scheduled report in the next days, from the Nasdaq earnings calendar) and analyst_buy (large companies whose consensus analyst rating is Buy or Strong Buy). momentum_3m and analyst_buy rank a stated candidate pool, not every listed stock; earnings_soon uses the calendar and excludes entries with unavailable market cap or tickers outside 1–5 letters.',
     params: {
       preset: { type: 'string', description: 'Screen to run', enum: ['momentum_3m', 'earnings_soon', 'analyst_buy'], required: true },
       days: { type: 'number', description: 'earnings_soon only: look-ahead window in days, 1–30; default 14' },
@@ -1113,6 +1154,7 @@ const tools: Tool[] = [
     async run(args) {
       const preset = pick(args.preset, 'preset', ['momentum_3m', 'earnings_soon', 'analyst_buy'], '');
       const days = number(args.days, 'days', 1, 30, 14), limit = number(args.limit, 'limit', 1, 50, 25);
+      if (preset === 'earnings_soon') return nasdaqEarningsSoon(days, limit);
       const momentum = preset === 'momentum_3m';
       // Momentum needs a bar history per candidate, so its pool is small; the other screens read fields already on each quote.
       const pool = momentum ? 80 : 250;
@@ -1139,21 +1181,6 @@ const tools: Tool[] = [
           detail: [`Consensus ${fmt(rating.score, 1)} of 5 (1 strong buy, 5 sell)`, price(q), cap(q)].filter(Boolean).join(' · ') }));
         title = 'Rated Buy by analysts';
         basis = `${buys.length} of ${rated.length} rated companies in the ${quotes.length} largest US companies have a consensus under 2.5 (Buy or Strong Buy), best score first. Yahoo supplies the consensus without the number of analysts or the date of the latest change, so treat it as a current snapshot of unknown age.`;
-      } else if (preset === 'earnings_soon') {
-        const dated = quotes.flatMap(q => {
-          const result = upcomingEarnings(q, fetched, days);
-          if (!result.ok) { if (result.reason !== 'after window') excluded.push(result.reason); return []; }
-          return [{ q, when: result.value }];
-        }).sort((a, b) => a.when.at - b.when.at || Number(b.q.marketCap ?? 0) - Number(a.q.marketCap ?? 0));
-        const stamp = (seconds: number) => new Date(seconds * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
-        rows = dated.slice(0, limit).map(({ q, when }) => {
-          const range = when.start !== null && when.end !== null && when.end !== when.start;
-          const eps = typeof q.epsForward === 'number' ? `forward EPS ${fmt(q.epsForward)}` : '';
-          return { label: name(q), symbol: String(q.symbol), value: range ? `${stamp(when.start!)}–${stamp(when.end!)}` : stamp(when.at), date: iso(when.at * 1000), change: dayChange(q), change_label: 'TODAY',
-            detail: [range ? 'Date range, not confirmed' : 'Scheduled date', price(q), cap(q), eps].filter(Boolean).join(' · ') };
-        });
-        title = `Reporting in the next ${days} days`;
-        basis = `${dated.length} of the ${quotes.length} largest US companies have a report date within ${days} days of ${ymd(fetched)}. Dates are Yahoo's and can move; a range means the company has not confirmed a day. Companies whose only date is a past report are excluded, not treated as having none.`;
       } else {
         const symbols = quotes.map(q => String(q.symbol));
         const batches = Array.from({ length: Math.ceil(symbols.length / 20) }, (_, i) => symbols.slice(i * 20, i * 20 + 20));

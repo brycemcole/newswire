@@ -24,6 +24,18 @@ struct RankingTests {
         #expect(ranked[1] == "fresh")
     }
 
+    @Test func oneSourceBurstDoesNotCrowdOutOtherPublishers() {
+        var stories = (0..<12).map { story("sa\($0)", "Company\($0) raises 2026 outlook to $\($0)B revenue", hoursAgo: 0.1 + Double($0) * 0.05, source: "Seeking Alpha", tags: ["material-company-event"]) }
+        stories += [
+            story("bbg", "Asian rice prices hit two-year high on El Nino", hoursAgo: 2, source: "Bloomberg"),
+            story("yf", "Retail sales surprise lifts consumer stocks", hoursAgo: 3, source: "Yahoo Finance"),
+            story("mine", "Acme beats estimates and lifts guidance", hoursAgo: 4, source: "Seeking Alpha", tickers: ["ACME"], tags: ["material-company-event"]),
+        ]
+        let ranked = StoryRanking.rank(stories, seen: [], symbols: ["ACME"], now: now).map(\.id)
+        #expect(ranked.prefix(6).contains("bbg") && ranked.prefix(6).contains("yf"))
+        #expect(ranked.first == "mine")
+    }
+
     @Test func seenStoriesSinkAndBreakingRises() {
         let stories = [
             story("seen", "Chipmaker unveils new accelerator lineup", hoursAgo: 0.1),
