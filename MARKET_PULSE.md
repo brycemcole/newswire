@@ -1,6 +1,6 @@
 # Market Pulse
 
-An experimental, news-only macro outlook with an arrival-time replay. Version 1 uses conservative rules over the immutable titles already stored by Newswire. It does not use prices to calculate the outlook, interpret every story, predict a percentage return, or give a calibrated probability.
+An experimental, confidence-gated, news-only macro outlook with an arrival-time replay. Version 1 uses conservative rules over the immutable titles already stored by Newswire. It does not use prices to calculate the outlook, interpret every story, predict a percentage return, or give a validated probability. Confidence gates are heuristics, not evidence of probability calibration.
 
 Version 1.1 restricts energy contributions to explicitly named major supply-risk regions or global oil supply. Inspection of the first unscreened forward snapshot found an unrelated Cuba energy headline dominating the generic energy rule; the original snapshot is retained, and subsequent runs use v1.1. This adjustment occurred before the target session, but it is a model revision, not an independent validation. Earlier October 12 replay figures below retain v1.
 

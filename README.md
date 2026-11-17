@@ -2,19 +2,39 @@
 
 A private, terminal-inspired news wire: Cloudflare Workers + D1, a web terminal, and a native SwiftUI iOS reader. Newest publication timestamps appear first; scroll down to load earlier reports. No market quotes are invented.
 
-Live origin: https://bryce-newswire.bryce-e19.workers.dev
+## Run this example
 
-Verified 2026-09-07: backend typecheck and all 15 Miniflare tests pass, including the retraction tombstone and the new list filters; the monitor's 20 rules were exercised against live sources with `--dry-run` (no failures). Not yet deployed: the next `wrangler deploy` from backend must be preceded by `wrangler d1 migrations apply` to ship `0002_retracted_at`.
+Preview the web reader locally with Node.js 22 or newer. No dependencies, Cloudflare account, API keys, or production data are needed:
+
+```sh
+git clone https://github.com/brycemcole/newswire.git
+cd newswire
+node scripts/preview-web.mjs
+```
+
+Open http://127.0.0.1:8800, click **CONNECT**, enter `preview-only`, and submit the connection form. The feed contains 55 synthetic `[TEST]` stories; open a story or filter by category to explore the reader. Stop the server with Ctrl-C. This example exercises the web reader, not the production backend, iOS app, or AI pipeline.
+
+## Known limitations
+
+- Production is a private, authenticated service. The local preview does not provide ingestion, AI, market data, or brokerage sync; those require separate backend and credential setup.
+- The outlook is experimental and confidence-gated, not a validated probability or expected return. The repository includes settled-outcome regression fixtures and chronological split/gating code, but no held-out probability-calibration dataset or completed new out-of-sample performance run. See [RESEARCH.md](RESEARCH.md) and [MARKET_PULSE.md](MARKET_PULSE.md).
+- Market inputs can be delayed, stale, incomplete, or unavailable. A successful fetch does not establish freshness, and generated analysis can be wrong; it is not investment advice.
+- The hosted AI path needs a separately running worker and provider credentials (a DeepSeek key or the configured OpenCode Go fallback). Its in-memory jobs expire after 85 seconds; an API deployment alone does not run the host-side monitor or AI worker.
+- The native iOS reader requires Xcode and separate signing/distribution. Portfolio sync additionally requires Plaid credentials; the web preview does not emulate it.
+
+Live origin: https://bryce-newswire.bryce-e19.workers.dev
 
 Machine-readable agent contract: [story.schema.json](web/story.schema.json).
 
 ## Deterministic monitor
 
-A rules engine publishes market, macro, fiscal, earnings, Treasury auction, disaster, policy, infrastructure, and watched-headline alerts from public data on a three-minute schedule, with Jev classifying watched headlines and no model elsewhere, plus one daily digest of everything the wire published. Thresholds, sources, deduplication, and the launchd agent are documented in [MONITOR.md](MONITOR.md).
+A rules engine publishes market, macro, fiscal, earnings, Treasury auction, disaster, policy, infrastructure, and watched-headline alerts from public data on a three-minute schedule, plus one daily digest of everything the wire published. Numeric thresholds remain deterministic; watched-headline classification uses DeepSeek by default, with Jev available as an explicit override. Thresholds, sources, deduplication, and scheduling are documented in [MONITOR.md](MONITOR.md).
 
 ## Agent integration
 
-## DeepSeek
+### Jev vs DeepSeek — architecture as of 2026-10-27
+
+The October 27, 2026 routing change ([`60559b1`](https://github.com/brycemcole/newswire/commit/60559b1dcb41b98cd809485f448b94e7bded9b7e)) replaced the earlier OpenCode-hosted DeepSeek path with direct DeepSeek API calls. Jev references in earlier architecture notes describe the previous classifier path, not the current default.
 
 Newswire calls the DeepSeek API directly (`deepseek-flash`, thinking disabled) with the key from `DEEPSEEK_API_KEY`, `DEEPSEEK_API_KEY_FILE`, `~/.config/newswire/deepseek-key` or `~/.kalshi/deepseek.key`. `scripts/ai/deepseek.mjs` is the shared client. An authenticated, bounded in-memory queue in a dedicated Compute Durable Object connects iOS requests to the worker on the Mini; requests expire after 85 seconds and are not stored in D1.
 
@@ -24,13 +44,13 @@ Every story reader also offers Market, Stocks, and Watch lenses plus article-spe
 
 Copy `scripts/ai/` alongside the other deployed scripts, install `scripts/ai/newswire-ai.service` under `~/.config/systemd/user/`, and run `systemctl --user daemon-reload && systemctl --user enable --now newswire-ai`. It reuses the host's protected Newswire writer token and DeepSeek key.
 
-`GET /v1/ai/status` reports runtime availability; `POST /v1/ai/chat/completions` accepts authenticated app requests. Only the writer can claim or complete jobs under `/v1/ai/worker/`. Background tasks call the same client directly. `NEWSWIRE_CLASSIFIER_PROVIDER=jev` is an explicit override that classifies with OpenCode Zen's Jev instead of DeepSeek.
+`GET /v1/ai/status` reports runtime availability; `POST /v1/ai/chat/completions` accepts authenticated app requests. Only the writer can claim or complete jobs under `/v1/ai/worker/`. Background tasks share the DeepSeek client. The completion adapter (`scripts/ai/completion.mjs`) falls back to subscription-billed OpenCode Go (`deepseek-v4.1-flash`) if the direct call fails, using `NEWSWIRE_GO_API_KEY` or the host's existing OpenCodex Go credential. `NEWSWIRE_CLASSIFIER_PROVIDER=jev` is an explicit override that classifies with OpenCode Zen's Jev instead of DeepSeek; `opencode-go` explicitly selects Go.
 
 ## Brain mode
 
 The brain button at the top left of the iOS home screen switches between the wire and the Brain app's feed, read from the same D1 database the Brain app uses. Brain stories open in the reader, and the thumbs menu in a story records like, save, or less-like-this signals back into Brain's taste data.
 
-`scripts/brain/scrape.mjs` runs on the Mac mini every 20 minutes (`~/.config/systemd/user/newswire-brain.{service,timer}`, logs in `journalctl --user -u newswire-brain`). It pulls recent arXiv cs.AI/cs.LG/cs.CL/cs.CV submissions, Hugging Face Daily Papers, and Hacker News front-page items above 150 points; scores them against Brain likes, saves, and dislikes with free DeepSeek through OpenCode; and queues items scoring 8 or more. For each published paper it reads the arXiv HTML version, falling back to the PDF and then the abstract, and writes a plain-English title, takeaway, summary, and key points. The original title and source are kept in the body. Defaults: 5 posts per run, 24 per day (`BRAIN_PER_RUN`, `BRAIN_DAILY_MAX`, `BRAIN_MIN_SCORE`). State lives in `~/.config/newswire/brain-state.json`. Deploy with `rsync -a --exclude node_modules scripts/brain/ mini:newswire/scripts/brain/` and `npm install` in that directory. `--dry-run` writes without inserting.
+`scripts/brain/scrape.mjs` runs on the Mac mini every 20 minutes (`~/.config/systemd/user/newswire-brain.{service,timer}`, logs in `journalctl --user -u newswire-brain`). It pulls recent arXiv cs.AI/cs.LG/cs.CL/cs.CV submissions, Hugging Face Daily Papers, and Hacker News front-page items above 150 points; scores them against Brain likes, saves, and dislikes with the shared DeepSeek completion adapter; and queues items scoring 8 or more. For each published paper it reads the arXiv HTML version, falling back to the PDF and then the abstract, and writes a plain-English title, takeaway, summary, and key points. The original title and source are kept in the body. Defaults: 5 posts per run, 24 per day (`BRAIN_PER_RUN`, `BRAIN_DAILY_MAX`, `BRAIN_MIN_SCORE`). State lives in `~/.config/newswire/brain-state.json`. Deploy with `rsync -a --exclude node_modules scripts/brain/ mini:newswire/scripts/brain/` and `npm install` in that directory. `--dry-run` writes without inserting.
 
 ## Agent API
 
