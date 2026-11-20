@@ -384,83 +384,78 @@ struct HousePTRDetailView: View {
     @State private var error: String?
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("HOUSE CLERK · PTR \(filingID)")
-                        .font(.caption2.weight(.semibold).monospaced()).tracking(0.7).foregroundStyle(.secondary)
-                    Text(member).font(.title3.weight(.semibold))
-                    Text("Filed \(DataFormat.day(filed)) · Report may include the member, spouse, or dependent child")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Text("Trade disclosures are delayed. Amounts are reported ranges, not exact trade values.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-
-                if isLoading {
-                    ProgressView("Reading official filing…")
-                        .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 16)
-                } else if let error {
-                    ContentUnavailableView("Filing could not be read", systemImage: "doc.text.magnifyingglass", description: Text(error))
-                } else if !transactions.isEmpty {
-                    VStack(alignment: .leading, spacing: 0) {
-                        HStack(alignment: .firstTextBaseline) {
-                            Text("REPORTED TRANSACTIONS").font(.caption.weight(.semibold).monospaced()).tracking(0.5)
-                            Spacer()
-                            Text("\(transactions.count)").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-                        }.padding(.bottom, 6)
-                        ForEach(Array(transactions.enumerated()), id: \.offset) { index, transaction in
-                            transactionRow(transaction)
-                            if index < transactions.count - 1 { Divider() }
-                        }
-                    }
-                } else {
-                    ContentUnavailableView("No transactions were recognized", systemImage: "doc.text.magnifyingglass", description: Text("The filing is still available as the original House Clerk PDF below."))
-                    if !recognizedText.isEmpty {
-                        DisclosureGroup("Show recognized filing text") {
-                            Text(recognizedText).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled).padding(.top, 8)
-                        }
-                        .font(.subheadline)
+        List {
+            if isLoading {
+                ProgressView().frame(maxWidth: .infinity).listRowBackground(Color.clear)
+            } else if let error {
+                ContentUnavailableView("Couldn't read filing", systemImage: "doc.text.magnifyingglass", description: Text(error))
+                    .listRowBackground(Color.clear)
+            } else if !transactions.isEmpty {
+                Section("\(transactions.count) trade\(transactions.count == 1 ? "" : "s")") {
+                    ForEach(Array(transactions.enumerated()), id: \.offset) { _, transaction in
+                        transactionRow(transaction)
                     }
                 }
-
-                Link(destination: source) {
-                    Label("Open original House Clerk PDF", systemImage: "arrow.up.right")
-                        .font(.subheadline.weight(.medium)).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8)
+            } else {
+                ContentUnavailableView("No trades found", systemImage: "doc.text.magnifyingglass")
+                    .listRowBackground(Color.clear)
+                if !recognizedText.isEmpty {
+                    Section {
+                        DisclosureGroup("Recognized text") {
+                            Text(recognizedText).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+                        }
+                    }
                 }
-                .buttonStyle(.plain)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 16)
+            Section {
+                Link(destination: source) {
+                    Label("Original filing", systemImage: "doc.richtext")
+                }
+            }
         }
-        .navigationTitle("House PTR")
+        .listStyle(.insetGrouped)
+        .navigationTitle(member)
+        .navigationSubtitle("Filed \(Self.shortDay(filed))")
         .navigationBarTitleDisplayMode(.inline)
         .task(id: source) { await load() }
     }
 
+    /// "Oct 27", or "Oct 27, 2025" outside the current year.
+    private static func shortDay(_ iso: String) -> String {
+        guard let date = DataFormat.date(String(iso.prefix(10))) else { return DataFormat.day(iso) }
+        let sameYear = Calendar.current.component(.year, from: date) == Calendar.current.component(.year, from: .now)
+        let style = Date.FormatStyle.dateTime.month(.abbreviated).day()
+        return date.formatted(sameYear ? style : style.year())
+    }
+
+    /// "Microsoft Corporation - Common Stock" → "Microsoft Corporation".
+    private static func assetName(_ asset: String) -> String {
+        let trimmed = asset.replacingOccurrences(of: #"\s*-?\s*(Series [A-Z]\s+)?(Class [A-Z]\s+)?(Common|Ordinary) (Stock|Shares)\s*$"#, with: "", options: [.regularExpression, .caseInsensitive])
+            .trimmingCharacters(in: CharacterSet(charactersIn: " -"))
+        return trimmed.isEmpty ? asset : trimmed
+    }
+
     @ViewBuilder
     private func transactionRow(_ transaction: HousePTRTransaction) -> some View {
-        let content = HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(transaction.asset).font(.subheadline.weight(.medium)).fixedSize(horizontal: false, vertical: true)
-                Text("\(transaction.owner) · Trade \(DataFormat.day(transaction.tradeDate))\(transaction.notificationDate.map { " · Filed \(DataFormat.day($0))" } ?? "")")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        let name = Self.assetName(transaction.asset)
+        let detail = [transaction.symbol == nil ? nil : name, transaction.owner == "Member" ? nil : transaction.owner, Self.shortDay(transaction.tradeDate)]
+            .compactMap { $0 }.joined(separator: " · ")
+        let content = HStack(alignment: .firstTextBaseline, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(transaction.symbol ?? name).font(.body.weight(.semibold)).lineLimit(transaction.symbol == nil ? 2 : 1)
+                Text(detail).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
             }
-            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-            VStack(alignment: .trailing, spacing: 4) {
-                Text(transaction.type).font(.subheadline.weight(.semibold))
-                    .foregroundStyle(transaction.type.localizedCaseInsensitiveContains("sale") ? .orange : .green)
-                Text(transaction.amount).font(.caption.monospacedDigit()).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
-                if let symbol = transaction.symbol { Text(symbol).font(.caption2.weight(.semibold).monospaced()).foregroundStyle(.tertiary) }
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 3) {
+                Text(transaction.type).font(.subheadline.weight(.medium))
+                    .foregroundStyle(transaction.type.localizedCaseInsensitiveContains("sale") ? .red : transaction.type == "Purchase" ? .green : .secondary)
+                Text(transaction.amount).font(.subheadline.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8)
             }
-            .frame(maxWidth: 120, alignment: .trailing)
         }
-        .padding(.vertical, 10)
-        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
 
         if let symbol = transaction.symbol {
             NavigationLink { QuoteDetail(symbol: symbol) } label: { content }
-                .buttonStyle(.plain)
         } else {
             content
         }
@@ -488,9 +483,9 @@ struct HousePTRDetailView: View {
             transactions = result.transactions
             recognizedText = result.recognizedText
         } catch PTRDocumentError.tooManyPages {
-            error = "This report is over 60 pages. Open the original PDF to review it."
+            error = "This report is over 60 pages. Open the original filing instead."
         } catch {
-            self.error = "The official PDF could not be downloaded or processed. Try opening the source PDF below."
+            self.error = "Open the original filing instead."
         }
         isLoading = false
     }
