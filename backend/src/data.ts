@@ -13,9 +13,10 @@ export interface Row {
   label: string; value: string; detail?: string; change?: number; change_label?: string; date?: string;
   symbol?: string; series?: string; story?: string; url?: string; destination?: string; points?: number[];
   forecast?: string; previous?: string; actual?: string; surprise?: number; ptr_id?: string; ptr_year?: number; current_value?: string;
+  current_change?: number; held_since?: string; held_since_bound?: boolean;
 }
 export interface Pin { lat: number; lon: number; label: string; detail?: string; heading?: number; kind?: string }
-export interface Section { title: string; rows: Row[] }
+export interface Section { title: string; rows: Row[]; total?: number }
 export interface Point { x: string; value: number }
 export interface Payload {
   title: string; source: string; url: string; as_of: string; note?: string;
@@ -1389,7 +1390,7 @@ const tools: Tool[] = [
   },
   {
     name: 'institutional_positions', path: 'sec/institutions', description: 'Quarter-over-quarter changes in an institutional manager’s disclosed Form 13F holdings, including new positions, increases, reductions and exits. Filings are delayed snapshots, not daily trades.',
-    params: { manager: { type: 'string', description: 'SEC Central Index Key (CIK) of a 13F filer; defaults to BlackRock' }, period: { type: 'string', description: 'Optional report date (YYYY-MM-DD) for a historical 13F snapshot' }, offset: { type: 'number', description: 'Zero-based offset into the complete position list' }, page_size: { type: 'number', description: 'Positions per page, default 150 and maximum 250' } },
+    params: { manager: { type: 'string', description: 'SEC Central Index Key (CIK) of a 13F filer; defaults to BlackRock' }, period: { type: 'string', description: 'Optional report date (YYYY-MM-DD) for a historical 13F snapshot' }, list: { type: 'string', description: 'Which list offset and page_size page through: positions (default, all holdings by value), new, increased, reduced or exited. Other lists return only that section.', enum: ['positions', 'new', 'increased', 'reduced', 'exited'] }, offset: { type: 'number', description: 'Zero-based offset into the chosen list' }, page_size: { type: 'number', description: 'Rows per page: default 150 for positions and 50 for change lists, maximum 250' } },
     async run(args) {
       const rawCIK = text(args.manager, 'manager', 10) || '0002012383';
       if (!/^\d{1,10}$/.test(rawCIK)) throw new DataError(400, 'Choose a manager from sec/institution-search');
@@ -1405,27 +1406,15 @@ const tools: Tool[] = [
       const current = await filing13FTable(managerCIK, filings[0].accession);
       const previous = filings.length > 1 ? await filing13FTable(managerCIK, filings[1].accession) : undefined;
       const issuerSymbols = await secIssuerSymbols();
-      const aggregate = (rows: ThirteenFRow[]) => {
-        const map = new Map<string, ThirteenFRow>();
-        for (const entry of rows) {
-          const held = map.get(entry.cusip);
-          if (held) { held.value += entry.value; held.shares += entry.shares; }
-          else map.set(entry.cusip, { ...entry });
-        }
-        return map;
-      };
       const latest = current.rows, prior = previous?.rows ?? new Map<string, ThirteenFRow>();
+      const list = text(args.list, 'list', 12) || 'positions';
+      if (!['positions', 'new', 'increased', 'reduced', 'exited'].includes(list)) throw new DataError(400, 'list must be positions, new, increased, reduced or exited');
       const offset = number(args.offset, 'offset', 0, 100000, 0);
-      const pageSize = number(args.page_size, 'page_size', 25, 250, 150);
+      const pageSize = number(args.page_size, 'page_size', 25, 250, list === 'positions' ? 150 : 50);
+      const groupPage = 25;
       type Change = { holding: ThirteenFRow; cusip: string; old?: ThirteenFRow; delta: number; percent: number; dollars: number };
-      const top = (items: Change[], item: Change, score: (value: Change) => number) => {
-        if (items.length < 15) { items.push(item); return; }
-        let worst = 0;
-        for (let i = 1; i < items.length; i++) if (score(items[i]) < score(items[worst])) worst = i;
-        if (score(item) > score(items[worst])) items[worst] = item;
-      };
-      const added: Change[] = [], increased: Change[] = [], reduced: Change[] = [], exited: { holding: ThirteenFRow; cusip: string }[] = [];
-      let addedCount = 0, increasedCount = 0, reducedCount = 0, exitedCount = 0, currentValue = 0;
+      const added: Change[] = [], increased: Change[] = [], reduced: Change[] = [], exited: Change[] = [];
+      let currentValue = 0;
       for (const [cusip, holding] of latest) {
         currentValue += holding.value;
         const old = prior.get(cusip);
@@ -1433,38 +1422,81 @@ const tools: Tool[] = [
         const percent = old?.shares ? delta / old.shares * 100 : 0;
         const dollars = holding.shares ? Math.abs(delta) * holding.value / holding.shares : 0;
         const item = { holding, cusip, old, delta, percent, dollars };
-        if (!old) { addedCount++; top(added, item, value => value.holding.value); }
-        else if (delta > 0) { increasedCount++; top(increased, item, value => value.dollars); }
-        else if (delta < 0) { reducedCount++; top(reduced, item, value => value.dollars); }
+        if (!old) added.push(item);
+        else if (delta > 0) increased.push(item);
+        else if (delta < 0) reduced.push(item);
       }
       let priorValue = 0;
       for (const [cusip, holding] of prior) {
         priorValue += holding.value;
-        if (!latest.has(cusip)) { exitedCount++; exited.push({ holding, cusip }); }
+        if (!latest.has(cusip)) exited.push({ holding, cusip, delta: -holding.shares, percent: -100, dollars: holding.value });
       }
+      added.sort((a, b) => b.holding.value - a.holding.value);
+      increased.sort((a, b) => b.dollars - a.dollars);
+      reduced.sort((a, b) => b.dollars - a.dollars);
+      exited.sort((a, b) => b.holding.value - a.holding.value);
+      const sortedCUSIPs = [...latest.keys()].sort((a, b) => latest.get(b)!.value - latest.get(a)!.value);
+      const slice = <T>(items: T[], name: string) => list === name ? items.slice(offset, offset + pageSize) : items.slice(0, groupPage);
+      const pageCUSIPs = list === 'positions' ? sortedCUSIPs.slice(offset, offset + pageSize) : [];
+      const groups = list === 'positions'
+        ? { new: slice(added, 'new'), increased: slice(increased, 'increased'), reduced: slice(reduced, 'reduced'), exited: slice(exited, 'exited') }
+        : { new: list === 'new' ? slice(added, 'new') : [], increased: list === 'increased' ? slice(increased, 'increased') : [], reduced: list === 'reduced' ? slice(reduced, 'reduced') : [], exited: list === 'exited' ? slice(exited, 'exited') : [] };
+
+      // Ownership history: walk back through older reports to find when each shown position first appeared.
+      // Only quarter-end snapshots exist, so this is the first quarter it was reported, never a trade date.
+      const shownCUSIPs = new Set([...pageCUSIPs, ...Object.values(groups).flat().map(item => item.cusip)]);
+      const snapshots: { period: string; cusips: Set<string> }[] = [{ period: filings[0].period, cusips: new Set(latest.keys()) }];
+      if (previous) snapshots.push({ period: filings[1].period, cusips: new Set(prior.keys()) });
+      const started = Date.now();
+      for (const filing of previous ? allFilings.slice(selectedIndex + 2, selectedIndex + 2 + ownershipLookback) : []) {
+        if (Date.now() - started > 8000 || !consecutiveQuarters(filing.period, snapshots.at(-1)!.period)) break;
+        try { snapshots.push({ period: filing.period, cusips: new Set(await filing13FCUSIPs(managerCIK, filing.accession)) }); }
+        catch { break; }
+      }
+      const since = (cusip: string, from: number) => heldSince(cusip, snapshots, from);
+
       const symbolOf = (holding: ThirteenFRow) => issuerSymbols[issuerKey(holding.issuer)];
-      const byValue = [...latest.values()].sort((a, b) => b.value - a.value);
       const wanted = new Set<string>();
-      for (const holding of byValue.slice(0, offset + pageSize)) { const symbol = symbolOf(holding); if (symbol) wanted.add(symbol); }
-      for (const item of [...added, ...increased, ...reduced]) { const symbol = symbolOf(item.holding); if (symbol) wanted.add(symbol); }
+      for (const item of Object.values(groups).flat()) { const symbol = symbolOf(item.holding); if (symbol) wanted.add(symbol); }
+      for (const cusip of pageCUSIPs) { const symbol = symbolOf(latest.get(cusip)!); if (symbol) wanted.add(symbol); }
       const prices = await currentPrices([...wanted]);
       const currentOf = (holding: ThirteenFRow) => { const symbol = symbolOf(holding); const price = symbol ? prices[symbol] : undefined; return price && holding.shares ? price * holding.shares : undefined; };
-      const currentLabel = (holding: ThirteenFRow) => { const now = currentOf(holding); return now === undefined ? undefined : `${money(now)} now · ${now >= holding.value ? '+' : '−'}${fmt(Math.abs(now / holding.value - 1) * 100, 1)}%`; };
+      const currentFields = (holding: ThirteenFRow) => {
+        const now = currentOf(holding);
+        if (now === undefined) return {};
+        const change = (now / holding.value - 1) * 100;
+        return { current_value: `${money(now)} now · ${change >= 0 ? '+' : '−'}${fmt(Math.abs(change), 1)}%`, current_change: Math.round(change * 10) / 10 };
+      };
+      const shareText = (shares: number) => Math.round(shares).toLocaleString('en-US');
       const makeChangeRow = (item: Change, kind: 'NEW' | 'INCREASED' | 'REDUCED'): Row => {
-        const amount = Math.round(Math.abs(item.delta)).toLocaleString('en-US');
+        const amount = shareText(Math.abs(item.delta));
         const signedPercent = `${item.percent > 0 ? '+' : item.percent < 0 ? '−' : ''}${fmt(Math.abs(item.percent), 1)}%`;
         const changeLabel = kind === 'NEW' ? 'NEW' : kind === 'INCREASED' ? `+${amount} (${signedPercent}) shares` : `−${amount} (${signedPercent}) shares`;
-        return { label: item.holding.issuer, value: money(item.holding.value), detail: `CUSIP ${item.cusip} · ${Math.round(item.holding.shares).toLocaleString('en-US')} shares${item.old ? ` · prior ${Math.round(item.old.shares).toLocaleString('en-US')}` : ''}`, change_label: changeLabel, symbol: issuerSymbols[issuerKey(item.holding.issuer)], current_value: currentLabel(item.holding) };
+        return { label: item.holding.issuer, value: money(item.holding.value), detail: `CUSIP ${item.cusip} · ${shareText(item.holding.shares)} shares${item.old ? ` · prior ${shareText(item.old.shares)}` : ''}`, change_label: changeLabel, symbol: symbolOf(item.holding), ...currentFields(item.holding), ...since(item.cusip, 0) };
       };
-      const addedRows = added.sort((a, b) => b.holding.value - a.holding.value).map(item => makeChangeRow(item, 'NEW'));
-      const increasedRows = increased.sort((a, b) => b.dollars - a.dollars).map(item => makeChangeRow(item, 'INCREASED'));
-      const reducedRows = reduced.sort((a, b) => b.dollars - a.dollars).map(item => makeChangeRow(item, 'REDUCED'));
-      const exitedRows = exited.sort((a, b) => b.holding.value - a.holding.value).slice(0, 15).map(({ holding, cusip }) => ({ label: holding.issuer, value: money(holding.value), detail: `CUSIP ${cusip} · ${Math.round(holding.shares).toLocaleString('en-US')} shares in prior report`, change_label: 'EXITED', symbol: issuerSymbols[issuerKey(holding.issuer)] }));
-      const sortedCUSIPs = [...latest.keys()].sort((a, b) => latest.get(b)!.value - latest.get(a)!.value);
-      const pageCUSIPs = sortedCUSIPs.slice(offset, offset + pageSize);
+      const sections: Section[] = [];
+      const page = (total: number) => ({ total, offset, limit: pageSize });
+      const changeSection = (title: string, items: Change[], total: number, kind: 'NEW' | 'INCREASED' | 'REDUCED') => ({ title, total, rows: items.map(item => makeChangeRow(item, kind)) });
+      const exitedSection = () => ({ title: 'Exited positions', total: exited.length, rows: groups.exited.map(({ holding, cusip }) => ({ label: holding.issuer, value: money(holding.value), detail: `CUSIP ${cusip} · ${shareText(holding.shares)} shares in prior report`, change_label: 'EXITED', symbol: symbolOf(holding), ...since(cusip, 1) })) });
+      const ownershipRow = (): Row => {
+        const oldest = snapshots.at(-1)!.period;
+        return { label: 'Ownership history', value: oldest, detail: `${snapshots.length} quarterly reports checked, back to positions as of ${oldest}` };
+      };
+      const note = previous ? `Positions as of ${filings[0].period}, filed ${filings[0].date}; compared with positions as of ${filings[1].period}, filed ${filings[1].date}. 13F reports what a manager held on the last day of each quarter, so a new or increased position was bought at some point after ${filings[1].period} and on or before ${filings[0].period}; exact trade dates and prices are not disclosed. Held since is the first quarter-end report, within the ${snapshots.length} checked, in which the position appears continuously. Current values multiply reported shares by the latest price and assume the shares are still held. 13F covers reportable Section 13(f) securities, not the manager’s entire portfolio, and reports are generally due up to 45 days after quarter end; options, confidential treatment and separately filed manager entities can affect comparisons.` : `Latest available filing: positions as of ${filings[0].period}, filed ${filings[0].date}. Form 13F is a delayed snapshot of reportable Section 13(f) securities held at quarter end, not the manager’s entire portfolio or a record of trade dates.`;
+      const base = { title: `${managerName} institutional positions`, source: 'SEC EDGAR Form 13F', url: `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${managerCIK}&type=13F-HR`, note };
+      if (list !== 'positions') {
+        const totals = { new: added.length, increased: increased.length, reduced: reduced.length, exited: exited.length } as Record<string, number>;
+        if (list === 'new') sections.push(changeSection('New positions', groups.new, added.length, 'NEW'));
+        if (list === 'increased') sections.push(changeSection('Increased positions', groups.increased, increased.length, 'INCREASED'));
+        if (list === 'reduced') sections.push(changeSection('Reduced positions', groups.reduced, reduced.length, 'REDUCED'));
+        if (list === 'exited') sections.push(exitedSection());
+        sections.push({ title: 'Quarter overview', rows: [{ label: 'Reporting period', value: filings[0].period, detail: `Filed ${filings[0].date}` }, ownershipRow()] });
+        return { ...base, page: page(totals[list]), sections };
+      }
+
       const holdings = pageCUSIPs.map(cusip => {
         const holding = latest.get(cusip)!;
-        return { label: holding.issuer, value: money(holding.value), detail: `CUSIP ${cusip} · ${Math.round(holding.shares).toLocaleString('en-US')} shares`, symbol: issuerSymbols[issuerKey(holding.issuer)], current_value: currentLabel(holding) };
+        return { label: holding.issuer, value: money(holding.value), detail: `CUSIP ${cusip} · ${shareText(holding.shares)} shares`, symbol: symbolOf(holding), ...currentFields(holding), ...since(cusip, 0) };
       });
       const valueDelta = currentValue - priorValue;
       const signedMoney = `${valueDelta > 0 ? '+' : valueDelta < 0 ? '−' : ''}${money(Math.abs(valueDelta))}`;
@@ -1474,26 +1506,27 @@ const tools: Tool[] = [
         for (const holding of latest.values()) { const now = currentOf(holding); if (now !== undefined) { total += now; priced += holding.value; } }
         if (priced >= currentValue * 0.6) { fullCurrent = total; pricedReported = priced; coverage = priced / currentValue; }
       }
+      const shown = (count: number) => `First ${Math.min(groupPage, count)} shown`;
       const overview: Row[] = [
         { label: 'Reporting period', value: filings[0].period, detail: `Filed ${filings[0].date}` },
+        ...(previous ? [{ label: 'Prior period', value: filings[1].period, detail: `Filed ${filings[1].date}` }] : []),
         { label: 'Reported 13F value', value: money(currentValue), detail: previous ? `Prior ${money(priorValue)} · reported value change ${signedMoney}` : 'Prior filing unavailable' },
         ...(fullCurrent !== undefined ? [{ label: 'Current value', value: money(fullCurrent), detail: `${fullCurrent >= pricedReported ? '+' : '−'}${money(Math.abs(fullCurrent - pricedReported))} vs reported · latest quotes${coverage < 0.995 ? ` · ${Math.round(coverage * 100)}% of value priced` : ''}` }] : []),
         ...(current.options > 0 ? [{ label: 'Options exposure', value: money(current.options), detail: 'Notional of puts and calls, excluded from reported value' }] : []),
-        { label: 'New positions', value: String(addedCount), detail: `Top ${Math.min(15, addedCount)} shown` },
-        { label: 'Increased positions', value: String(increasedCount), detail: `Top ${Math.min(15, increasedCount)} shown` },
-        { label: 'Reduced positions', value: String(reducedCount), detail: `Top ${Math.min(15, reducedCount)} shown` },
-        { label: 'Exited positions', value: String(exitedCount), detail: `Top ${Math.min(15, exitedCount)} shown` },
+        { label: 'New positions', value: String(added.length), detail: shown(added.length) },
+        { label: 'Increased positions', value: String(increased.length), detail: shown(increased.length) },
+        { label: 'Reduced positions', value: String(reduced.length), detail: shown(reduced.length) },
+        { label: 'Exited positions', value: String(exited.length), detail: shown(exited.length) },
+        ownershipRow(),
       ];
       const filingRows = filings.map((filing, index) => ({ label: index === 0 ? `Latest snapshot · as of ${filing.period}` : `Prior snapshot · as of ${filing.period}`, value: `Filed ${filing.date}`, date: filing.date, url: filingURL(managerCIK, filing.accession, filing.document), detail: filing.accession }));
       const historyRows = allFilings.map(filing => ({ label: `As of ${filing.period}`, value: `Filed ${filing.date}`, date: filing.date, destination: `data:sec/institutions?manager=${managerCIK}&period=${filing.period}` }));
-      return { title: `${managerName} institutional positions`, source: 'SEC EDGAR Form 13F', url: `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${managerCIK}&type=13F-HR`,
-        note: previous ? `Positions as of ${filings[0].period}, filed ${filings[0].date}; compared with positions as of ${filings[1].period}, filed ${filings[1].date}. 13F covers reportable Section 13(f) securities, not the manager’s entire portfolio. Reports are generally due up to 45 days after quarter end. These are disclosed share-count changes, not trades made today; options, confidential treatment and separately filed manager entities can affect comparisons.` : `Latest available filing: positions as of ${filings[0].period}, filed ${filings[0].date}. Form 13F is a delayed snapshot of reportable Section 13(f) securities, not the manager’s entire portfolio or a daily trade feed.`,
-        page: { total: latest.size, offset, limit: pageSize },
+      return { ...base, page: page(latest.size),
         sections: [
           { title: 'Quarter overview', rows: overview },
-          { title: 'All reported positions', rows: holdings },
-          { title: 'New positions', rows: addedRows }, { title: 'Increased positions', rows: increasedRows },
-          { title: 'Reduced positions', rows: reducedRows }, { title: 'Exited positions', rows: exitedRows }, { title: 'Recent filings', rows: filingRows },
+          { title: 'All reported positions', total: latest.size, rows: holdings },
+          changeSection('New positions', groups.new, added.length, 'NEW'), changeSection('Increased positions', groups.increased, increased.length, 'INCREASED'),
+          changeSection('Reduced positions', groups.reduced, reduced.length, 'REDUCED'), exitedSection(), { title: 'Recent filings', rows: filingRows },
           { title: 'Historical quarters', rows: historyRows },
         ] };
     },
@@ -1922,6 +1955,22 @@ async function filing13FTable(cik: string, accession: string): Promise<{ rows: M
   if (!rows.size) throw new DataError(502, 'SEC information table contained no parseable positions');
   return { rows, options, url: `${base}/${table.name}` };
 }
+
+// Older reports checked for "held since", beyond the current and prior quarter: two years in all.
+const ownershipLookback = 6;
+const quarterIndex = (period: string) => { const [year, month] = period.split('-').map(Number); return year * 4 + Math.floor((month - 1) / 3); };
+export const consecutiveQuarters = (older: string, newer: string) => quarterIndex(newer) - quarterIndex(older) === 1;
+/** First quarter-end report in an unbroken run, newest first from `from`, that lists the CUSIP. Bound means the run reaches the oldest report checked, so it may go back further. */
+export function heldSince(cusip: string, snapshots: { period: string; cusips: Set<string> }[], from = 0): { held_since?: string; held_since_bound?: boolean } {
+  if (!snapshots[from]?.cusips.has(cusip)) return {};
+  let index = from;
+  const continues = (next: number) => next < snapshots.length && consecutiveQuarters(snapshots[next].period, snapshots[next - 1].period);
+  while (continues(index + 1) && snapshots[index + 1].cusips.has(cusip)) index++;
+  // A missing quarter or the end of the checked reports leaves the start unknown, so it is only a lower bound.
+  return continues(index + 1) ? { held_since: snapshots[index].period } : { held_since: snapshots[index].period, held_since_bound: true };
+}
+// Filings never change, so the compact CUSIP list is kept long after the full table would be.
+const filing13FCUSIPs = (cik: string, accession: string) => cached(`sec/13f/cusips/v1/${accession.replaceAll('-', '')}`, 30 * 86400, async () => [...(await filing13FTable(cik, accession)).rows.keys()]);
 
 tools.push(...filingTools({ cik, submissions }));
 

@@ -121,3 +121,25 @@ test('FRED falls back to a recent collector snapshot and labels its freshness', 
     await assert.rejects(() => runTool('series', { id: 'UNRATE' }, expired), /FRED returned 403/);
   } finally { globalThis.fetch = previous; }
 });
+
+test('13F held-since walks back through consecutive quarter-end reports only', async () => {
+  const { heldSince, consecutiveQuarters } = await bundle('src/data.ts');
+  assert.equal(consecutiveQuarters('2026-06-30', '2026-09-30'), true);
+  assert.equal(consecutiveQuarters('2025-12-31', '2026-03-31'), true);
+  assert.equal(consecutiveQuarters('2026-03-31', '2026-09-30'), false);
+  const snap = (period, ...cusips) => ({ period, cusips: new Set(cusips) });
+  const snapshots = [snap('2026-09-30', 'A', 'B', 'C', 'D'), snap('2026-06-30', 'B', 'C', 'E'), snap('2026-03-31', 'C', 'E'), snap('2025-12-31', 'C', 'E')];
+  // New this quarter: first reported at the current quarter end, and the prior report proves it was not held.
+  assert.deepEqual(heldSince('A', snapshots), { held_since: '2026-09-30' });
+  assert.deepEqual(heldSince('B', snapshots), { held_since: '2026-06-30' });
+  // Present in every report checked, so only a lower bound.
+  assert.deepEqual(heldSince('C', snapshots), { held_since: '2025-12-31', held_since_bound: true });
+  // Exited positions start from the prior report.
+  assert.deepEqual(heldSince('E', snapshots, 1), { held_since: '2025-12-31', held_since_bound: true });
+  assert.deepEqual(heldSince('Z', snapshots), {});
+  // A skipped quarter breaks the run: what came before the gap is unknown.
+  const gapped = [snap('2026-09-30', 'C'), snap('2026-06-30', 'C'), snap('2025-12-31', 'C')];
+  assert.deepEqual(heldSince('C', gapped), { held_since: '2026-06-30', held_since_bound: true });
+  // With only one report, even a held position's start is a lower bound.
+  assert.deepEqual(heldSince('C', [snap('2026-09-30', 'C')]), { held_since: '2026-09-30', held_since_bound: true });
+});

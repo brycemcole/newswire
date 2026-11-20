@@ -27,17 +27,18 @@ struct InstitutionalPreview: View {
           "sections":[
             {"title":"Quarter overview","rows":[
               {"label":"Reporting period","value":"2026-06-30","detail":"Filed 2026-08-14"},
+              {"label":"Prior period","value":"2026-03-31","detail":"Filed 2026-05-15"},
               {"label":"Reported 13F value","value":"$128.4B","detail":"SEC-reported value across 2,416 reportable positions"},
               {"label":"New positions","value":"42"},{"label":"Increased positions","value":"318"},
               {"label":"Reduced positions","value":"271"},{"label":"Exited positions","value":"36"}]},
-            {"title":"New positions","rows":[
-              {"label":"International Business Machines Corporation","value":"$3.84B","detail":"12,400,000 shares · 3.0% of portfolio","change_label":"NEW","symbol":"IBM"},
-              {"label":"Berkshire Hathaway Inc. Class B","value":"$2.16B","detail":"8,150,000 shares · 1.7% of portfolio","change_label":"NEW","symbol":"BRK-B"}]},
-            {"title":"Increased positions","rows":[
-              {"label":"Taiwan Semiconductor Manufacturing Company Limited","value":"$6.72B","detail":"34,200,000 shares · 5.2% of portfolio","change_label":"+18.4% shares","symbol":"TSM"}]},
-            {"title":"Reduced positions","rows":[
-              {"label":"The Coca-Cola Company","value":"$1.94B","detail":"28,100,000 shares · 1.5% of portfolio","change_label":"−7.2% shares","symbol":"KO"}]},
-            {"title":"Exited positions","rows":[]},
+            {"title":"New positions","total":42,"rows":[
+              {"label":"International Business Machines Corporation","value":"$3.84B","detail":"12,400,000 shares · 3.0% of portfolio","change_label":"NEW","symbol":"IBM","current_value":"$3.52B now · −8.3%","current_change":-8.3,"held_since":"2026-06-30"},
+              {"label":"Berkshire Hathaway Inc. Class B","value":"$2.16B","detail":"8,150,000 shares · 1.7% of portfolio","change_label":"NEW","symbol":"BRK-B","held_since":"2026-06-30"}]},
+            {"title":"Increased positions","total":318,"rows":[
+              {"label":"Taiwan Semiconductor Manufacturing Company Limited","value":"$6.72B","detail":"34,200,000 shares · prior 28,900,000","change_label":"+5,300,000 (+18.3%) shares","symbol":"TSM","current_value":"$7.10B now · +5.7%","current_change":5.7,"held_since":"2025-03-31"}]},
+            {"title":"Reduced positions","total":271,"rows":[
+              {"label":"The Coca-Cola Company","value":"$1.94B","detail":"28,100,000 shares · 1.5% of portfolio","change_label":"−2,180,000 (−7.2%) shares","symbol":"KO","held_since":"2024-09-30","held_since_bound":true}]},
+            {"title":"Exited positions","total":0,"rows":[]},
             {"title":"All reported positions","rows":[
               {"label":"International Business Machines Corporation","value":"$3.84B","detail":"12,400,000 shares","change_label":"NEW","symbol":"IBM"},
               {"label":"Taiwan Semiconductor Manufacturing Company Limited","value":"$6.72B","detail":"34,200,000 shares","change_label":"+18.4% shares","symbol":"TSM"}]},

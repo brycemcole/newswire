@@ -105,6 +105,48 @@ nonisolated enum DataText {
         return "Q\(((components.month ?? 1) - 1) / 3 + 1) \(components.year ?? 0)"
     }
 
+    /// "2026-09-30" → "Jul–Sep 2026": the three months a 13F quarter-end report covers.
+    static func quarterWindow(_ text: String) -> String {
+        guard let date = DataFormat.date(String(text.prefix(10))) else { return text }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .gmt
+        let first = (calendar.component(.month, from: date) - 1) / 3 * 3
+        let months = calendar.shortStandaloneMonthSymbols
+        return "\(months[first])–\(months[first + 2]) \(calendar.component(.year, from: date))"
+    }
+
+    /// When a 13F position was bought, as far as quarter-end reports can say. They never carry trade dates,
+    /// so this names the quarter window, and "or earlier" when the position predates every report checked.
+    static func holdingTiming(changeLabel: String?, heldSince: String?, bound: Bool, period: String?) -> String? {
+        let window = period.map(quarterWindow)
+        let since = heldSince.map { bound ? "owned since \(quarter($0)) or earlier" : "first bought \(quarterWindow($0))" }
+        func join(_ verb: String) -> String? {
+            let parts = [window.map { "\(verb) \($0)" }, since].compactMap(\.self)
+            return parts.isEmpty ? nil : parts.joined(separator: " · ")
+        }
+        switch changeLabel {
+        case "NEW": return window.map { "Bought \($0)" }
+        case "EXITED": return join("Sold")
+        case let label? where label.hasPrefix("+"): return join("Added")
+        case let label? where label.hasPrefix("−") || label.hasPrefix("-"): return join("Trimmed")
+        default:
+            guard let heldSince else { return nil }
+            if heldSince == period, !bound { return "Bought \(quarterWindow(heldSince))" }
+            return bound ? "Owned since \(quarter(heldSince)) or earlier" : "First bought \(quarterWindow(heldSince))"
+        }
+    }
+
+    /// The next 13F is due 45 days after the following quarter end: "2026-09-30" → "Feb 14".
+    static func next13FDue(after period: String) -> String? {
+        guard let date = DataFormat.date(String(period.prefix(10))) else { return nil }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .gmt
+        guard let start = calendar.date(byAdding: .day, value: 1, to: date),
+              let nextEnd = calendar.date(byAdding: .day, value: -1, to: calendar.date(byAdding: .month, value: 3, to: start) ?? start),
+              let due = calendar.date(byAdding: .day, value: 45, to: nextEnd) else { return nil }
+        return due.formatted(Date.FormatStyle(timeZone: .gmt).month(.abbreviated).day())
+    }
+
     /// "2026-08-07" → "Aug 7, 2026", or "Aug 7" in the current year.
     static func day(_ text: String) -> String {
         guard let date = DataFormat.date(String(text.prefix(10))) else { return text }
