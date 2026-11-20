@@ -4,6 +4,9 @@
   "max_x_per_run": 1,
   "max_x_per_hour": 2,
   "preferred_publishers": ["Financial Times", "Bloomberg", "Semafor", "Reuters", "CNBC", "MarketWatch", "Yahoo Finance", "Federal Reserve", "Bureau of Economic Analysis", "European Central Bank", "EIA"],
+  "fallback_publishers": ["Financial Times", "Bloomberg", "Semafor", "Reuters", "Associated Press", "AP News", "CNBC", "MarketWatch", "Yahoo Finance", "New York Times", "Seeking Alpha", "Federal Reserve", "Bureau of Economic Analysis", "European Central Bank", "EIA"],
+  "fallback_max_per_run": 6,
+  "fallback_max_age_minutes": 180,
   "feeds": [
     { "name": "Bellingcat", "url": "https://www.bellingcat.com/feed/", "window_minutes": 2880 },
     { "name": "UKMTO discovery", "url": "https://news.google.com/rss/search?q=site:ukmto.org+when:2d&hl=en-US&gl=US&ceid=US:en", "window_minutes": 2880 },
