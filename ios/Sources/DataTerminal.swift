@@ -23,10 +23,15 @@ nonisolated struct DataPayload: Decodable, Sendable, Hashable {
         let ptrId: String?
         let ptrYear: Int?
         let currentValue: String?
+        let currentChange: Double?
+        let heldSince: String?
+        let heldSinceBound: Bool?
     }
     nonisolated struct Section: Decodable, Sendable, Hashable {
         let title: String
         var rows: [Row]
+        /// Rows available on the server when `rows` is only the first page.
+        var total: Int? = nil
     }
     nonisolated struct Page: Decodable, Sendable, Hashable {
         let total: Int
@@ -367,6 +372,7 @@ struct DataScreen: View {
     @State private var institutionalManager: String
     @State private var institutionalOffset: Int
     @State private var institutionalLoadingMore = false
+    @State private var institutionalListLoading: String?
     @State private var institutionalFlowSide: String
     @State private var institutionalFilter = "Buying"
     @State private var showAllQuarters = false
@@ -640,6 +646,35 @@ struct DataScreen: View {
         }
     }
 
+    /// Appends the next page of one 13F change list (new, increased, reduced or exited) to its section.
+    private func loadMoreInstitutionalList(_ list: String, section key: String) async {
+        guard route.path == "sec/institutions", let section = payload?.sections.first(where: { $0.title == key }),
+              let total = section.total, section.rows.count < total,
+              let url = NewswireAPI.validatedURL(FeedStore.shared.serverURL) else { return }
+        institutionalListLoading = key
+        defer { institutionalListLoading = nil }
+        var nextRoute = requestRoute
+        nextRoute.items["list"] = list
+        nextRoute.items["offset"] = String(section.rows.count)
+        nextRoute.items["page_size"] = "50"
+        do {
+            let next = try await NewswireAPI(baseURL: url).data(nextRoute)
+            guard let nextSection = next.sections.first(where: { $0.title == key }), var updated = payload else { return }
+            updated.sections = updated.sections.map { existing in
+                guard existing.title == key else { return existing }
+                var appended = existing
+                appended.rows.append(contentsOf: nextSection.rows)
+                appended.total = nextSection.total ?? existing.total
+                return appended
+            }
+            payload = updated
+            error = nil
+        } catch is CancellationError {
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
     private func loadHistory() async {
         guard let payload, let series = SeriesPresentation(route: route, payload: payload) else { return }
         do {
@@ -728,43 +763,52 @@ struct DataScreen: View {
 
     // MARK: 13F portfolio
 
+    private struct InstitutionalGroup: Hashable {
+        let key: String, title: String, list: String, order: String
+    }
+
     private func institutionalReport(_ payload: DataPayload) -> some View {
         let overview = payload.sections.first(where: { $0.title == "Quarter overview" })?.rows ?? []
         func metric(_ label: String) -> String { overview.first(where: { $0.label == label })?.value ?? "—" }
         let period = overview.first(where: { $0.label == "Reporting period" })
         let portfolio = overview.first(where: { $0.label == "Reported 13F value" })
         let filed = period?.detail.flatMap { $0.hasPrefix("Filed ") ? String($0.dropFirst(6)) : nil }
-        let priorPeriod = payload.sections.first(where: { $0.title == "Recent filings" })?.rows.dropFirst().first?.label.components(separatedBy: "as of ").last
+        let priorPeriod = overview.first(where: { $0.label == "Prior period" })?.value
+            ?? payload.sections.first(where: { $0.title == "Recent filings" })?.rows.dropFirst().first?.label.components(separatedBy: "as of ").last
         let nowRow = overview.first(where: { $0.label == "Current value" })
         let optionsRow = overview.first(where: { $0.label == "Options exposure" })
         let valueChange = portfolio?.detail?.firstMatch(of: /change ([+−-]\$[\d.]+[KMBT]?)/).map { String($0.1) }
         let holdings = payload.sections.first(where: { $0.title == "All reported positions" })
         let history = payload.sections.first(where: { $0.title == "Historical quarters" })?.rows ?? []
         let managerName = DataText.name(payload.title.replacingOccurrences(of: " institutional positions", with: ""))
-        let groups: [(String, String)] = institutionalFilter == "Buying"
-            ? [("New positions", "New positions"), ("Increased positions", "Added to")]
-            : [("Reduced positions", "Trimmed"), ("Exited positions", "Sold out")]
+        let periodEnd = period?.value
+        let asOf = periodEnd.map(DataText.day) ?? "quarter end"
+        let groups: [InstitutionalGroup] = institutionalFilter == "Buying"
+            ? [InstitutionalGroup(key: "New positions", title: "New positions", list: "new", order: "Largest first"),
+               InstitutionalGroup(key: "Increased positions", title: "Added to", list: "increased", order: "Biggest adds first")]
+            : [InstitutionalGroup(key: "Reduced positions", title: "Trimmed", list: "reduced", order: "Biggest cuts first"),
+               InstitutionalGroup(key: "Exited positions", title: "Sold out", list: "exited", order: "Largest first")]
 
         return VStack(alignment: .leading, spacing: 22) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(managerName).font(.title2.weight(.bold)).fixedSize(horizontal: false, vertical: true)
-                Text([period.map { DataText.quarter($0.value) + " holdings" }, filed.map { "filed " + DataText.day($0) }].compactMap(\.self).joined(separator: " · "))
+                Text([periodEnd.map { DataText.quarter($0) + " report · holdings on " + DataText.day($0) }, filed.map { "filed " + DataText.day($0) }].compactMap(\.self).joined(separator: ", "))
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             .padding(.horizontal, 4)
 
             DataCard {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Reported value").font(.subheadline).foregroundStyle(.secondary)
+                    Text("Portfolio value on \(asOf)").font(.subheadline).foregroundStyle(.secondary)
                     Text(portfolio?.value ?? "—").font(.system(.largeTitle, weight: .bold)).monospacedDigit()
                     if let valueChange {
-                        Text("\(valueChange) since \(priorPeriod.map(DataText.quarter) ?? "last quarter")")
+                        Text("\(valueChange) vs \(priorPeriod.map(DataText.day) ?? "last report")")
                             .font(.subheadline.weight(.medium)).monospacedDigit()
                             .foregroundStyle(valueChange.hasPrefix("+") ? Color.green : .orange)
                     }
                     if let nowRow {
                         HStack(spacing: 6) {
-                            Text("Now").foregroundStyle(.secondary)
+                            Text("Today, if unchanged").foregroundStyle(.secondary)
                             Text(nowRow.value).fontWeight(.semibold)
                             if let detail = nowRow.detail?.components(separatedBy: " vs ").first {
                                 Text(detail).foregroundStyle(detail.hasPrefix("+") ? Color.green : .orange)
@@ -781,14 +825,19 @@ struct DataScreen: View {
                 }
                 .padding(.vertical, 14)
                 Divider()
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: dynamicTypeSize.isAccessibilitySize ? 140 : 68), alignment: .leading)], alignment: .leading, spacing: 12) {
-                    activityStat("New", metric("New positions"), .green)
-                    activityStat("Added", metric("Increased positions"), .green)
-                    activityStat("Trimmed", metric("Reduced positions"), .orange)
-                    activityStat("Sold out", metric("Exited positions"), .red)
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Changes since \(priorPeriod.map(DataText.day) ?? "the last report")").font(.footnote).foregroundStyle(.secondary)
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: dynamicTypeSize.isAccessibilitySize ? 140 : 68), alignment: .leading)], alignment: .leading, spacing: 12) {
+                        activityStat("New", metric("New positions"), .green)
+                        activityStat("Added", metric("Increased positions"), .green)
+                        activityStat("Trimmed", metric("Reduced positions"), .orange)
+                        activityStat("Sold out", metric("Exited positions"), .red)
+                    }
                 }
                 .padding(.vertical, 14)
             }
+
+            institutionalTimingNote(managerName: managerName, period: periodEnd, prior: priorPeriod)
 
             Picker("Portfolio view", selection: $institutionalFilter) {
                 Text("Buying").tag("Buying")
@@ -798,36 +847,38 @@ struct DataScreen: View {
             .pickerStyle(.segmented)
 
             if institutionalFilter == "All", let holdings {
-                DataCard(title: "Largest positions", trailing: "\((payload.page?.total ?? holdings.rows.count).formatted()) total") {
+                DataCard(title: "All positions · \((payload.page?.total ?? holdings.rows.count).formatted())", trailing: "Largest first") {
                     ForEach(Array(holdings.rows.enumerated()), id: \.offset) { index, row in
-                        positionRow(row)
+                        positionRow(row, period: periodEnd)
                         if index < holdings.rows.count - 1 { RowDivider() }
                     }
                     if let page = payload.page, holdings.rows.count < page.total {
                         Divider()
-                        Button {
-                            Task { await loadMoreInstitutionalHoldings() }
-                        } label: {
-                            HStack(spacing: 8) {
-                                if institutionalLoadingMore { ProgressView().controlSize(.small) }
-                                Text(institutionalLoadingMore ? "Loading" : "Show \(min(page.limit, page.total - holdings.rows.count)) more")
-                            }
-                            .font(.body.weight(.medium))
-                            .frame(maxWidth: .infinity, minHeight: 48)
+                        loadMoreButton(count: min(page.limit, page.total - holdings.rows.count), of: page.total, loading: institutionalLoadingMore) {
+                            await loadMoreInstitutionalHoldings()
                         }
                         .disabled(institutionalLoadingMore)
                     }
                 }
             } else {
-                ForEach(groups, id: \.0) { key, title in
-                    let rows = payload.sections.first(where: { $0.title == key })?.rows ?? []
-                    DataCard(title: title, trailing: rows.isEmpty ? nil : "Largest \(rows.count) by value") {
+                ForEach(groups, id: \.self) { group in
+                    let section = payload.sections.first(where: { $0.title == group.key })
+                    let rows = section?.rows ?? []
+                    let total = section?.total ?? rows.count
+                    DataCard(title: "\(group.title) · \(total.formatted())", trailing: rows.isEmpty ? nil : group.order) {
                         if rows.isEmpty {
                             Text("None this quarter").font(.subheadline).foregroundStyle(.secondary).frame(minHeight: 48)
                         }
                         ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
-                            positionRow(row)
+                            positionRow(row, period: periodEnd)
                             if index < rows.count - 1 { RowDivider() }
+                        }
+                        if rows.count < total {
+                            Divider()
+                            loadMoreButton(count: min(50, total - rows.count), of: total, loading: institutionalListLoading == group.key) {
+                                await loadMoreInstitutionalList(group.list, section: group.key)
+                            }
+                            .disabled(institutionalListLoading != nil)
                         }
                     }
                 }
@@ -870,6 +921,43 @@ struct DataScreen: View {
         }
     }
 
+    /// The three things people misread on a 13F: what the dollar figures are, what "bought" can mean, and what "today" assumes.
+    private func institutionalTimingNote(managerName: String, period: String?, prior: String?) -> some View {
+        let window = period.map(DataText.quarterWindow) ?? "the quarter"
+        let day = period.map(DataText.day) ?? "quarter end"
+        let due = period.flatMap(DataText.next13FDue)
+        let lines: [(String, String)] = [
+            ("calendar", "13F reports only show what \(managerName) held on the last day of each quarter, not trade dates. A new or added position was bought sometime in \(window)."),
+            ("dollarsign.circle", "Dollar amounts are each position’s value on \(day). “First bought” is the first quarter it showed up in, from the last two years of reports."),
+            ("clock", "“If still held” uses today’s price on the reported shares. The fund may have traded since\(due.map { "; the next report is due by \($0)" } ?? "")."),
+        ]
+        return DataCard(title: "How to read this") {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(lines, id: \.1) { icon, text in
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        Image(systemName: icon).foregroundStyle(.secondary).frame(width: 18)
+                        Text(text).fixedSize(horizontal: false, vertical: true)
+                    }
+                    .font(.footnote)
+                }
+            }
+            .padding(.vertical, 14)
+        }
+    }
+
+    private func loadMoreButton(count: Int, of total: Int, loading: Bool, action: @escaping () async -> Void) -> some View {
+        Button {
+            Task { await action() }
+        } label: {
+            HStack(spacing: 8) {
+                if loading { ProgressView().controlSize(.small) }
+                Text(loading ? "Loading" : "Show \(count.formatted()) more of \(total.formatted())")
+            }
+            .font(.body.weight(.medium))
+            .frame(maxWidth: .infinity, minHeight: 48)
+        }
+    }
+
     private func activityStat(_ title: String, _ value: String, _ tint: Color) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(Int(value).map { $0.formatted() } ?? value).font(.title3.weight(.semibold)).monospacedDigit().foregroundStyle(tint)
@@ -879,28 +967,38 @@ struct DataScreen: View {
     }
 
     @ViewBuilder
-    private func positionRow(_ row: DataPayload.Row) -> some View {
+    private func positionRow(_ row: DataPayload.Row, period: String?) -> some View {
         let name = DataText.name(row.label)
         let change = DataText.positionChange(row.changeLabel)
-        let content = HStack(spacing: 12) {
+        let timing = DataText.holdingTiming(changeLabel: row.changeLabel, heldSince: row.heldSince, bound: row.heldSinceBound ?? false, period: period)
+        let content = HStack(alignment: .top, spacing: 12) {
             Monogram(text: row.symbol ?? Monogram.initials(name))
-            VStack(alignment: .leading, spacing: 2) {
-                Text(name).font(.body.weight(.medium)).foregroundStyle(.primary).lineLimit(2)
-                if let detail = DataText.holdingDetail(row.detail) {
-                    Text(detail).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(name).font(.body.weight(.medium)).foregroundStyle(.primary).lineLimit(2)
+                    Spacer(minLength: 0)
+                    Text(row.value).font(.body.weight(.semibold)).monospacedDigit().fixedSize()
                 }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            VStack(alignment: .trailing, spacing: 2) {
-                Text(row.value).font(.body.weight(.semibold)).monospacedDigit()
-                if let change {
-                    Text(change.text).font(.footnote.weight(.semibold)).monospacedDigit().foregroundStyle(change.tint)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    if let detail = DataText.holdingDetail(row.detail) {
+                        Text(detail).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                    if let change {
+                        Text(change.text).font(.footnote.weight(.semibold)).monospacedDigit().foregroundStyle(change.tint).fixedSize()
+                    }
+                }
+                if let timing {
+                    HStack(alignment: .firstTextBaseline, spacing: 5) {
+                        Image(systemName: "calendar").imageScale(.small)
+                        Text(timing).fixedSize(horizontal: false, vertical: true)
+                    }
+                    .font(.footnote).foregroundStyle(.secondary)
                 }
                 if let now = row.currentValue {
-                    Text(now).font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                    todayValue(now, change: row.currentChange, since: period)
                 }
             }
-            .fixedSize()
         }
         .padding(.vertical, 10)
         .frame(minHeight: 58)
@@ -912,6 +1010,21 @@ struct DataScreen: View {
         } else {
             content
         }
+    }
+
+    /// "$151.5M now · −31.5%" → "If still held: $151.5M today, −31.5% since Sep 30".
+    private func todayValue(_ text: String, change: Double?, since period: String?) -> some View {
+        let parts = text.components(separatedBy: " now")
+        let amount = parts.first ?? text
+        let percent = change.map { "\($0 >= 0 ? "+" : "−")\(abs($0).formatted(.number.precision(.fractionLength(1))))%" }
+            ?? parts.dropFirst().first?.replacingOccurrences(of: " · ", with: "").trimmingCharacters(in: .whitespaces)
+        let up = change.map { $0 >= 0 } ?? (percent?.hasPrefix("+") ?? true)
+        let sinceDay = period.map(DataText.day) ?? "the report"
+        let line = percent.map { Text("If still held: \(amount) today, \(Text($0).foregroundStyle(up ? Color.green : .orange)) since \(sinceDay)") }
+            ?? Text("If still held: \(amount) today")
+        return line
+            .font(.footnote).monospacedDigit().foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     // MARK: Institutional flow

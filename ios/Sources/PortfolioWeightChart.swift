@@ -6,7 +6,7 @@ import SwiftUI
     struct Day: Identifiable, Hashable { let symbol: String; let date: Date; let percent: Double; var id: String { symbol + date.description } }
 
     private(set) var days: [Day] = []
-    private(set) var loading = false
+    private(set) var loading = true
     private(set) var failed = false
     private(set) var missing: [String] = []
     nonisolated private static let cache = Cache()
@@ -109,17 +109,15 @@ struct GoalWeightChart: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            header
-            if history.days.isEmpty {
-                Group {
-                    if history.loading { ProgressView() }
-                    else { Text(history.failed ? "Price history isn't available for every holding, so there is no day-by-day chart." : "No history yet.").font(.footnote).foregroundStyle(.secondary) }
-                }
-                .frame(maxWidth: .infinity, minHeight: 180)
+            if history.days.isEmpty && !history.loading {
+                // Nothing to plot: one quiet line instead of a big dash over an empty box.
+                Text(history.failed ? "Price history isn't available for every holding, so there is no day-by-day chart." : "No history yet.")
+                    .font(.footnote).foregroundStyle(.secondary)
             } else {
-                chart
+                header
+                if history.days.isEmpty { ProgressView().frame(maxWidth: .infinity, minHeight: 180) } else { chart }
+                Text("Last 30 days. Estimated from today's holdings at each day's closing price.").font(.caption).foregroundStyle(.secondary)
             }
-            Text("Last 30 days. Estimated from today's holdings at each day's closing price.").font(.caption).foregroundStyle(.secondary)
         }
         .task(id: shown) { await history.load(symbols: shown, snapshot: store.snapshot) }
     }
