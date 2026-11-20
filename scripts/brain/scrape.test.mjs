@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { capForRanking, chooseBalanced, parseFeed } from './scrape.mjs';
+import { capForRanking, chooseBalanced, guessCategory, leadSentences, parseFeed, plainPost, ruleRank, ruleScore } from './scrape.mjs';
 
 test('parseFeed reads RSS and rejects stale entries', () => {
   const fresh = new Date().toUTCString();
@@ -48,4 +48,53 @@ test('capForRanking bounds each source and the total paper pool', () => {
   assert.equal(capped.filter(item => item.kind === 'paper').length, 3);
   assert.equal(capped.filter(item => item.source === 'Semafor').length, 2);
   assert.equal(capped.filter(item => item.source === 'Lobsters').length, 1);
+});
+
+const taste = {
+  signals: [
+    { type: 'like', category: 'Security', title: 'Cloudflare outage takes down dashboard and API' },
+    { type: 'like', category: 'AI', title: 'Anthropic releases new Claude model with stronger coding' },
+    { type: 'save', category: 'Markets', title: 'Nvidia earnings beat as datacenter revenue jumps' },
+    { type: 'dislike', category: 'Tech', title: 'Celebrity smartphone review roundup' },
+  ],
+  recent: ['Rust compiler adds faster incremental builds for large workspaces'],
+};
+
+test('rule ranking favors liked topics and drops disliked items and feed repeats', () => {
+  const liked = ruleScore({ title: 'Cloudflare dashboard outage hits EU customers', abstract: 'The API and dashboard are degraded.', boost: 0.5 }, taste);
+  const unrelated = ruleScore({ title: 'Hurried Announcement: Alessandro Masullo GRH', abstract: '', boost: 1.2 }, taste);
+  const disliked = ruleScore({ title: 'Celebrity smartphone roundup for the holidays', abstract: '', boost: 0 }, taste);
+  const repeat = ruleScore({ title: 'Rust compiler ships faster incremental builds for workspaces', abstract: '', boost: 1.5 }, taste);
+  assert.ok(liked >= 8, `liked scored ${liked}`);
+  assert.ok(unrelated < 8, `unrelated scored ${unrelated}`);
+  assert.ok(disliked <= 3, `disliked scored ${disliked}`);
+  assert.equal(repeat, 1);
+});
+
+test('rule-ranked items get a guessed category and are marked', () => {
+  const [security, paper, markets] = ruleRank([
+    { title: 'Critical exploit found in popular VPN', kind: 'link' },
+    { title: 'Scaling laws for sparse models', kind: 'paper' },
+    { title: 'Nvidia shares fall after earnings', kind: 'news' },
+  ], taste);
+  assert.deepEqual([security.category, paper.category, markets.category], ['Security', 'AI', 'Markets']);
+  assert.ok(security.ruled && paper.ruled && markets.ruled);
+  assert.equal(guessCategory({ title: 'New Rust release', kind: 'link' }), 'Tech');
+});
+
+test('plain posts use the source text, never push, and say they were not summarized', () => {
+  const post = plainPost({ key: 'hn:1', kind: 'link', title: 'Cloudflare dashboard outage hits EU customers', abstract: '', url: 'https://example.com/a', source: 'example.com', note: '420 points on Hacker News', category: 'Security', score: 9.4, ruled: true },
+    { text: 'Cloudflare reported degraded dashboard and API access in Europe. Engineers are investigating. ' + 'More detail follows. '.repeat(40), from: 'page' });
+  assert.equal(post.title, 'Cloudflare dashboard outage hits EU customers');
+  assert.match(post.summary, /^Cloudflare reported degraded dashboard and API access in Europe\. Engineers are investigating\./);
+  assert.ok(post.summary.length <= 450);
+  assert.equal(post.priority, 7);
+  assert.match(post.body, /Not summarized/);
+  assert.match(post.body, /keyword rules/);
+  assert.equal(plainPost({ title: 'No text', abstract: '', score: 9 }, null), null);
+});
+
+test('leadSentences keeps whole sentences within the limit', () => {
+  assert.equal(leadSentences('One two three. Four five six. Seven.', 20), 'One two three.');
+  assert.equal(leadSentences('No terminal punctuation here', 10), 'No termina');
 });
