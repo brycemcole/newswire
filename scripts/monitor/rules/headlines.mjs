@@ -11,6 +11,9 @@ import { timeline } from '../x.mjs';
 import { readableCopy, walled } from '../syndication.mjs';
 import { archiveHeadlines } from '../headline-archive.mjs';
 import { classificationCandidates } from '../headline-selection.mjs';
+import { fallbackVerdict, selectFallback, watchedSymbols } from '../headline-fallback.mjs';
+import { devices } from '../apns.mjs';
+import { token } from '../publish.mjs';
 import { canonicalUrl, dedupeCandidates, exactDuplicate, nearIdentical, recordDedupe } from '../headline-dedupe.mjs';
 
 export const id = 'headlines';
@@ -354,6 +357,28 @@ export async function run({ lookbackHours } = {}) {
   }
   if (classifyError) failures.push(`headlines classifier: ${classifyError.message}`);
 
+  // Classifier down: decide the remaining stories with deterministic rules instead of publishing nothing.
+  let fallback = [];
+  if (classifyError && config.fallback !== false) {
+    let watched = [];
+    try {
+      watched = await watchedSymbols({ load: async () => devices(await token()) });
+    } catch (error) {
+      failures.push(`headlines fallback symbols: ${error.message}`);
+    }
+    const trusted = config.fallback_publishers ?? config.preferred_publishers ?? [];
+    const maxAgeMs = (config.fallback_max_age_minutes ?? 180) * 60000;
+    const eligible = [...seen.values()].filter(entry => !state[entry.key] && !verdicts[entry.key] && !entry.duplicate);
+    for (const entry of eligible) entry.fallback = fallbackVerdict(entry.item, { watched, matched: entry.matched, trusted, maxAgeMs });
+    if (historyAvailable) {
+      ({ chosen: fallback } = selectFallback(eligible.filter(entry => entry.fallback), published, config.fallback_max_per_run ?? 6));
+      for (const entry of fallback) for (const id of entry.fallback.topics) {
+        const topic = topics.find(candidate => candidate.id === id);
+        if (topic && !entry.matched.includes(topic)) entry.matched.push(topic);
+      }
+    } else if (eligible.some(entry => entry.fallback)) failures.push('headlines fallback: deferred because published history is unavailable');
+  }
+
   const candidates = [...seen.values()]
     .filter(entry => entry.matched.length && verdicts[entry.key] && !state[entry.key] && !entry.duplicate)
     .sort((a, b) => Number(Boolean(a.item.x)) - Number(Boolean(b.item.x)) || rank[a.priority ?? 'normal'] - rank[b.priority ?? 'normal'] || b.item.stamp - a.item.stamp);
@@ -372,6 +397,7 @@ export async function run({ lookbackHours } = {}) {
   await checkpoint();
 
   const publishable = [...seen.values()].filter(entry => entry.matched.length && verdicts[entry.key] && !state[entry.key] && !entry.duplicate && !entry.deferred);
+  publishable.push(...fallback);
   await Promise.all(publishable.map(async entry => { entry.item.url = await resolveGoogleNews(entry.item.url); }));
   // A Bloomberg story waits up to `syndication_wait_minutes` for Yahoo's readable copy, then publishes with its own link.
   const wait = (config.syndication_wait_minutes ?? 10) * 60000;
@@ -381,7 +407,26 @@ export async function run({ lookbackHours } = {}) {
     else if (Date.now() - entry.item.stamp < wait) entry.held = true;
   }));
 
-  for (const { key, item, matched, priority, significance, format } of publishable.filter(entry => !entry.held)) {
+  for (const { key, item, matched, priority, significance, format, fallback: rule } of publishable.filter(entry => !entry.held)) {
+    if (rule) {
+      const labels = matched.map(topic => topic.label ?? topic.id).join(', ');
+      const why = rule.reason === 'symbol' ? `it names ${rule.tickers.join(', ')}, which you hold or watch` : rule.reason === 'curated-source' ? `it came from a curated ${labels} source` : `a trusted publisher's headline matched rules for ${labels}`;
+      events.push({
+        key,
+        title: item.title,
+        summary: item.summary,
+        body: `Headline and link as published by ${item.publisher} at ${new Date(item.stamp).toISOString().replace('T', ' ').slice(0, 16)} UTC. The headline classifier was unavailable, so this story was selected by fixed rules because ${why}. It has not been screened for format, priority or duplicates by the classifier.`,
+        source: item.publisher,
+        url: item.url,
+        image_url: item.image,
+        published_at: new Date(item.stamp).toISOString(),
+        category: matched[0]?.category ?? 'markets',
+        priority: 'normal',
+        tickers: rule.tickers,
+        tags: [...new Set(['deterministic', 'headlines', 'fallback', `fallback-${rule.reason}`, ...matched.map(topic => topic.id)])],
+      });
+      continue;
+    }
     const best = matched.reduce((top, topic) => (rank[topic.priority ?? 'normal'] < rank[top.priority ?? 'normal'] ? topic : top), matched[0]);
     const labels = matched.map(topic => topic.label ?? topic.id).join(', ');
     const when = new Date(item.stamp).toISOString().replace('T', ' ').slice(0, 16);
