@@ -460,13 +460,11 @@ struct MarketResearchView: View {
                 Label(pulse.call?.headline ?? "Outlook unavailable", systemImage: pulse.arrow)
                     .font(.title2.weight(.semibold)).foregroundStyle(pulse.tint)
                 if let summary = pulse.summary { Text(summary).font(.subheadline) }
-                Text("Updated \(pulse.asOf.formatted(date: .omitted, time: .shortened)) · refreshes every minute")
+                Text("Updated \(pulse.asOf.formatted(date: .omitted, time: .shortened))")
                     .font(.caption).foregroundStyle(.secondary)
                 if let learning = pulse.learning {
                     Text(learning.note).font(.caption).foregroundStyle(.secondary)
                 }
-                Text("This reading can change as prices and news change. The saved forecast below stays unchanged for comparison.")
-                    .font(.caption).foregroundStyle(.secondary)
             }
             .padding(.vertical, 4)
         }

@@ -197,16 +197,16 @@ struct MarketSessionCard: View {
                     }
                     if !open && !scheduled {
                         Label("Futures scheduled to resume \(MarketClock.futuresReopen(after: now).formatted(.dateTime.weekday(.abbreviated).hour().minute()))", systemImage: "moon.stars")
-                        Text("Holiday hours may differ. Fresh quotes confirm trading has resumed.").font(.caption).foregroundStyle(.secondary)
                     }
                     if let upcoming = PulseStore.shared.current?.comingUp?.first(where: { $0.at > now }) {
                         Label(upcoming.title, systemImage: "calendar")
                         Text(upcoming.at, format: .dateTime.weekday().hour().minute()).font(.caption).foregroundStyle(.secondary)
                     } else if fixture != nil {
                         Label("Next up · Economic calendar", systemImage: "calendar")
-                        Text("Keep important releases and earnings in view before the next session.").font(.caption).foregroundStyle(.secondary)
                     }
-                    Text(open ? "Index changes are measured from the previous close." : "Futures changes use the previous settlement reference. Futures prices can differ from the cash indexes.").font(.caption).foregroundStyle(.secondary)
+                    if !open {
+                        Text("Futures changes are from the previous settlement.").font(.caption).foregroundStyle(.secondary)
+                    }
                     Button("Set a market alert", systemImage: "bell") { alerts = true }.font(.subheadline.weight(.medium)).tint(.wireAccent)
                 }.font(.subheadline).padding(.top, 2)
             }

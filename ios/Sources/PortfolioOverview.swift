@@ -163,20 +163,35 @@ struct PortfolioOverview: View {
     private var series: PerformanceSeries? { performance.series[range] }
     private var recorded: [PerformancePoint] { performance.recorded[range] ?? [] }
     private var confirmedFunding: AccountFunding? { funding.combined(for: accounts) }
+    /// Shown only when it says something the number alone doesn't: which kind of value is being scrubbed, or that
+    /// the total is built from holdings because the brokerage reported no balance.
+    private var eyebrow: String? {
+        if selected != nil { return series == nil ? "Recorded value" : "Estimated value" }
+        return snapshot.reportedValue == nil ? "Holdings + cash" : nil
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text(selected == nil ? "\(title) · \(snapshot.reportedValue == nil ? "holdings value" : "brokerage value")" : (series == nil ? "Recorded value at selected sync" : "Estimated value at selected date"))
-                    .font(.subheadline).foregroundStyle(.secondary)
-                Text(Money.text(selected?.value ?? snapshot.totalValue))
-                    .font(.system(.largeTitle, design: .rounded).weight(.bold)).monospacedDigit()
-                    .minimumScaleFactor(0.6).lineLimit(1)
-                    .numericTextTransition(value: selected?.value ?? snapshot.totalValue)
-                if let selected {
-                    Text(selected.date.formatted(.dateTime.month(.abbreviated).day().year()))
-                        .font(.caption).foregroundStyle(.secondary)
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 5) {
+                    if let eyebrow {
+                        Text(eyebrow).font(.subheadline).foregroundStyle(.secondary)
+                    }
+                    Text(Money.text(selected?.value ?? snapshot.totalValue))
+                        .font(.system(.largeTitle, design: .rounded).weight(.bold)).monospacedDigit()
+                        .minimumScaleFactor(0.6).lineLimit(1)
+                        .numericTextTransition(value: selected?.value ?? snapshot.totalValue)
+                    if let selected {
+                        Text(selected.date.formatted(.dateTime.month(.abbreviated).day().year()))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
+                Spacer(minLength: 0)
+                Button { explainingHistory = true } label: {
+                    Image(systemName: "info.circle").font(.body).foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel(series == nil && !recorded.isEmpty ? "About recorded balances" : series?.estimatedFromHoldings == true ? "About this estimate" : "About transaction-based performance")
             }
             if let totals = confirmedFunding, let value = snapshot.reportedValue, let gain = totals.gain(value: value) {
                 VStack(alignment: .leading, spacing: 5) {
@@ -187,37 +202,20 @@ struct PortfolioOverview: View {
                     HStack(alignment: .top, spacing: 16) {
                         metric("Money in", Money.text(totals.contributed))
                         metric("Money out", Money.text(totals.withdrawn ?? 0))
-                        metric("Brokerage value", Money.text(value))
                     }
 
                 }
             } else {
                 HStack(alignment: .top, spacing: 16) {
-                    metric(snapshot.reportedValue == nil ? "Holdings + cash" : "Brokerage value", Money.text(snapshot.totalValue))
                     metric("Lifetime gain", "Confirm funding")
-                }
-                if accounts.count == 1, let account = accounts.first, let history = account.history {
-                    let flows = InvestmentCashFlows(history: history, accountID: account.id.name, institution: account.institution)
-                    HStack(alignment: .top, spacing: 16) {
+                    if accounts.count == 1, let account = accounts.first, let history = account.history {
+                        let flows = InvestmentCashFlows(history: history, accountID: account.id.name, institution: account.institution)
                         metric("Recorded deposits", Money.text(flows.contributed))
                         metric("Recorded withdrawals", Money.text(flows.withdrawn))
                     }
-                    Text("Review Plaid history to confirm lifetime funding. Purchases and sales are included in activity, not counted as new deposits.")
-                        .font(.caption).foregroundStyle(.secondary)
-                } else {
-                    Text(snapshot.reportedValue == nil ? "Sync brokerage balances and review funding history to calculate return." : "Review funding history or set lifetime contributions to calculate account return.")
-                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
-            if series == nil, let first = recorded.first {
-                Text("Recorded balances · Since \(first.date.formatted(.dateTime.month(.abbreviated).day()))")
-                    .font(.caption.weight(.medium)).foregroundStyle(.secondary)
-            }
             chart
-            if series == nil, !recorded.isEmpty {
-                Text("Includes deposits and withdrawals, not just investment gains. Earlier history is unavailable.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
             if let series {
                 let change = selected.map { series.change(at: $0) } ?? series.change
                 let percent = selected.flatMap { series.percent(at: $0) } ?? (selected == nil ? series.percent : nil)
@@ -237,11 +235,6 @@ struct PortfolioOverview: View {
                 Label("Funding & trades", systemImage: "arrow.down.arrow.up")
                     .font(.subheadline)
             }
-            Button { explainingHistory = true } label: {
-                Label(series == nil && !recorded.isEmpty ? "About recorded balances" : series?.estimatedFromHoldings == true ? "About this estimate" : "Transaction-based performance", systemImage: "info.circle")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            .buttonStyle(.borderless)
             .alert("About this chart", isPresented: $explainingHistory) {
                 Button("OK", role: .cancel) {}
             } message: {
