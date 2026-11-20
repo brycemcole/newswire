@@ -251,22 +251,22 @@ extension View {
 
 struct IdeaDetailView: View {
     let idea: GoalIdea
+    @State private var asking: AskContext?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 Text(idea.title).font(.title2.weight(.bold))
-                GoalWeightChart(symbols: idea.symbol.isEmpty ? [] : [idea.symbol])
+                if !idea.symbol.isEmpty { GoalWeightChart(symbols: [idea.symbol]) }
                 Text(idea.detail).font(.body).foregroundStyle(.secondary)
                 GlassEffectContainer(spacing: 10) {
                   VStack(spacing: 10) {
                     if !idea.symbol.isEmpty {
                         NavigationLink { QuoteDetail(symbol: idea.symbol) } label: { Text("Open \(idea.symbol)").frame(maxWidth: .infinity) }.buttonStyle(.glass)
                     }
-                    Button { 
-                        let context = AskContext(symbol: idea.symbol, name: idea.symbol, screen: "An idea shown on the reader's Portfolio: \"\(idea.title)\". \(idea.detail) They want to talk it through.")
-                        AppNavigator.shared.setScreen(context, for: .portfolio)
-                        AppNavigator.shared.select(.ask)
+                    Button {
+                        asking = AskContext(symbol: idea.symbol, name: idea.symbol.isEmpty ? "Markets" : idea.symbol,
+                                            screen: "An idea shown on the reader's Portfolio: \"\(idea.title)\". \(idea.detail) They want to talk it through.")
                     } label: { Text("Talk it through in Ask").frame(maxWidth: .infinity) }.buttonStyle(.glass)
                     Button(role: .destructive) { GoalStore.shared.dismissIdea(idea.id) } label: { Text("Not interested").frame(maxWidth: .infinity) }.buttonStyle(.glass)
                   }
@@ -277,6 +277,9 @@ struct IdeaDetailView: View {
         }
         .navigationBarTitleDisplayMode(.inline)
         .scrollEdgeEffectStyle(.soft, for: .all)
+        // Ask opens right here as a sheet. Switching to the Ask tab did nothing when Portfolio was itself a sheet
+        // over Today, because the tab changed underneath it.
+        .sheet(item: $asking) { AskSheet(context: $0, initialQuestion: "Help me work through this: \(idea.title)") }
     }
 }
 
@@ -330,6 +333,7 @@ struct AddGoalView: View {
 struct GoalDetailView: View {
     let id: UUID
     @State private var goals = GoalStore.shared
+    @State private var asking: AskContext?
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -353,10 +357,8 @@ struct GoalDetailView: View {
                         HStack(spacing: 12) {
                             Button("Ask about this") {
                                 let lead = goal.review?.actions.first
-                                let context = AskContext(symbol: lead?.symbol ?? "", name: lead?.symbol ?? "Markets",
-                                                         screen: "The portfolio goal \"\(goal.text)\" and its latest review: \(goal.review?.headline ?? ""). \(goal.review?.body.prefix(600) ?? "")")
-                                AppNavigator.shared.setScreen(context, for: .portfolio)
-                                AppNavigator.shared.select(.ask)
+                                asking = AskContext(symbol: lead?.symbol ?? "", name: lead?.symbol ?? "Markets",
+                                                    screen: "The portfolio goal \"\(goal.text)\" and its latest review: \(goal.review?.headline ?? ""). \(goal.review?.body.prefix(600) ?? "")")
                             }
                             .buttonStyle(.glassProminent)
                             Button(goals.reviewing.contains(id) ? "Reviewing…" : "Review now") { Task { await goals.review(id) } }
@@ -374,6 +376,7 @@ struct GoalDetailView: View {
         }
         .navigationBarTitleDisplayMode(.inline)
         .scrollEdgeEffectStyle(.soft, for: .all)
+        .sheet(item: $asking) { AskSheet(context: $0, initialQuestion: "Help me with this goal: \(goals.goal(id)?.text ?? "")") }
         .asksAbout(AskContext(screen: goals.goal(id).map { "The portfolio goal \"\($0.text)\" and its latest review: \($0.review?.headline ?? "not reviewed yet"). \($0.review?.body.prefix(500) ?? "")" } ?? ""))
     }
 
