@@ -393,7 +393,7 @@ struct PaperTradesSection: View {
             } header: {
                 Text("Paper Trades")
             } footer: {
-                Text("Hypothetical positions from the What if simulator on any quote. Price return only.")
+                Text("Hypothetical · price return only")
             }
         }
     }

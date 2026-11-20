@@ -313,8 +313,6 @@ struct QuoteDetail: View {
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
                     }
-                    Text("Events provide context; they do not establish what caused a price move.")
-                        .font(.caption2).foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(14)

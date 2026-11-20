@@ -150,7 +150,7 @@ struct PortfolioView: View {
                             .textCase(nil)
                         }
                     } footer: {
-                        Text("Tap a holding for positions by account. Partial unrealized gain excludes missing costs; ≈ indicates an estimate from trade history.")
+                        Text("≈ estimated from trade history")
                     }
                 } else if !store.activeItems.isEmpty {
                     Section { Text(store.syncing ? "Syncing…" : "No holdings").foregroundStyle(.secondary) }

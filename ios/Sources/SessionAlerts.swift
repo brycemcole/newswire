@@ -66,12 +66,6 @@ struct SessionAlertsView: View {
         NavigationStack {
             Form {
                 Section {
-                    Label("Be ready for the next move", systemImage: "bell.badge")
-                        .font(.headline)
-                    Text("Choose a moment in the market day, or let a futures move bring you back.")
-                        .font(.subheadline).foregroundStyle(.secondary)
-                }
-                Section {
                     Picker("When", selection: $draft.kind) {
                         Text("Before the open").tag("preopen")
                         Text("After the close").tag("close")

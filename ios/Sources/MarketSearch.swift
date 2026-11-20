@@ -614,7 +614,7 @@ struct MarketSearchSheet: View, Equatable {
                             ToolIcon(symbol: "square.grid.2x2.fill", tint: Color.wireAccent, size: 34)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("All data tools").font(.body.weight(.semibold)).foregroundStyle(.primary)
-                                Text("Search \(TerminalFunction.all.count) tools and pin favorites")
+                                Text("\(TerminalFunction.all.count) tools")
                                     .font(.subheadline).foregroundStyle(.secondary)
                             }
                             Spacer()
