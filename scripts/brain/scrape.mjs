@@ -3,7 +3,8 @@ import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { token } from '../monitor/publish.mjs';
 import { notify, wake } from '../monitor/apns.mjs';
-import { complete, model as freeModel } from '../ai/completion.mjs';
+import { complete } from '../ai/completion.mjs';
+import { model as freeModel } from '../ai/deepseek.mjs';
 
 const origin = process.env.NEWSWIRE_URL ?? 'https://bryce-newswire.bryce-e19.workers.dev';
 const stateFile = process.env.BRAIN_SCRAPE_STATE ?? join(homedir(), '.config', 'newswire', 'brain-state.json');
@@ -193,6 +194,39 @@ function tasteText(taste) {
   return `Liked or saved:\n${liked.join('\n') || '- (none yet)'}\n\nDisliked:\n${disliked.join('\n') || '- (none yet)'}\n\nAlready in the feed recently (repeats score low):\n${taste.recent.slice(0, 60).map(title => `- ${squash(title).slice(0, 140)}`).join('\n')}`;
 }
 
+// Deterministic ranking for when the AI ranker is unavailable: overlap with liked and disliked titles,
+// repeats of the recent feed, and source popularity. Scores stay on the AI's 1-10 scale.
+const stop = new Set('about after again against also among another because before being between could during every first from have into just like made make many more most much must never only other over same should since some such than that their them then there these they this those through under until very want were what when where which while will with would your'.split(' '));
+const terms = text => new Set((String(text ?? '').toLowerCase().match(/[a-z0-9][a-z0-9+.-]{2,}/g) ?? []).map(word => word.replace(/[.-]+$/, '')).filter(word => word.length >= 4 && !stop.has(word) && !/^\d+$/.test(word)));
+const shared = (a, b) => [...a].filter(word => b.has(word)).length;
+
+export function guessCategory(item) {
+  const text = `${item.title} ${item.abstract ?? ''}`;
+  if (item.kind === 'paper') return 'AI';
+  if (/\b(vulnerab|exploit|breach|ransomware|malware|CVE-|zero-day|hack(ed|ers?)|phishing|backdoor)/i.test(text)) return 'Security';
+  if (/\b(Fed|inflation|GDP|jobs report|payrolls|recession|tariffs?|interest rates?|Treasury)\b/.test(text)) return 'Macro';
+  if (/\b(stocks?|shares|earnings|S&P|Nasdaq|IPO|investors?|market cap|revenue)\b/i.test(text)) return 'Markets';
+  if (/\b(drug|FDA|clinical|trial|gene|protein|vaccine|cancer|biotech)\b/i.test(text)) return 'Biotech';
+  if (/\b(AI|LLMs?|GPT|Claude|Gemini|OpenAI|Anthropic|DeepMind|neural|model weights|transformer|agents?)\b/.test(text)) return 'AI';
+  if (/\b(physics|astronom|telescope|species|climate|fossil|quantum)\b/i.test(text)) return 'Science';
+  return 'Tech';
+}
+
+export function ruleScore(item, taste) {
+  const words = terms(`${item.title} ${item.abstract?.slice(0, 320) ?? ''}`);
+  const title = terms(item.title);
+  if ((taste.recent ?? []).some(recent => shared(title, terms(recent)) >= 3)) return 1;
+  const vocabulary = type => new Set((taste.signals ?? []).filter(signal => (signal.type === 'dislike') === (type === 'dislike')).flatMap(signal => [...terms(signal.title || signal.content)]));
+  const liked = shared(words, vocabulary('like'));
+  const disliked = shared(words, vocabulary('dislike'));
+  const score = 5 + Math.min(3, liked) - Math.min(4, 2 * disliked) + Math.min(1, item.boost ?? 0);
+  return Math.max(1, Math.min(10, Math.round(score * 10) / 10));
+}
+
+export function ruleRank(items, taste) {
+  return items.map(item => ({ ...item, score: ruleScore(item, taste), category: guessCategory(item), ruled: true }));
+}
+
 const rankPrompt = `You choose stories for Bryce's personal reading feed. Score each candidate 1-10 for how much he would want to read it, judged against his taste signals. Be strict: in a typical batch of 30 only one to three items deserve 8 or more, and most papers score 3-6.
 9-10: squarely on his strongest interests and a notable development people will talk about.
 8: clearly relevant with a concrete, surprising, or practically useful result.
@@ -265,12 +299,18 @@ async function write(item) {
   const text = item.kind === 'paper' ? await paperText(item.arxiv) : await linkText(item.url);
   const context = [`Original title: ${item.title}`, item.authors?.length ? `Authors: ${item.authors.slice(0, 8).join(', ')}` : '', item.abstract ? `Abstract: ${item.abstract}` : '', text ? `\nFull text (${text.from}):\n${text.text}` : ''].filter(Boolean).join('\n');
   if (!text && !item.abstract) return null;
-  const draft = await ai(writeModel, writePrompt, context, 3000);
+  let draft;
+  try {
+    draft = await ai(writeModel, writePrompt, context, 3000);
+    if (!squash(String(draft?.title ?? '')) || !squash(String(draft?.summary ?? ''))) throw new Error('AI draft missing title or summary');
+  } catch (error) {
+    console.warn(`brain: writer unavailable for ${item.key} (${error.message}); posting the source's own text`);
+    return plainPost(item, text);
+  }
   const title = squash(String(draft.title ?? '')).slice(0, 120);
   const takeaway = squash(String(draft.takeaway ?? ''));
   const summary = squash(String(draft.summary ?? ''));
   const points = (Array.isArray(draft.points) ? draft.points : []).map(point => squash(String(point))).filter(Boolean).slice(0, 6);
-  if (!title || !summary) throw new Error('AI draft missing title or summary');
   const credit = item.kind === 'paper'
     ? `Original title: ${item.title}. ${item.authors?.length ? `${item.authors.slice(0, 4).join(', ')}${item.authors.length > 4 ? ' et al' : ''}. ` : ''}Summarized from the arXiv ${text?.from ?? 'abstract'}${item.note?.includes('upvotes') ? `; ${item.note}` : ''}.`
     : [`Original title: ${item.title}.`, item.note, item.discussion ? `Discussion: ${item.discussion}` : ''].filter(Boolean).join(' ');
@@ -278,7 +318,34 @@ async function write(item) {
     draft.why ? `<p><strong>Why it matters:</strong> ${escape(squash(String(draft.why)))}</p>` : '', `<p><em>${escape(credit)}</em></p>`].join('');
   return {
     content: `${title}. ${takeaway || summary}`.slice(0, 600), title, summary: summary.slice(0, 2000), body, source: item.source, source_url: item.url,
-    source_type: item.kind === 'paper' ? 'paper' : item.kind === 'tech' ? 'tech' : 'news', category: item.category, priority: Math.round(Math.max(1, Math.min(10, item.score))), ...(item.image ? { image_url: item.image } : {}),
+    source_type: item.kind === 'paper' ? 'paper' : item.kind === 'tech' ? 'tech' : 'news', category: item.category, priority: postPriority(item), ...(item.image ? { image_url: item.image } : {}),
+  };
+}
+
+// Rule-ranked items never reach the push threshold (8), since no model judged them.
+const postPriority = item => Math.round(Math.max(1, Math.min(item.ruled ? 7 : 10, item.score)));
+
+// The first sentences of the source's own text, without rewriting anything.
+export function leadSentences(text, limit = 450) {
+  const sentences = squash(String(text ?? '')).match(/[^.!?]+[.!?]+(?=\s|$)/g) ?? [];
+  let lead = '';
+  for (const sentence of sentences) {
+    if ((lead + sentence).length > limit) break;
+    lead += sentence;
+  }
+  return squash(lead || String(text ?? '').slice(0, limit));
+}
+
+export function plainPost(item, text) {
+  const summary = leadSentences(item.abstract || text?.text || '');
+  if (summary.length < 40) return null;
+  const title = squash(item.title).slice(0, 120);
+  const credit = [item.kind === 'paper' && item.authors?.length ? `${item.authors.slice(0, 4).join(', ')}${item.authors.length > 4 ? ' et al' : ''}.` : '', item.note, item.discussion ? `Discussion: ${item.discussion}` : ''].filter(Boolean).join(' ');
+  const body = [`<p>${escape(summary)}</p>`, credit ? `<p><em>${escape(credit)}</em></p>` : '',
+    `<p><em>Not summarized: the AI writer was unavailable, so this is the original title and the source's opening text${item.ruled ? ', chosen by keyword rules rather than the AI ranker' : ''}.</em></p>`].join('');
+  return {
+    content: `${title}. ${summary}`.slice(0, 600), title, summary: summary.slice(0, 2000), body, source: item.source, source_url: item.url,
+    source_type: item.kind === 'paper' ? 'paper' : item.kind === 'tech' ? 'tech' : 'news', category: item.category, priority: Math.min(7, postPriority(item)), ...(item.image ? { image_url: item.image } : {}),
   };
 }
 
@@ -348,7 +415,16 @@ async function main() {
   for (let start = 0; start < fresh.length; start += 200) (await api('/v1/brain/known', { urls: fresh.slice(start, start + 200).map(item => item.url) })).known.forEach(url => known.add(url));
   const candidates = capForRanking(fresh.filter(item => !known.has(item.url)));
   const now = new Date().toISOString();
-  const ranked = candidates.length ? await rank(candidates, await api('/v1/brain/taste')) : [];
+  let ranked = [];
+  if (candidates.length) {
+    const taste = await api('/v1/brain/taste');
+    try {
+      ranked = await rank(candidates, taste);
+    } catch (error) {
+      failures.push(`rank: ${error.message}; ranked by keyword rules instead`);
+      ranked = ruleRank(candidates, taste);
+    }
+  }
   for (const item of candidates) state.seen[item.key] = now;
   const keep = ranked.filter(item => item.score >= (item.kind === 'paper' ? Math.max(9, minScore) : minScore)).map(item => ({ ...item, final: item.score + item.boost, at: now, attempts: 0 }));
   state.pending = [...state.pending, ...keep].sort((a, b) => b.final - a.final);
@@ -381,7 +457,7 @@ async function main() {
     await saveState(state);
   }
   const mix = posts.reduce((counts, post) => ({ ...counts, [post.source]: (counts[post.source] ?? 0) + 1 }), {});
-  console.log(`brain: ${items.length} fetched, ${candidates.length} new, ${ranked.length} ranked, ${keep.length} kept, ${posts.length} written, ${result.inserted} inserted, ${state.pending.length} queued, mix ${JSON.stringify(mix)}${dryRun ? ' (dry run)' : ''}`);
+  console.log(`brain: ${items.length} fetched, ${candidates.length} new, ${ranked.length} ranked${ranked.some(item => item.ruled) ? ' by rules' : ''}, ${keep.length} kept, ${posts.length} written, ${result.inserted} inserted, ${state.pending.length} queued, mix ${JSON.stringify(mix)}${dryRun ? ' (dry run)' : ''}`);
   for (const failure of failures) console.error(`failure: ${failure}`);
 }
 
