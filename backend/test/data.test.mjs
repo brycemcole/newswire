@@ -143,3 +143,40 @@ test('13F held-since walks back through consecutive quarter-end reports only', a
   // With only one report, even a held position's start is a lower bound.
   assert.deepEqual(heldSince('C', [snap('2026-09-30', 'C')]), { held_since: '2026-09-30', held_since_bound: true });
 });
+
+test('13F holdings resolve to US tickers by CUSIP and by issuer name', async () => {
+  const { figiTicker, listingFor } = await bundle('src/data.ts');
+  assert.equal(figiTicker({ data: [{ ticker: 'BRK/B', exchCode: 'UN', marketSector: 'Equity' }, { ticker: 'BRK/B', exchCode: 'US', marketSector: 'Equity' }] }), 'BRK-B');
+  assert.equal(figiTicker({ data: [{ ticker: 'ECHO 3.875 11/30/30', exchCode: 'TRACE', marketSector: 'Corp' }] }), null);
+  assert.equal(figiTicker({ warning: 'No identifier found.' }), null);
+  const quotes = [
+    { symbol: 'BSP.VI', exchange: 'VIE', quoteType: 'EQUITY', longname: 'Bending Spoons S.p.A.' },
+    { symbol: 'BSP', exchange: 'NMS', quoteType: 'EQUITY', longname: 'Bending Spoons S.p.A.' },
+  ];
+  assert.equal(listingFor('BENDING SPOONS SPA', quotes), 'BSP');
+  // A different company sharing the first word is not accepted.
+  assert.equal(listingFor('BENDING ROADS INC', quotes), null);
+  assert.equal(listingFor('BENDING SPOONS SPA', quotes.slice(0, 1)), null);
+});
+
+test('13F basket performance chain-links daily closes at reported share counts', async () => {
+  const { basketIndex, basketReturns } = await bundle('src/data.ts');
+  const closes = entries => new Map(entries);
+  // B lists on day 3; its arrival must not register as a gain.
+  const points = basketIndex([
+    { shares: 10, closes: closes([['2026-09-29', 10], ['2026-09-30', 11], ['2026-10-01', 11], ['2026-10-02', 12.1]]) },
+    { shares: 100, closes: closes([['2026-10-01', 5], ['2026-10-02', 5]]) },
+  ]);
+  assert.deepEqual(points.map(p => p.x), ['2026-09-29', '2026-09-30', '2026-10-01', '2026-10-02']);
+  assert.equal(points[1].value, 110);
+  assert.equal(points[2].value, 110);
+  // Day 4: A +10% on 110 of 610 basket value → +1.803%.
+  assert.equal(points[3].value, 111.984);
+  const returns = Object.fromEntries(basketReturns(points, '2026-09-30').map(r => [r.label, r]));
+  assert.equal(returns['1D'].percent, 1.8);
+  assert.equal(returns['Since report'].since, '2026-09-30');
+  assert.equal(returns['Since report'].percent, 1.8);
+  assert.equal(returns['1Y'], undefined);
+  assert.equal(returns['1W'], undefined);
+  assert.deepEqual(basketReturns(points.slice(0, 1), '2026-09-30'), []);
+});
