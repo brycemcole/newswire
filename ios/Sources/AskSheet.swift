@@ -202,7 +202,8 @@ struct AskSheet: View {
             thread.updated = .now
             history.save(thread)
         }
-        .onDisappear { chat.cancel() }
+        // Plaid Link covers this sheet while the reader signs in; that is not leaving the chat.
+        .onDisappear { if !PortfolioStore.shared.linkOpen { chat.cancel() } }
         // Account-changing steps the assistant proposes wait here for the reader's own answer.
         .alert(approvals.pending?.title ?? "", isPresented: Binding(get: { approvals.pending != nil }, set: { if !$0 { approvals.resolve(false) } }), presenting: approvals.pending) { request in
             Button(request.action, role: request.destructive ? .destructive : nil) { approvals.resolve(true) }
