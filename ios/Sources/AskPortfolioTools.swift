@@ -207,6 +207,8 @@ import Observation
             guard await ChatApproval.shared.ask(title: "Sign in to \(item.institution) again?", message: "Plaid will open so you can re-authorize \(item.institution). Nothing is traded or changed at the brokerage.", action: "Open Plaid") else {
                 return "The reader declined to reconnect \(item.institution). Nothing was changed."
             }
+            // The approval alert is still animating away; presenting Link over it dismisses Link with it.
+            try? await Task.sleep(for: .milliseconds(800))
             await store.connect(updating: item)
             if let error = store.error { return "Could not open Plaid: \(error)" }
             return "Plaid sign-in for \(item.institution) is open on the reader's screen. Tell them to finish it; the portfolio refreshes by itself when they do. Do not claim it is fixed until portfolio_status shows a new successful refresh."

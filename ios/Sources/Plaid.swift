@@ -545,6 +545,8 @@ nonisolated struct HoldingsResponse: Decodable, Sendable {
     var itemErrors: [String: String] = [:]
     var needsRelink: Set<String> = []
     @ObservationIgnored private var handler: (any Handler)?
+    /// True while Plaid Link is on screen, so a screen underneath it does not treat being covered as being closed.
+    var linkOpen: Bool { handler != nil }
 
     private let cacheURL: URL
     private let defaults: UserDefaults
@@ -726,7 +728,8 @@ nonisolated struct HoldingsResponse: Decodable, Sendable {
     private static func presenter() -> UIViewController? {
         let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first { $0.activationState == .foregroundActive }
         var top = scene?.keyWindow?.rootViewController
-        while let next = top?.presentedViewController { top = next }
+        // An alert that is still animating away would take Link down with it, so present beneath it.
+        while let next = top?.presentedViewController, !(next is UIAlertController) { top = next }
         return top
     }
 }
