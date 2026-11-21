@@ -373,6 +373,7 @@ struct DataScreen: View {
     @State private var institutionalOffset: Int
     @State private var institutionalLoadingMore = false
     @State private var institutionalListLoading: String?
+    @State private var institutionalChartRange = "Since report"
     @State private var institutionalFlowSide: String
     @State private var institutionalFilter = "Buying"
     @State private var showAllQuarters = false
@@ -837,6 +838,10 @@ struct DataScreen: View {
                 .padding(.vertical, 14)
             }
 
+            if let performance = payload.sections.first(where: { $0.title == "Estimated performance" }), let chart = payload.chart, chart.points.count > 1 {
+                institutionalPerformance(performance.rows, chart: chart, period: periodEnd)
+            }
+
             institutionalTimingNote(managerName: managerName, period: periodEnd, prior: priorPeriod)
 
             Picker("Portfolio view", selection: $institutionalFilter) {
@@ -919,6 +924,80 @@ struct DataScreen: View {
                 aboutCard("About 13F data", [explanation.meaning, explanation.reading] + [explanation.methodology].compactMap(\.self))
             }
         }
+    }
+
+    /// How the reported holdings have done since, priced daily at their reported share counts. An estimate, labeled as one.
+    private func institutionalPerformance(_ rows: [DataPayload.Row], chart: DataPayload.Series, period: String?) -> some View {
+        let returns = rows.filter { $0.change != nil }
+        let basket = rows.first(where: { $0.label == "Basket" })
+        let reportLabel = period.map { "Since " + DataText.day($0) } ?? "Since report"
+        let selected = returns.first(where: { $0.label == institutionalChartRange }) ?? returns.last
+        let start = selected?.date ?? chart.points.first?.x ?? ""
+        let points = chart.points.filter { $0.x >= start }
+        let base = points.first?.value ?? 1
+        let up = (points.last?.value ?? base) >= base
+        let basketSize = basket?.value ?? "holdings"
+        let coverage = basket?.detail?.components(separatedBy: " · ").first.map { " (\($0))" } ?? ""
+        let reportDay = period.map(DataText.day) ?? "the report date"
+        return DataCard(title: "Estimated performance", trailing: basket?.value) {
+            VStack(alignment: .leading, spacing: 12) {
+                if let selected, let change = selected.change {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(selected.value).font(.system(.title, weight: .bold)).monospacedDigit().foregroundStyle(change >= 0 ? Color.green : .orange)
+                        Text("\(selected.label == "Since report" ? reportLabel : selected.label) · from the \(selected.date.map(DataText.day) ?? "") close")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                    }
+                }
+                Chart {
+                    ForEach(points, id: \.x) { point in
+                        if let day = DataFormat.date(point.x) {
+                            LineMark(x: .value("Day", day), y: .value("Change", (point.value / base - 1) * 100))
+                                .foregroundStyle(up ? Color.green : .orange)
+                                .interpolationMethod(.monotone)
+                        }
+                    }
+                    if let period, let day = DataFormat.date(period), period >= start {
+                        RuleMark(x: .value("Report", day))
+                            .foregroundStyle(.secondary.opacity(0.6))
+                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                            .annotation(position: .top, alignment: .leading) { Text("Report").font(.caption2).foregroundStyle(.secondary) }
+                    }
+                }
+                .chartYAxis {
+                    AxisMarks { value in
+                        AxisGridLine()
+                        AxisValueLabel(Self.percentLabel(value.as(Double.self) ?? 0))
+                    }
+                }
+                .frame(height: 160)
+                .accessibilityLabel("Estimated portfolio change \(selected?.value ?? "")")
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(returns, id: \.label) { row in
+                            let active = row.label == selected?.label
+                            Button {
+                                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { institutionalChartRange = row.label }
+                            } label: {
+                                VStack(spacing: 1) {
+                                    Text(row.label == "Since report" ? reportLabel : row.label).font(.caption.weight(.semibold)).foregroundStyle(active ? .primary : .secondary)
+                                    Text(row.value).font(.caption).monospacedDigit().foregroundStyle((row.change ?? 0) >= 0 ? Color.green : .orange)
+                                }
+                                .padding(.horizontal, 10).padding(.vertical, 6)
+                                .background(active ? Color.primary.opacity(0.12) : .clear, in: .capsule)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                Text("An estimate, not the fund’s reported returns. It prices the largest \(basketSize) from the report\(coverage) daily at their \(reportDay) share counts. Before \(reportDay) it shows what these holdings did, not what the fund owned, and it can’t see trades made since.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.vertical, 14)
+        }
+    }
+
+    private static func percentLabel(_ value: Double) -> String {
+        "\(value >= 0 ? "+" : "")\(value.formatted(.number.precision(.fractionLength(0))))%"
     }
 
     /// The three things people misread on a 13F: what the dollar figures are, what "bought" can mean, and what "today" assumes.
@@ -1008,7 +1087,8 @@ struct DataScreen: View {
         if let symbol = row.symbol {
             NavigationLink { QuoteDetail(symbol: symbol) } label: { content }.buttonStyle(.plain)
         } else {
-            content
+            // No ticker matched this CUSIP yet: open listings for the name so it can still be looked up.
+            NavigationLink { DataScreen(route: DataRoute("symbols", ["q": name])) } label: { content }.buttonStyle(.plain)
         }
     }
 

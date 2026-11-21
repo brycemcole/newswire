@@ -1455,7 +1455,13 @@ const tools: Tool[] = [
       }
       const since = (cusip: string, from: number) => heldSince(cusip, snapshots, from);
 
-      const symbolOf = (holding: ThirteenFRow) => issuerSymbols[issuerKey(holding.issuer)];
+      // Names alone miss many holdings ("LENNAR CORP" vs SEC's "LENNAR CORP /NEW/", foreign listings), so shown rows the name map
+      // misses are looked up by CUSIP, then by issuer name, with each answer cached per CUSIP.
+      const shownHoldings = [...Object.values(groups).flat().map(item => item.holding), ...pageCUSIPs.map(cusip => latest.get(cusip)!)];
+      // A fund trust ("ISHARES TR") issues many funds under one name, so only its CUSIP says which one.
+      const nameSymbol = (holding: ThirteenFRow) => /\b(?:tr|trust|etf|fund|funds|ser|series)\b/i.test(holding.issuer) ? undefined : issuerSymbols[issuerKey(holding.issuer)];
+      const bySymbolLookup = await cusipSymbols(shownHoldings.filter(holding => !nameSymbol(holding)));
+      const symbolOf = (holding: ThirteenFRow) => nameSymbol(holding) ?? bySymbolLookup[holding.cusip];
       const wanted = new Set<string>();
       for (const item of Object.values(groups).flat()) { const symbol = symbolOf(item.holding); if (symbol) wanted.add(symbol); }
       for (const cusip of pageCUSIPs) { const symbol = symbolOf(latest.get(cusip)!); if (symbol) wanted.add(symbol); }
@@ -1482,7 +1488,7 @@ const tools: Tool[] = [
         const oldest = snapshots.at(-1)!.period;
         return { label: 'Ownership history', value: oldest, detail: `${snapshots.length} quarterly reports checked, back to positions as of ${oldest}` };
       };
-      const note = previous ? `Positions as of ${filings[0].period}, filed ${filings[0].date}; compared with positions as of ${filings[1].period}, filed ${filings[1].date}. 13F reports what a manager held on the last day of each quarter, so a new or increased position was bought at some point after ${filings[1].period} and on or before ${filings[0].period}; exact trade dates and prices are not disclosed. Held since is the first quarter-end report, within the ${snapshots.length} checked, in which the position appears continuously. Current values multiply reported shares by the latest price and assume the shares are still held. 13F covers reportable Section 13(f) securities, not the manager’s entire portfolio, and reports are generally due up to 45 days after quarter end; options, confidential treatment and separately filed manager entities can affect comparisons.` : `Latest available filing: positions as of ${filings[0].period}, filed ${filings[0].date}. Form 13F is a delayed snapshot of reportable Section 13(f) securities held at quarter end, not the manager’s entire portfolio or a record of trade dates.`;
+      const note = previous ? `Positions as of ${filings[0].period}, filed ${filings[0].date}; compared with positions as of ${filings[1].period}, filed ${filings[1].date}. 13F reports what a manager held on the last day of each quarter, so a new or increased position was bought at some point after ${filings[1].period} and on or before ${filings[0].period}; exact trade dates and prices are not disclosed. Held since is the first quarter-end report, within the ${snapshots.length} checked, in which the position appears continuously. Current values multiply reported shares by the latest price and assume the shares are still held. Estimated performance prices the largest reported holdings daily at their reported share counts; before the report date it shows what those holdings did, not what the manager actually held or earned. 13F covers reportable Section 13(f) securities, not the manager’s entire portfolio, and reports are generally due up to 45 days after quarter end; options, confidential treatment and separately filed manager entities can affect comparisons.` : `Latest available filing: positions as of ${filings[0].period}, filed ${filings[0].date}. Form 13F is a delayed snapshot of reportable Section 13(f) securities held at quarter end, not the manager’s entire portfolio or a record of trade dates.`;
       const base = { title: `${managerName} institutional positions`, source: 'SEC EDGAR Form 13F', url: `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${managerCIK}&type=13F-HR`, note };
       if (list !== 'positions') {
         const totals = { new: added.length, increased: increased.length, reduced: reduced.length, exited: exited.length } as Record<string, number>;
@@ -1506,6 +1512,29 @@ const tools: Tool[] = [
         for (const holding of latest.values()) { const now = currentOf(holding); if (now !== undefined) { total += now; priced += holding.value; } }
         if (priced >= currentValue * 0.6) { fullCurrent = total; pricedReported = priced; coverage = priced / currentValue; }
       }
+      // Estimated performance: the largest priced holdings, at their reported share counts, priced daily.
+      let performance: Section | undefined, chart: Payload['chart'];
+      if (offset === 0) {
+        const basket: { holding: ThirteenFRow; symbol: string }[] = [];
+        for (const cusip of pageCUSIPs) {
+          const holding = latest.get(cusip)!, symbol = symbolOf(holding);
+          if (symbol && !basket.some(item => item.symbol === symbol)) basket.push({ holding, symbol });
+          if (basket.length >= 60) break;
+        }
+        const closes = await dailyCloses(basket.map(item => item.symbol));
+        const priced = basket.filter(item => closes[item.symbol]);
+        const points = basketIndex(priced.map(item => ({ shares: item.holding.shares, closes: closes[item.symbol] })));
+        const returns = basketReturns(points, filings[0].period);
+        if (returns.length) {
+          const pricedValue = priced.reduce((sum, item) => sum + item.holding.value, 0);
+          const lastDay = points.at(-1)!.x;
+          performance = { title: 'Estimated performance', rows: [
+            ...returns.map(item => ({ label: item.label, value: `${item.percent > 0 ? '+' : item.percent < 0 ? '−' : ''}${fmt(Math.abs(item.percent), 1)}%`, change: item.percent, date: item.since, detail: `From the ${item.since} close to ${lastDay}` })),
+            { label: 'Basket', value: `${priced.length} holdings`, detail: `${Math.round(pricedValue / currentValue * 100)}% of reported value · prices through ${lastDay}` },
+          ] };
+          chart = { label: `Reported ${filings[0].period} holdings, priced daily`, unit: 'Index, 100 a year earlier', points };
+        }
+      }
       const shown = (count: number) => `First ${Math.min(groupPage, count)} shown`;
       const overview: Row[] = [
         { label: 'Reporting period', value: filings[0].period, detail: `Filed ${filings[0].date}` },
@@ -1521,9 +1550,10 @@ const tools: Tool[] = [
       ];
       const filingRows = filings.map((filing, index) => ({ label: index === 0 ? `Latest snapshot · as of ${filing.period}` : `Prior snapshot · as of ${filing.period}`, value: `Filed ${filing.date}`, date: filing.date, url: filingURL(managerCIK, filing.accession, filing.document), detail: filing.accession }));
       const historyRows = allFilings.map(filing => ({ label: `As of ${filing.period}`, value: `Filed ${filing.date}`, date: filing.date, destination: `data:sec/institutions?manager=${managerCIK}&period=${filing.period}` }));
-      return { ...base, page: page(latest.size),
+      return { ...base, page: page(latest.size), ...(chart ? { chart } : {}),
         sections: [
           { title: 'Quarter overview', rows: overview },
+          ...(performance ? [performance] : []),
           { title: 'All reported positions', total: latest.size, rows: holdings },
           changeSection('New positions', groups.new, added.length, 'NEW'), changeSection('Increased positions', groups.increased, increased.length, 'INCREASED'),
           changeSection('Reduced positions', groups.reduced, reduced.length, 'REDUCED'), exitedSection(), { title: 'Recent filings', rows: filingRows },
@@ -1838,15 +1868,119 @@ async function currentPrices(symbols: string[]): Promise<Record<string, number>>
   }));
   return prices;
 }
-const secIssuerSymbols = () => cached('sec/issuer-tickers/v1', 86400, async () => {
-  const data = await getJSON<Record<string, { ticker: string; title: string }>>('https://www.sec.gov/files/company_tickers.json', { headers: { 'User-Agent': sec }, timeout: 15000 });
+// Exchanges where a listing has a US quote. A foreign CUSIP held in a 13F is reportable because it trades here.
+const usExchanges = new Set(['NMS', 'NYQ', 'NGM', 'NCM', 'ASE', 'PCX', 'BTS', 'NAS', 'NYS', 'CXI']);
+const legalSuffixes = new Set(['inc', 'incorporated', 'corp', 'corporation', 'co', 'company', 'ltd', 'limited', 'plc', 'sa', 'spa', 'nv', 'ag', 'se', 'llc', 'lp', 'the', 'new', 'cl', 'class', 'a', 'b', 'com', 'shs', 'ord']);
+const nameWords = (name: string) => name.toLowerCase().replace(/\b([a-z])\.(?=[a-z]\.)/g, '$1').replace(/\./g, '').replace(/[^a-z0-9&]+/g, ' ').trim().split(' ').filter(word => word && !legalSuffixes.has(word));
+/** OpenFIGI's US composite equity ticker for a CUSIP, as Yahoo spells it ("BRK/B" → "BRK-B"). */
+export function figiTicker(result: { data?: { ticker?: string; exchCode?: string; marketSector?: string }[] } | undefined): string | null {
+  const hit = result?.data?.find(item => item.exchCode === 'US' && item.marketSector === 'Equity' && item.ticker);
+  return hit?.ticker ? hit.ticker.replace(/[/ ]/g, '-') : null;
+}
+/** A Yahoo search hit for an issuer only when it is a US-quoted stock or fund whose leading name words match. */
+export function listingFor(issuer: string, quotes: { symbol?: string; shortname?: string; longname?: string; quoteType?: string; exchange?: string }[]): string | null {
+  const wanted = nameWords(issuer).slice(0, 2);
+  if (!wanted.length) return null;
+  const hit = quotes.find(quote => quote.symbol && (quote.quoteType === 'EQUITY' || quote.quoteType === 'ETF') && usExchanges.has(quote.exchange ?? '')
+    && [quote.longname, quote.shortname].some(name => { const words = name ? nameWords(name) : []; return wanted.every((word, i) => words[i] === word); }));
+  return hit?.symbol ?? null;
+}
+async function cusipSymbols(holdings: ThirteenFRow[]): Promise<Record<string, string>> {
+  const unique = [...new Map(holdings.map(holding => [holding.cusip, holding])).values()];
+  const found: Record<string, string> = {};
+  const key = (cusip: string) => `https://newswire-cache.internal/sec/13f/cusip-symbol/v1/${cusip}`;
+  const cache = (globalThis as unknown as { caches?: { default?: Cache } }).caches?.default;
+  const misses: ThirteenFRow[] = [];
+  await Promise.all(unique.map(async holding => {
+    const hit = await cache?.match(key(holding.cusip)).catch(() => undefined);
+    if (!hit) { misses.push(holding); return; }
+    const { symbol } = await hit.json() as { symbol: string | null };
+    if (symbol) found[holding.cusip] = symbol;
+  }));
+  const remember = async (cusip: string, symbol: string | null) => {
+    if (symbol) found[cusip] = symbol;
+    await cache?.put(key(cusip), new Response(JSON.stringify({ symbol }), { headers: { 'Cache-Control': `max-age=${symbol ? 30 * 86400 : 7 * 86400}`, 'Content-Type': 'application/json' } })).catch(() => undefined);
+  };
+  // OpenFIGI without a key allows 10 identifiers per request and 25 requests a minute; later loads fill in the rest from cache.
+  const batches: ThirteenFRow[][] = [];
+  for (let i = 0; i < misses.length && batches.length < 5; i += 10) batches.push(misses.slice(i, i + 10));
+  const unmatched: ThirteenFRow[] = [];
+  await Promise.all(batches.map(async batch => {
+    try {
+      const results = await getJSON<{ data?: { ticker?: string; exchCode?: string; marketSector?: string }[] }[]>('https://api.openfigi.com/v3/mapping', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'User-Agent': agent }, timeout: 6000,
+        body: JSON.stringify(batch.map(holding => ({ idType: 'ID_CUSIP', idValue: holding.cusip }))),
+      });
+      await Promise.all(batch.map(async (holding, i) => { const symbol = figiTicker(results[i]); if (symbol) await remember(holding.cusip, symbol); else unmatched.push(holding); }));
+    } catch { }
+  }));
+  await mapLimited(unmatched.slice(0, 12), async holding => {
+    try {
+      const data = await getJSON<{ quotes?: { symbol?: string; shortname?: string; longname?: string; quoteType?: string; exchange?: string }[] }>(
+        `https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(nameWords(holding.issuer).join(' ') || holding.issuer)}&quotesCount=8&newsCount=0&listsCount=0&enableFuzzyQuery=false`, { timeout: 5000 });
+      await remember(holding.cusip, listingFor(holding.issuer, data.quotes ?? []));
+    } catch { }
+  }, 4);
+  return found;
+}
+/**
+ * Daily value index of a fixed basket (reported shares × each day's close), chain-linked so a holding only counts on days it
+ * has prices for both the day and the one before; a listing that starts mid-year never shows up as a jump.
+ */
+export function basketIndex(holdings: { shares: number; closes: Map<string, number> }[]): Point[] {
+  const days = [...new Set(holdings.flatMap(holding => [...holding.closes.keys()]))].sort();
+  const points: Point[] = [];
+  let level = 100;
+  for (let i = 0; i < days.length; i++) {
+    if (i > 0) {
+      let before = 0, after = 0;
+      for (const holding of holdings) {
+        const a = holding.closes.get(days[i - 1]), b = holding.closes.get(days[i]);
+        if (a !== undefined && b !== undefined) { before += holding.shares * a; after += holding.shares * b; }
+      }
+      if (before > 0) level *= after / before;
+    }
+    points.push({ x: days[i], value: Math.round(level * 1000) / 1000 });
+  }
+  return points;
+}
+/** Percent change of the index over standard ranges, each measured from the last close on or before its start. */
+export function basketReturns(points: Point[], reportDate: string): { label: string; since: string; percent: number }[] {
+  if (points.length < 2) return [];
+  const last = points.at(-1)!;
+  const atOrBefore = (day: string) => [...points].reverse().find(point => point.x <= day);
+  const back = (days: number) => points.length > days ? points[points.length - 1 - days] : undefined;
+  const ytd = atOrBefore(`${Number(last.x.slice(0, 4)) - 1}-12-31`);
+  const ranges: [string, Point | undefined][] = [['1D', back(1)], ['1W', back(5)], ['1M', back(21)], ['3M', back(63)], ['YTD', ytd], ['1Y', points.length > 240 ? points[0] : undefined], ['Since report', atOrBefore(reportDate)]];
+  return ranges.flatMap(([label, start]) => start && start.x < last.x ? [{ label, since: start.x, percent: Math.round((last.value / start.value - 1) * 1000) / 10 }] : []);
+}
+async function dailyCloses(symbols: string[]): Promise<Record<string, Map<string, number>>> {
+  const chunks: string[][] = [];
+  for (let i = 0; i < symbols.length; i += 20) chunks.push(symbols.slice(i, i + 20));
+  const result: Record<string, Map<string, number>> = {};
+  await Promise.all(chunks.map(async chunk => {
+    const data = await cached<Record<string, { timestamp?: number[]; close?: (number | null)[] }>>(`sec/13f/spark-1y/v1/${chunk.join(',')}`, 900, async () =>
+      getJSON(`https://query1.finance.yahoo.com/v8/finance/spark?symbols=${encodeURIComponent(chunk.join(','))}&range=1y&interval=1d`, { headers: { 'User-Agent': agent }, timeout: 8000 })).catch(() => ({}));
+    for (const [symbol, item] of Object.entries(data)) {
+      const closes = new Map<string, number>();
+      (item?.timestamp ?? []).forEach((stamp, i) => { const close = item.close?.[i]; if (typeof close === 'number' && close > 0) closes.set(new Date(stamp * 1000).toISOString().slice(0, 10), close); });
+      if (closes.size > 1) result[symbol] = closes;
+    }
+  }));
+  return result;
+}
+
+const secIssuerSymbols = () => cached('sec/issuer-tickers/v2', 86400, async () => {
+  const data = await getJSON<Record<string, { cik_str: number; ticker: string; title: string }>>('https://www.sec.gov/files/company_tickers.json', { headers: { 'User-Agent': sec }, timeout: 15000 });
   const map: Record<string, string> = {};
+  const owner: Record<string, number> = {};
   const collisions = new Set<string>();
+  // The file lists each company's primary ticker first (GOOGL before GOOG, JPM before its preferreds), so later
+  // tickers from the same company are skipped; only a name shared by different companies is ambiguous.
   for (const item of Object.values(data)) {
     const key = issuerKey(item.title);
-    const symbol = item.ticker.replaceAll('.', '-');
-    if (map[key] && map[key] !== symbol) collisions.add(key);
-    else map[key] = symbol;
+    if (owner[key] === undefined) { owner[key] = item.cik_str; map[key] = item.ticker.replaceAll('.', '-'); }
+    else if (owner[key] !== item.cik_str) collisions.add(key);
   }
   for (const key of collisions) delete map[key];
   return map;
