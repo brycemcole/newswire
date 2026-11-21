@@ -83,11 +83,22 @@ nonisolated enum TickerNews {
         }
     }
 
-    private static func google(symbol: String, core: String) async -> [TickerStory] {
+    /// Headlines published within `days` of `date`, for naming the story behind a past price move.
+    @concurrent static func around(symbol: String, name: String, date: Date, days: Int) async -> [TickerStory] {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .gmt
+        formatter.dateFormat = "yyyy-MM-dd"
+        let after = formatter.string(from: date.addingTimeInterval(-Double(days) * 86_400))
+        let before = formatter.string(from: date.addingTimeInterval(Double(days + 1) * 86_400))
+        return await google(symbol: symbol, core: core(name, symbol: symbol), window: "after:\(after) before:\(before)")
+    }
+
+    private static func google(symbol: String, core: String, window: String = "when:2d") async -> [TickerStory] {
         var components = URLComponents(string: "https://news.google.com/rss/search")!
         let equity = symbol.allSatisfy { $0.isLetter || $0 == "." }
         components.queryItems = [
-            URLQueryItem(name: "q", value: "\"\(core)\"\(equity ? " (stock OR shares)" : "") when:2d"), URLQueryItem(name: "hl", value: "en-US"),
+            URLQueryItem(name: "q", value: "\"\(core)\"\(equity ? " (stock OR shares)" : "") \(window)"), URLQueryItem(name: "hl", value: "en-US"),
             URLQueryItem(name: "gl", value: "US"), URLQueryItem(name: "ceid", value: "US:en"),
         ]
         guard let url = components.url, let (data, code) = try? await MarketClient.load(url), (200..<300).contains(code) else { return [] }
@@ -162,6 +173,34 @@ nonisolated private final class RSSItems: NSObject, XMLParserDelegate {
     private var generation: Task<Void, Never>?
 
     private static var loaded: [String: (at: Date, stories: [TickerStory])] = [:]
+    private static var loadedAround: [String: (at: Date, stories: [TickerStory])] = [:]
+
+    /// Older headlines gathered around the chart's large moves; kept apart from `stories` so the news list stays recent.
+    private(set) var history: [TickerStory] = []
+
+    func loadHistory(name: String, moves: [ChartCatalyst.Move], range: ChartRange) async {
+        guard !moves.isEmpty else { history = []; return }
+        let days = max(1, Int((ChartCatalyst.tolerance(for: range) / 86_400).rounded(.up)))
+        var found: [TickerStory] = []
+        await withTaskGroup(of: (String, [TickerStory]).self) { group in
+            for move in moves {
+                let midpoint = move.from.addingTimeInterval(move.to.timeIntervalSince(move.from) / 2)
+                let key = "\(symbol)|\(name)|\(Int(midpoint.timeIntervalSince1970 / 86_400))|\(days)"
+                if let cached = Self.loadedAround[key], Date.now.timeIntervalSince(cached.at) < 1800 {
+                    found += cached.stories
+                    continue
+                }
+                let symbol = symbol
+                group.addTask { (key, await TickerNews.around(symbol: symbol, name: name, date: midpoint, days: days)) }
+            }
+            for await (key, stories) in group {
+                Self.loadedAround[key] = (.now, stories)
+                found += stories
+            }
+        }
+        guard !Task.isCancelled else { return }
+        history = found
+    }
 
     init(symbol: String) {
         self.symbol = symbol

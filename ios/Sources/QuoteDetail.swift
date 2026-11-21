@@ -154,6 +154,12 @@ struct QuoteDetail: View {
     }
 
     private var summary: QuoteSummary? { model.summary }
+    /// Everything that could be plotted, before news is narrowed to the headlines behind large moves.
+    private func chartEvents(_ chart: MarketChart) -> [ChartCatalyst] {
+        var seen: Set<String> = []
+        let stories = ((news.stories ?? []) + news.history).filter { seen.insert($0.id).inserted }
+        return ChartCatalyst.earnings(summary) + chart.events + stories.map(ChartCatalyst.init)
+    }
     private var symbol: String { model.symbol }
     private var dayMove: Double? {
         guard let live = model.live, let reference = live.previousClose, reference != 0 else { return nil }
@@ -240,6 +246,10 @@ struct QuoteDetail: View {
             AskSheet(context: AskContext(symbol: symbol, name: name, price: model.live.map { $0.money($0.price) }))
         }
         .onAppear { MarketRecents.add(symbol) }
+        .task(id: "\(model.range.rawValue)|\(name)|\(model.chart?.points.first?.date.timeIntervalSince1970 ?? 0)") {
+            guard let chart = model.chart else { return }
+            await news.loadHistory(name: name, moves: ChartCatalyst.moves(chart: chart), range: model.range)
+        }
         .asksAbout(AskContext(symbol: symbol, name: name, price: model.live.map { $0.money($0.price) },
                               screen: "The quote page for \(symbol) (\(name))" + (model.live.map { ", showing a price of \($0.money($0.price))" } ?? "") + "."))
         #if DEBUG
@@ -287,7 +297,8 @@ struct QuoteDetail: View {
 
     @ViewBuilder private var catalystReadout: some View {
         if let chart = model.chart {
-            let events = ChartCatalyst.earnings(summary) + chart.events + (news.stories ?? []).map(ChartCatalyst.init)
+            let curated = ChartCatalyst.curated(chartEvents(chart), chart: chart, range: model.range)
+            let events = curated.events
             let mapped = ChartCatalyst.mapped(events, chart: chart, range: model.range)
             if let index = scrub.index {
                 let calendar: Calendar = {
@@ -317,8 +328,18 @@ struct QuoteDetail: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(14)
                 .glassEffect(.regular, in: .rect(cornerRadius: 22))
+            } else if let driver = curated.drivers.first {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Why it moved")
+                        .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                    Text(driver.move.change.formatted(.percent.precision(.fractionLength(1)).sign(strategy: .always())) + " · " + driver.event.title)
+                        .font(.footnote.weight(.semibold))
+                    Text("Possible catalyst · " + driver.event.source + " · " + driver.event.date.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened, timeZone: chart.timeZone)) + " · hold chart for other moves")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             } else {
-                Text(mapped.isEmpty ? "Hold chart to inspect prices. Dated events appear when available." : "Hold chart for details · E earnings · D dividend · S split · • news")
+                Text(mapped.isEmpty ? "Hold chart to inspect prices. Dated events appear when available." : "Hold chart for details · E earnings · D dividend · S split · • possible catalyst")
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }
@@ -327,7 +348,7 @@ struct QuoteDetail: View {
     private var hero: some View {
         Group {
             if let chart = model.chart {
-                PriceChart(chart: chart, range: model.range, live: model.streaming && model.range == .day, scrub: scrub, catalysts: ChartCatalyst.earnings(summary) + chart.events + (news.stories ?? []).map(ChartCatalyst.init))
+                PriceChart(chart: chart, range: model.range, live: model.streaming && model.range == .day, scrub: scrub, catalysts: ChartCatalyst.curated(chartEvents(chart), chart: chart, range: model.range).events)
                     .id(model.range)
                     .transition(.opacity)
             } else if let error = model.error {
@@ -1359,14 +1380,14 @@ private struct PriceChart: View {
                         .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                 }
             }
-            // News is frequent and only context, so it stays a faint dot; earnings, dividends and splits keep a lettered badge.
+            // News dots mark only the headline picked for a large move, so they stay small and quiet; earnings, dividends and splits keep a lettered badge.
             ForEach(markers) { marker in
                 let news = marker.event.kind == .news
                 let selected = scrub.index == marker.index
                 PointMark(x: .value("Event", marker.index), y: .value("Price", points[marker.index].close))
-                    .symbolSize(selected ? 90 : news ? 14 : 44)
+                    .symbolSize(selected ? 90 : news ? 30 : 44)
                     .foregroundStyle(marker.event.kind == .earnings ? Color.orange : Color.secondary)
-                    .opacity(news && !selected ? 0.5 : 1)
+                    .opacity(news && !selected ? 0.8 : 1)
                     .annotation(position: .bottom, spacing: 4) {
                         if !news {
                             Text(marker.event.kind.badge)
