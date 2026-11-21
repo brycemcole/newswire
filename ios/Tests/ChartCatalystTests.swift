@@ -29,6 +29,31 @@ struct ChartCatalystTests {
         #expect(ChartCatalyst.mapped([event], chart: chart(["2026-07-27T13:30:00Z", "2026-08-03T13:30:00Z"]), range: .fiveYears).first?.index == 0)
     }
 
+    @Test func picksTheHeadlineBehindEachLargeMoveInsteadOfTheLatest() {
+        // Flat for 40 bars, drops 15% across bars 40-44, then flat again.
+        let start = date("2026-03-02T14:30:00Z")
+        let dates = (0..<80).map { ISO8601DateFormatter().string(from: start.addingTimeInterval(Double($0) * 86_400)) }
+        var built = self.chart(dates)
+        built.points = built.points.map { point in
+            PricePoint(id: point.id, date: point.date, open: nil, close: point.id < 40 ? 100 : point.id < 45 ? 100 - Double(point.id - 39) * 3 : 85, extended: false, run: 0)
+        }
+        let cause = ChartCatalyst(id: "cause", kind: .news, date: built.points[40].date, title: "Shares plunge as company cuts guidance", detail: nil, source: "Test", tagged: true)
+        let unrelated = ChartCatalyst(id: "late", kind: .news, date: built.points[78].date, title: "Company opens new office", detail: nil, source: "Test")
+        let earlyNoise = ChartCatalyst(id: "early", kind: .news, date: built.points[5].date, title: "Company hires analyst", detail: nil, source: "Test")
+        let result = ChartCatalyst.curated([earlyNoise, unrelated, cause], chart: built, range: .year)
+        #expect(result.drivers.map(\.event.id) == ["cause"])
+        #expect(result.events.map(\.id) == ["cause"])
+        #expect((result.drivers.first?.move.change ?? 0) < -0.1)
+        #expect(result.drivers.first?.event.detail?.contains("not confirmed") == true)
+    }
+
+    @Test func flatChartsHaveNoMovesAndSoNoNewsDots() {
+        let flat = chart((0..<20).map { "2026-03-\(String(format: "%02d", $0 + 1))T14:30:00Z" })
+        #expect(ChartCatalyst.moves(chart: flat).isEmpty)
+        let story = ChartCatalyst(id: "n", kind: .news, date: date("2026-03-10T14:30:00Z"), title: "Anything", detail: nil, source: "Test")
+        #expect(ChartCatalyst.curated([story], chart: flat, range: .month).events.isEmpty)
+    }
+
     private func date(_ value: String) -> Date { ISO8601DateFormatter().date(from: value)! }
     private func chart(_ dates: [String]) -> MarketChart {
         MarketChart(symbol: "TEST", name: "Test", exchange: "", currency: "USD", instrument: "EQUITY", price: 100,
