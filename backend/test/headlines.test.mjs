@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { acceptedTopic, balanceHeadlines, classificationText, optionsFlowQuestion, optionsFlowReport, parseFeed, settleHeadlineSources, significanceTag } from '../../scripts/monitor/rules/headlines.mjs';
+import { acceptedTopic, balanceHeadlines, classificationText, nonEnglish, prefiltered, optionsFlowQuestion, optionsFlowReport, parseFeed, settleHeadlineSources, significanceTag } from '../../scripts/monitor/rules/headlines.mjs';
 
 test('X collection starts while feeds are pending and failures remain isolated', async () => {
   let finishFeed;
@@ -159,4 +159,13 @@ test('only supported confident significance labels reach story tags', () => {
   assert.equal(significanceTag({}), null);
   assert.equal(significanceTag({ significance: { choice: 'other', confidence: 1 } }), null);
   assert.equal(significanceTag({ significance: { choice: 'made-up', confidence: 1 } }), null);
+});
+
+test('headlines in another language are dropped before classification, English ones are not', () => {
+  assert.equal(nonEnglish('Les marchés européens ouvrent en baisse ce matin'), true);
+  assert.equal(nonEnglish('Die Bundesbank erwartet eine schwächere Konjunktur im Winter'), true);
+  assert.equal(nonEnglish('Stocks fall as yields jump after Fed meeting today'), false);
+  assert.equal(nonEnglish('Fed holds'), false);
+  assert.equal(prefiltered({ title: 'Les marchés européens ouvrent en baisse ce matin', url: 'https://example.com/a', summary: '' }), true);
+  assert.equal(prefiltered({ title: 'Apple raises guidance after record iPhone sales', url: 'https://example.com/b', summary: '' }), false);
 });

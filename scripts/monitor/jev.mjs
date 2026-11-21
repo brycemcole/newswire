@@ -5,7 +5,8 @@ import { model as freeDeepSeek } from '../ai/deepseek.mjs';
 import { complete, goComplete, goModel } from '../ai/completion.mjs';
 
 // Free and paid Jev 1.13 are the same model, so cached verdicts stay valid across the fallback.
-export const classifierIdentity = process.env.NEWSWIRE_CLASSIFIER_PROVIDER === 'jev' ? 'zen:jev-1.13'
+export const classifierIdentity = process.env.NEWSWIRE_CLASSIFIER_PROVIDER === 'typesafe' ? 'typesafe:jev-latest'
+  : process.env.NEWSWIRE_CLASSIFIER_PROVIDER === 'jev' ? 'zen:jev-1.13'
   : process.env.NEWSWIRE_CLASSIFIER_PROVIDER === 'opencode-go' ? `opencode-go:${goModel}` : `deepseek:${freeDeepSeek}:go-fallback`;
 const endpoint = 'https://opencode.ai/zen/v1/systemone';
 const freeModel = 'jev-1.13-free';
@@ -75,6 +76,24 @@ async function call(model, state, questions, timeout) {
 }
 
 async function request(state, questions, { timeout = 10000 } = {}) {
+  if (process.env.NEWSWIRE_CLASSIFIER_PROVIDER === 'typesafe') {
+    const apiKey = (process.env.TYPESAFE_API_KEY ?? await readFile(join(homedir(), '.config', 'newswire', 'typesafe-direct-key'), 'utf8')).trim();
+    if (!apiKey) throw new Error('TypeSafe credential is unavailable');
+    usage['jev-latest'] = (usage['jev-latest'] ?? 0) + 1;
+    const response = await fetch('https://api.typesafe.ai/v1/systemone', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ model: 'jev-latest', state, questions: Object.fromEntries(Object.entries(questions).map(([name, question]) => [name, { type: 'choice', ...question }])) },
+        (_key, value) => typeof value === 'string' ? value.toWellFormed() : value),
+      signal: AbortSignal.timeout(timeout),
+    });
+    if (!response.ok) throw new Error(`TypeSafe jev-latest ${response.status}`);
+    const answers = (await response.json()).answers ?? {};
+    for (const name of Object.keys(questions)) {
+      if (!Object.hasOwn(questions[name].criteria, answers[name]?.choice ?? '') || !Number.isFinite(answers[name].confidence) || answers[name].confidence < 0 || answers[name].confidence > 1) throw new Error(`TypeSafe response invalid ${name} answer`);
+    }
+    return answers;
+  }
   if (process.env.NEWSWIRE_CLASSIFIER_PROVIDER !== 'jev') {
     const subscription = process.env.NEWSWIRE_CLASSIFIER_PROVIDER === 'opencode-go';
     const timeoutMs = Math.max(timeout, 45000);
