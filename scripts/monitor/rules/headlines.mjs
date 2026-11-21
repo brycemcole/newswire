@@ -90,10 +90,17 @@ const formats = new Set(config.skip_sections ?? ['video', 'videos', 'live', 'liv
 // Quote, option-chain and calendar pages surface through Google News with article-style links.
 const quotePage = /stock price, news, quote & history$|interactive stock chart|^earnings calendar for\b|^-\s*yahoo|^meta_title_/i;
 
+const englishWords = new Set('the a an and or of to in on at for from with by as is are was were be been has have had will would not no after over into amid about says said new more than its it this that his her their who what how why when up down out off us'.split(' '));
+// A headline of five or more words with none of these common English function words is in another language.
+export function nonEnglish(text) {
+  const words = (text.toLowerCase().replace(/[’]/g, "'").match(/[\p{L}']+/gu) ?? []);
+  return words.length >= 5 && !words.some(word => englishWords.has(word));
+}
+
 // Formats Jev always rejects, decided from the URL alone: clips, live blogs, opinion, briefings, galleries.
 // X posts mostly in another script are local promos, never US news.
 export function prefiltered(item) {
-  if (quotePage.test(item.title)) return true;
+  if (quotePage.test(item.title) || nonEnglish(item.title)) return true;
   let segments = [];
   try { segments = new URL(item.url).pathname.toLowerCase().split('/'); } catch { return false; }
   if (!item.x && segments.some(segment => formats.has(segment))) return true;

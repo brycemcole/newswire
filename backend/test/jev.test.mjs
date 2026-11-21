@@ -74,3 +74,38 @@ test('truncated emoji and legacy malformed Unicode cannot poison classifier requ
   assert.equal(bodies[0].state, 'Shipping warning �');
   assert.equal(bodies[1].state, 'Valid 🌊 shipping warning');
 });
+
+test('the TypeSafe provider posts to its own endpoint, counts usage and rejects invalid answers', async t => {
+  const saved = { provider: process.env.NEWSWIRE_CLASSIFIER_PROVIDER, key: process.env.TYPESAFE_API_KEY };
+  process.env.NEWSWIRE_CLASSIFIER_PROVIDER = 'typesafe';
+  process.env.TYPESAFE_API_KEY = 'typesafe-test-secret';
+  t.after(() => {
+    for (const [name, value] of [['NEWSWIRE_CLASSIFIER_PROVIDER', saved.provider], ['TYPESAFE_API_KEY', saved.key]]) if (value === undefined) delete process.env[name]; else process.env[name] = value;
+  });
+  const calls = [];
+  let answer = { topic: { choice: 'energy', confidence: 0.9 } };
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    calls.push({ url, headers: init.headers, body: JSON.parse(init.body) });
+    return Response.json({ answers: answer });
+  });
+  assert.equal((await ask('Oil production', questions)).topic.choice, 'energy');
+  assert.equal(calls[0].url, 'https://api.typesafe.ai/v1/systemone');
+  assert.equal(calls[0].headers.Authorization, 'Bearer typesafe-test-secret');
+  assert.equal(calls[0].body.model, 'jev-latest');
+  assert.equal(classifierUsage()['jev-latest'], 1);
+  answer = { topic: { choice: 'not-a-choice', confidence: 0.9 } };
+  await assert.rejects(ask('Oil production', questions), /TypeSafe response invalid topic answer/);
+  answer = { topic: { choice: 'energy', confidence: 1.5 } };
+  await assert.rejects(ask('Oil production', questions), /TypeSafe response invalid topic answer/);
+});
+
+test('a TypeSafe failure status is reported without provider text', async t => {
+  const saved = { provider: process.env.NEWSWIRE_CLASSIFIER_PROVIDER, key: process.env.TYPESAFE_API_KEY };
+  process.env.NEWSWIRE_CLASSIFIER_PROVIDER = 'typesafe';
+  process.env.TYPESAFE_API_KEY = 'typesafe-test-secret';
+  t.after(() => {
+    for (const [name, value] of [['NEWSWIRE_CLASSIFIER_PROVIDER', saved.provider], ['TYPESAFE_API_KEY', saved.key]]) if (value === undefined) delete process.env[name]; else process.env[name] = value;
+  });
+  t.mock.method(globalThis, 'fetch', async () => new Response('code: billing_error secret detail', { status: 402 }));
+  await assert.rejects(ask('Oil production', questions), error => error.message === 'TypeSafe jev-latest 402');
+});

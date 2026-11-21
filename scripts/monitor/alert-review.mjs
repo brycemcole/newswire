@@ -45,6 +45,25 @@ export async function reviewAlert(story, draft, related, { review = ask, minimum
   return verdict?.choice === 'send' && verdict.confidence >= minimum;
 }
 
+const minimumImportance = 8;
+const minimumGap = 3600000;
+const importanceWindow = 86400000;
+const importances = { breaking: 10, urgent: 8 };
+
+export const importance = story => importances[story.priority] ?? 0;
+
+// At most one push an hour. A push must be at least as important as the previous one sent in the last day.
+export function alertCadenceOpen(last, now = Date.now()) {
+  return !last || now - Date.parse(last.at) >= minimumGap;
+}
+
+export function pickAlert(approved, last, now = Date.now()) {
+  if (!alertCadenceOpen(last, now)) return null;
+  const floor = last && now - Date.parse(last.at) < importanceWindow ? Math.max(minimumImportance, last.importance) : minimumImportance;
+  const eligible = approved.filter(story => importance(story) >= floor);
+  return eligible.reduce((best, story) => (!best || importance(story) > importance(best) ? story : best), null);
+}
+
 export async function reviewAlerts(stories, recent, deps = {}) {
   const approved = [], held = [], failures = [];
   for (const story of stories) {

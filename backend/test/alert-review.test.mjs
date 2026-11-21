@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parseDraft, relatedStories, reviewAlerts } from '../../scripts/monitor/alert-review.mjs';
+import { alertCadenceOpen, importance, parseDraft, pickAlert, relatedStories, reviewAlerts } from '../../scripts/monitor/alert-review.mjs';
 
 const now = Date.parse('2026-10-27T08:00:00Z');
 const story = { id: 's1', title: 'ITS HAPPENING !!!!! Microsoft Offers Exit Packages to 60,000 Employees Amid AI Push', summary: '', source: 'crazymonkey1', url: 'https://x.com/cxetnk/status/1', tags: ['x'], published_at: '2026-10-27T07:36:00Z' };
@@ -43,4 +43,27 @@ test('held, low-confidence and failed reviews send nothing', async () => {
   const broken = await reviewAlerts([story], recent, { now, write: draft('not json'), review: async () => { throw new Error('unused'); } });
   assert.equal(broken.approved.length, 0);
   assert.equal(broken.failures.length, 1);
+});
+
+test('alert cadence allows one push an hour', () => {
+  const at = new Date(now - 30 * 60000).toISOString();
+  assert.equal(alertCadenceOpen(undefined, now), true);
+  assert.equal(alertCadenceOpen({ at, importance: 8 }, now), false);
+  assert.equal(alertCadenceOpen({ at: new Date(now - 61 * 60000).toISOString(), importance: 8 }, now), true);
+});
+
+test('a push must match the importance of the last one sent that day, and the most important story wins', () => {
+  const urgent = { id: 'u', priority: 'urgent' };
+  const breaking = { id: 'b', priority: 'breaking' };
+  const normal = { id: 'n', priority: 'normal' };
+  assert.deepEqual([importance(breaking), importance(urgent), importance(normal)], [10, 8, 0]);
+  assert.equal(pickAlert([normal], undefined, now), null);
+  assert.equal(pickAlert([urgent, breaking], undefined, now), breaking);
+  // Nothing is sent inside the hour, whatever the importance.
+  assert.equal(pickAlert([breaking], { at: new Date(now - 10 * 60000).toISOString(), importance: 8 }, now), null);
+  // After a breaking push, an urgent story waits for the day's window to pass.
+  const earlier = { at: new Date(now - 2 * 3600000).toISOString(), importance: 10 };
+  assert.equal(pickAlert([urgent], earlier, now), null);
+  assert.equal(pickAlert([urgent, breaking], earlier, now), breaking);
+  assert.equal(pickAlert([urgent], { at: new Date(now - 25 * 3600000).toISOString(), importance: 10 }, now), urgent);
 });

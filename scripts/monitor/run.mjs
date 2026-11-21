@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { notify, wake } from './apns.mjs';
 import { syncCalendar } from './calendar.mjs';
 import { publish, recent } from './publish.mjs';
-import { reviewAlerts } from './alert-review.mjs';
+import { alertCadenceOpen, importance, pickAlert, reviewAlerts } from './alert-review.mjs';
 import { classifierIdentity, classifierUsage } from './jev.mjs';
 import { classifyImpacts } from './impacts.mjs';
 import { load, save, statePath } from './state.mjs';
@@ -103,11 +103,14 @@ for (const event of seed ? [] : batch) {
   }
 }
 
-const proposed = noNotify ? [] : published.filter(entry => entry.result === 'new' && ['breaking', 'urgent'].includes(entry.story.priority)).map(entry => entry.story);
+const cadenceOpen = !noNotify && alertCadenceOpen(state['alert:last']);
+const proposed = cadenceOpen ? published.filter(entry => entry.result === 'new' && importance(entry.story) >= 8).map(entry => entry.story) : [];
 const review = proposed.length ? await reviewAlerts(proposed, await recent(6).catch(() => [])) : { approved: [], held: [], failures: [] };
 failures.push(...review.failures);
-const alerts = review.approved;
+const chosen = pickAlert(review.approved, state['alert:last']);
+const alerts = chosen ? [chosen] : [];
 failures.push(...await notify(alerts).catch(error => [`notify: ${error.message}`]));
+if (chosen && !dryRun) state['alert:last'] = { at: new Date().toISOString(), importance: importance(chosen) };
 if (!noNotify && !alerts.length && published.some(entry => entry.result === 'new')) failures.push(...await wake().catch(error => [`wake: ${error.message}`]));
 
 if (seed) for (const event of candidates) state[event.key] ??= { at: new Date().toISOString(), rule: event.rule };
