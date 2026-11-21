@@ -60,6 +60,7 @@ struct AskSheet: View {
     @State private var thread: ChatThread
     @State private var chat = StockChat()
     @State private var history = ChatHistory.shared
+    @State private var approvals = ChatApproval.shared
     @State private var generator = AskSuggestions.shared
     @State private var question = ""
     @State private var showingSettings = false
@@ -202,6 +203,11 @@ struct AskSheet: View {
             history.save(thread)
         }
         .onDisappear { chat.cancel() }
+        // Account-changing steps the assistant proposes wait here for the reader's own answer.
+        .alert(approvals.pending?.title ?? "", isPresented: Binding(get: { approvals.pending != nil }, set: { if !$0 { approvals.resolve(false) } }), presenting: approvals.pending) { request in
+            Button(request.action, role: request.destructive ? .destructive : nil) { approvals.resolve(true) }
+            Button("Not now", role: .cancel) { approvals.resolve(false) }
+        } message: { Text($0.message) }
         #if DEBUG
         .task {
             if CommandLine.arguments.contains("-askResearchPreview") {

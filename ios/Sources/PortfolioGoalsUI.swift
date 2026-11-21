@@ -279,7 +279,7 @@ struct IdeaDetailView: View {
         .scrollEdgeEffectStyle(.soft, for: .all)
         // Ask opens right here as a sheet. Switching to the Ask tab did nothing when Portfolio was itself a sheet
         // over Today, because the tab changed underneath it.
-        .sheet(item: $asking) { AskSheet(context: $0, initialQuestion: "Help me work through this: \(idea.title)") }
+        .sheet(item: $asking) { AskSheet(context: $0, initialQuestion: "Look into this with your portfolio tools and fix what you can: \(idea.title)") }
     }
 }
 
@@ -376,7 +376,7 @@ struct GoalDetailView: View {
         }
         .navigationBarTitleDisplayMode(.inline)
         .scrollEdgeEffectStyle(.soft, for: .all)
-        .sheet(item: $asking) { AskSheet(context: $0, initialQuestion: "Help me with this goal: \(goals.goal(id)?.text ?? "")") }
+        .sheet(item: $asking) { AskSheet(context: $0, initialQuestion: "Look into this goal using my portfolio data and fix what you can: \(goals.goal(id)?.text ?? "")") }
         .asksAbout(AskContext(screen: goals.goal(id).map { "The portfolio goal \"\($0.text)\" and its latest review: \($0.review?.headline ?? "not reviewed yet"). \($0.review?.body.prefix(500) ?? "")" } ?? ""))
     }
 

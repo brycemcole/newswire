@@ -92,6 +92,8 @@ actor StockResearchTools {
     let name: String
     let progress: @MainActor @Sendable (String) -> Void
     let api: NewswireAPI?
+    /// Whether the model may inspect and repair the linked brokerages; off for background reviews nobody is watching.
+    let portfolioTools: Bool
     private(set) var sources: [StockSource] = []
     private var dataCache: [String: String] = [:]
     private var cache: [StockToolArgumentsKey: String] = [:]
@@ -100,10 +102,11 @@ actor StockResearchTools {
     /// Option contracts the model was shown, keyed by OCC symbol. Chat widgets draw their numbers from here, never from model text.
     var contracts: [ChatOption] { Array(quoted.values) }
 
-    init(symbol: String, name: String, api: NewswireAPI? = nil, options: [ChatOption] = [], progress: @escaping @MainActor @Sendable (String) -> Void) {
+    init(symbol: String, name: String, api: NewswireAPI? = nil, options: [ChatOption] = [], portfolioTools: Bool = false, progress: @escaping @MainActor @Sendable (String) -> Void) {
         self.symbol = OptionSymbol(symbol)?.underlying ?? symbol
         self.name = name
         self.api = api
+        self.portfolioTools = portfolioTools
         self.progress = progress
         quoted = Dictionary(options.map { ($0.symbol, $0) }, uniquingKeysWith: { _, new in new })
     }
@@ -389,7 +392,7 @@ struct StockChatMessage: Identifiable, Codable, Hashable {
     Before answering, check each proposed name against every requested criterion. Separate supported matches from unverified leads; never label a momentum-only list as low-attention matches. Return fewer than requested if fewer qualify, state the shortfall, and do not pad with unsupported names. Give each supported selection its relevant performance evidence, evidence for the other requested criteria, and a concise business driver or risk grounded in research. Briefly state the searched scope, period and material coverage gaps. Do not claim these are the best stocks across markets you did not inspect. For simple quotes, definitions or a single-company question, skip this discovery workflow and answer directly.
     """
 
-    func cancel() { taskID = UUID(); task?.cancel(); task = nil; activity = nil; streamingText = "" }
+    func cancel() { taskID = UUID(); task?.cancel(); task = nil; activity = nil; streamingText = ""; ChatApproval.shared.resolve(false) }
 
     func send(_ question: String, symbol: String, name: String, price: String?) {
         guard !busy, !question.isEmpty else { return }
@@ -422,7 +425,7 @@ struct StockChatMessage: Identifiable, Codable, Hashable {
         taskID = id
         task = Task { [self] in
             defer { if taskID == id { task = nil; activity = nil; streamingText = "" } }
-            let research = StockResearchTools(symbol: symbol, name: name, api: api, options: messages.flatMap(\.options)) { [weak self] status in
+            let research = StockResearchTools(symbol: symbol, name: name, api: api, options: messages.flatMap(\.options), portfolioTools: customFormat == nil) { [weak self] status in
                 guard let self, self.taskID == id else { return }
                 self.activity = status
             }
@@ -458,7 +461,8 @@ struct StockChatMessage: Identifiable, Codable, Hashable {
             \(format)
             """
             let viewing = screen.isEmpty ? "" : "\n\nThe reader opened Ask from this screen, so questions like \"this\", \"here\" or \"why is it up\" refer to it: \(screen)"
-            let instructions = baseInstructions + viewing + "\n\n" + Self.discoveryInstructions + "\n\n" + Self.screenInstructions
+            let portfolio = customFormat == nil ? "\n\n" + PortfolioAssistant.instructions : ""
+            let instructions = baseInstructions + viewing + "\n\n" + Self.discoveryInstructions + "\n\n" + Self.screenInstructions + portfolio
             do {
                 let answer: String
                 if let responder {
@@ -470,7 +474,8 @@ struct StockChatMessage: Identifiable, Codable, Hashable {
                     answer = try await deepSeek(key: key, instructions: instructions, history: history, question: question, research: research, data: try await DataToolCatalog.functions(api), free: backend == .newswire)
                 } else {
                     guard AIRouter.isAvailable(.stockChat) else { throw StockAIError.unavailable }
-                    let tools: [any Tool] = [StockDataTool(research: research), MarketDataTool(research: research), CurrentScreenTool(research: research)]
+                    var tools: [any Tool] = [StockDataTool(research: research), MarketDataTool(research: research), CurrentScreenTool(research: research)]
+                    if customFormat == nil { tools += [PortfolioStatusTool(), PortfolioPositionsTool(), PortfolioRefreshTool(progress: research.progress)] }
                     let session = AIRouter.session(backend, instructions: instructions, tools: tools)
                     answer = try await session.respond(to: "\(history)\nUser: \(question)", options: GenerationOptions(maximumResponseTokens: 900)).content
                 }
@@ -516,7 +521,8 @@ struct StockChatMessage: Identifiable, Codable, Hashable {
             "parameters": ["type": "object", "properties": ["reason": ["type": "string"]], "required": [], "additionalProperties": false]]]
         return [["type": "function", "function": ["name": "stock_data",
             "description": StockDataTool(research: research).description,
-            "parameters": ["type": "object", "properties": properties, "required": Array(properties.keys), "additionalProperties": false]]]].filter { _ in stockTools } + [screen] + data
+            "parameters": ["type": "object", "properties": properties, "required": Array(properties.keys), "additionalProperties": false]]]].filter { _ in stockTools } + [screen]
+            + (research.portfolioTools ? PortfolioAssistant.definitions : []) + data
     }
 
     func runTool(_ name: String, arguments: String?, research: StockResearchTools) async throws -> String {
@@ -524,6 +530,8 @@ struct StockChatMessage: Identifiable, Codable, Hashable {
             return try await research.run(args)
         } else if name == "current_screen" {
             return await research.currentStory()
+        } else if research.portfolioTools, let result = await PortfolioAssistant.run(name, arguments: arguments, progress: research.progress) {
+            return result
         } else if name.hasPrefix("data_"), let arguments,
                   let object = (try? JSONSerialization.jsonObject(with: Data(arguments.isEmpty ? "{}".utf8 : arguments.utf8))) as? [String: Any] {
             return try await research.data(String(name.dropFirst(5)), arguments: object.compactMapValues { value in
