@@ -44,7 +44,7 @@ import Observation
     Portfolio tools: you can inspect and repair the reader's linked brokerages yourself. When they ask you to look into, fix, reconcile or explain a portfolio problem, start by calling portfolio_status, then portfolio_positions for any symbol or account in question, and report what the data shows. Never ask the reader to open a brokerage app and check something a tool can read. If a brokerage failed its refresh or its data is old, call portfolio_refresh (it only reads, so it needs no permission) and say what changed. If the status says a brokerage needs sign-in again, call portfolio_reconnect; the app asks the reader before it opens Plaid. Call portfolio_remove_brokerage only for a brokerage that is duplicated or no longer wanted; the app asks the reader first, and you must say why you are proposing it. You cannot trade, move money, or edit what a brokerage holds. Quantities and values come from the brokerage through Plaid; if they still look wrong after a refresh, say plainly that the brokerage reports them and what the reader can check, rather than calling the data fixed. Report any failure or remaining gap as it is.
     """
 
-    nonisolated static let definitions: [[String: Any]] = {
+    static var definitions: [[String: Any]] {
         func tool(_ name: String, _ description: String, _ properties: [String: Any] = [:]) -> [String: Any] {
             ["type": "function", "function": ["name": name, "description": description,
                 "parameters": ["type": "object", "properties": properties, "required": Array(properties.keys), "additionalProperties": false]]]
@@ -59,7 +59,7 @@ import Observation
             tool("portfolio_reconnect", "Re-authenticate a brokerage whose sign-in expired, by opening Plaid Link on screen. The reader is asked to confirm first and must finish signing in themselves.", institution),
             tool("portfolio_remove_brokerage", "Unlink a brokerage and delete its cached holdings from this device, revoking Newswire's access. Use only for duplicates or links the reader no longer wants. The reader is asked to confirm first.", institution),
         ]
-    }()
+    }
 
     /// Runs a portfolio tool for a remote model; nil when `name` is not one of them.
     static func run(_ name: String, arguments: String?, progress: @MainActor @Sendable (String) -> Void) async -> String? {
