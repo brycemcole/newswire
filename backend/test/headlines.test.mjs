@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { acceptedTopic, balanceHeadlines, classificationText, optionsFlowQuestion, optionsFlowReport, parseFeed, settleHeadlineSources, significanceTag } from '../../scripts/monitor/rules/headlines.mjs';
+import { acceptedTopic, balanceHeadlines, isDigest, classificationText, optionsFlowQuestion, optionsFlowReport, parseFeed, settleHeadlineSources, significanceTag } from '../../scripts/monitor/rules/headlines.mjs';
 
 test('X collection starts while feeds are pending and failures remain isolated', async () => {
   let finishFeed;
@@ -159,4 +159,9 @@ test('only supported confident significance labels reach story tags', () => {
   assert.equal(significanceTag({}), null);
   assert.equal(significanceTag({ significance: { choice: 'other', confidence: 1 } }), null);
   assert.equal(significanceTag({ significance: { choice: 'made-up', confidence: 1 } }), null);
+});
+
+test('daily roundups and digests are recognised, single news items are not', () => {
+  for (const title of ['AI Top 20 for Nov 25: models, chips and funding', 'Morning digest: what moved markets', 'Weekly roundup of AI news', 'Stocks: 5 things to know today']) assert.ok(isDigest(title), title);
+  for (const title of ['S&P says it may cut Nvidia credit rating', 'Fed holds rates steady']) assert.ok(!isDigest(title), title);
 });

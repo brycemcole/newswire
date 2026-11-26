@@ -215,6 +215,13 @@ export function balanceHeadlines(events, maxX = config.max_x_per_run ?? 2, { pub
     .filter(event => !event.tags.includes('x') || xCount++ < maxX);
 }
 
+// Daily or weekly roundups ("AI Top 20 for Nov 25", "Morning digest", "Week in review") collect many items and report no single new event,
+// so they are features however the classifier scores their urgency.
+export function isDigest(title) {
+  return /\b(?:top\s+\d+|\d+\s+(?:things|stories|links)|(?:daily|weekly|morning|evening|market|news|ai)\s+(?:digest|round-?up|recap|wrap|briefing|newsletter)|round-?ups?|digest|week in review|what you missed)\b/i.test(title)
+    || /^(?:the\s+)?(?:daily|weekly)\b/i.test(title);
+}
+
 export function acceptedTopic(answers, { x = false, minimum = config.min_confidence ?? 0.7 } = {}) {
   const topic = classified.find(candidate => candidate.id === answers.topic?.choice);
   if (!topic || !(answers.topic.confidence >= minimum) || !answers.format || !(answers.format.confidence >= minimum)) return null;
@@ -336,6 +343,7 @@ export async function run({ lookbackHours } = {}) {
           ...(onTopic || entry.matched.length ? await ask(text, detailQuestions) : {}),
           ...(onTopic && topic.choice === 'options-flow' ? await ask(text, optionsFlowQuestion) : {}),
         };
+        if (answers.format && isDigest(entry.item.title)) answers.format = { choice: 'feature', confidence: 1 };
         const verdict = {
           topic: acceptedTopic(answers, { x: entry.item.x, minimum }),
           format: answers.format?.choice ?? null,
