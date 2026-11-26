@@ -83,6 +83,8 @@ nonisolated enum StoryRanking {
         let title = story.title.lowercased()
         // Older headlines predate significance tags. A payout change must not be treated as a routine declaration.
         if title.range(of: #"\b(cuts?|cutting|suspend\w*|slash\w*|halt\w*|scrap\w*|eliminat\w*|rais\w*|hik\w*|increas\w*|reduc\w*|special)\b"#, options: .regularExpression) != nil { return false }
+        // Daily or weekly roundups collect many items and report no single new event, whatever urgency was assigned to them.
+        if title.range(of: #"\b(top \d+|\d+ (things|stories|links)|(daily|weekly|morning|evening|market|news|ai) (digest|round-?up|recap|wrap|briefing|newsletter)|round-?ups?|digest|week in review|what you missed)\b"#, options: .regularExpression) != nil { return true }
         return title.range(of: #"\b(declares? .{0,60}dividend|ex.dividend|dividend reminder|dividend picks|dividend stocks|what(?:'s| is) next for .{0,50}stock|stocks? to buy|should you buy)\b"#, options: .regularExpression) != nil
     }
 

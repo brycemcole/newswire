@@ -34,6 +34,15 @@ struct RankingTests {
         #expect(ranked == ["older", "mine", "seen"])
     }
 
+    @Test func dailyRoundupDoesNotOutrankRealNewsEvenWhenUrgentAndHeld() {
+        let stories = [
+            story("roundup", "AI Top 20 for Nov 25: models, chips and funding", hoursAgo: 0.2, source: "X", priority: "urgent", tickers: ["NOV", "NVDA"]),
+            story("news", "S&P says it may cut Nvidia's credit rating", hoursAgo: 0.5, source: "CNBC", priority: "urgent", tickers: ["NVDA"]),
+        ]
+        let ranked = StoryRanking.rank(stories, seen: [], symbols: ["NVDA"], holdings: ["NVDA"], now: now).map(\.id)
+        #expect(ranked == ["news", "roundup"])
+    }
+
     @Test func escalationBeatsNewerUnrelatedStockCoverage() {
         let stories = [
             story("dividend", "Acme declares $0.12 quarterly dividend", hoursAgo: 0.1, source: "Seeking Alpha"),

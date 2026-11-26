@@ -27,7 +27,10 @@ const breakers = new Set([
   'a', 'an', 'the', 'as', 'at', 'on', 'in', 'to', 'for', 'with', 'from', 'into', 'over', 'amid', 'after', 'before', 'by', 'but', 'or', 'if', 'is', 'are', 'was', 'be', 'its', 'it', 'how', 'why', 'what', 'who', 'when', 'where', 'this', 'that', 'these', 'those', 'new', 'says', 'say', 'said', 'will', 'may', 'could', 'would', 'should', 'can', 'up', 'down', 'off', 'out', 'vs', 'versus', 'than', 'more', 'most', 'less', 'not', 'no', 'all', 'about', 'just', 'here', 'there',
   'shares', 'share', 'stock', 'stocks', 'rise', 'rises', 'rose', 'fall', 'falls', 'fell', 'jump', 'jumps', 'drop', 'drops', 'slump', 'slumps', 'surge', 'surges', 'gain', 'gains', 'soar', 'soars', 'sink', 'sinks', 'plunge', 'plunges', 'rally', 'rallies', 'climb', 'climbs', 'slide', 'slides', 'tumble', 'tumbles', 'earnings', 'profit', 'revenue', 'sales', 'deal', 'plans', 'plan', 'report', 'reports', 'ceo', 'ipo', 'ai',
 ]);
-const ignored = new Set(['us', 'u.s', 'uk', 'eu', 'un', 'fed', 'trump', 'biden', 'harris', 'wall', 'wall street', 'white house', 'congress', 'senate', 'treasury', 'china', 'europe', 'japan', 'target', 'block', 'gap', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday', 'january', 'february', 'march', 'april', 'june', 'july', 'august', 'september', 'october', 'november', 'december', 'bloomberg', 'reuters', 'cnbc', 'yahoo finance']);
+const ignored = new Set(['us', 'u.s', 'uk', 'eu', 'un', 'fed', 'trump', 'biden', 'harris', 'wall', 'wall street', 'white house', 'congress', 'senate', 'treasury', 'china', 'europe', 'japan', 'target', 'block', 'gap', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday', 'january', 'february', 'march', 'april', 'june', 'july', 'august', 'september', 'october', 'november', 'december', 'jan', 'feb', 'mar', 'apr', 'jun', 'jul', 'aug', 'sep', 'sept', 'oct', 'nov', 'dec', 'bloomberg', 'reuters', 'cnbc', 'yahoo finance']);
+
+// "Nov 25" in a roundup headline is a date, not National Oilwell Varco (NOV).
+const dateLike = /^(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\.?(?:\s+\d{1,2})?(?:,?\s+\d{4})?$/i;
 
 export interface Mention { symbol: string; match: string }
 export interface Quote {
@@ -80,7 +83,7 @@ export function candidates(text: string): string[] {
     }
     if (run.length) add(run);
   }
-  return found.filter(phrase => !ignored.has(phrase.toLowerCase().replace(/\.$/, '')) && phrase.length > 1 && !/^\d+$/.test(phrase));
+  return found.filter(phrase => !ignored.has(phrase.toLowerCase().replace(/\.$/, '')) && !dateLike.test(phrase) && phrase.length > 1 && !/^\d+$/.test(phrase));
 }
 
 export function accepts(phrase: string, name: string): boolean {

@@ -21,6 +21,14 @@ test('company names only match the listed company', () => {
   assert.ok(accepts('UBS', 'UBS Group AG'));
 });
 
+test('abbreviated months are not company names', () => {
+  const found = candidates('AI Top 20 for Nov 25: Nvidia, OpenAI and more');
+  assert.ok(!found.includes('Nov'));
+  assert.ok(!found.includes('Nov 25'));
+  assert.ok(candidates('Nov. 25 Dec 3, 2026 Jan 9 Sept 12 roundup').every(phrase => !/^(?:nov|dec|jan|sept)/i.test(phrase)));
+  assert.ok(candidates('Novartis rallies').includes('Novartis') && candidates('Marathon Digital rallies').includes('Marathon Digital'));
+});
+
 test('quote shape separates the regular session from after hours', () => {
   const period = (start, end) => ({ start, end });
   const chart = {
