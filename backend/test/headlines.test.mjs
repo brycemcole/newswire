@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { acceptedTopic, balanceHeadlines, classificationText, nonEnglish, prefiltered, optionsFlowQuestion, optionsFlowReport, parseFeed, settleHeadlineSources, significanceTag } from '../../scripts/monitor/rules/headlines.mjs';
+import { acceptedTopic, balanceHeadlines, classificationText, detailFor, detailQuestions, nonEnglish, prefiltered, optionsFlowQuestion, optionsFlowReport, parseFeed, settleHeadlineSources, significanceTag } from '../../scripts/monitor/rules/headlines.mjs';
 
 test('X collection starts while feeds are pending and failures remain isolated', async () => {
   let finishFeed;
@@ -123,6 +123,25 @@ test('long X reports retain attribution and trade evidence for classification', 
   assert.ok(text.includes('From Nomura:'));
   assert.ok(text.includes('21k Apr 80 calls for $7.15 (10/22)'));
   assert.ok(classificationText({ title: 'Report', summary: 'x'.repeat(20000), x: true }).length < 12100);
+});
+
+test('snapshots are compact: source and title, sentence-cut lead, no feed boilerplate, long text only on request', () => {
+  const item = { title: 'Acme lifts outlook', publisher: 'Reuters', summary: `Acme raised guidance after strong demand. Shares rose 4% premarket. ${'More detail here. '.repeat(80)}` };
+  const text = classificationText(item);
+  assert.ok(text.startsWith('Source: Reuters\nTitle: Acme lifts outlook\nSummary: Acme raised guidance'));
+  assert.ok(text.length < 700 && text.endsWith('.'));
+  assert.ok(!/appeared first/.test(classificationText({ title: 'T', publisher: 'Blog', summary: 'Fed holds rates steady. The post T appeared first on Blog.' })));
+  assert.equal(classificationText({ title: 'T', publisher: 'P', summary: '' }), 'Source: P\nTitle: T');
+  assert.ok(classificationText({ title: 'R', publisher: '@x', x: true, summary: 'x'.repeat(20000) }).length < 1300);
+  assert.ok(classificationText({ title: 'R', publisher: '@x', x: true, summary: 'x'.repeat(5000) }, { full: true }).length > 5000);
+});
+
+test('relevance is asked only for X posts and geopolitical stories', () => {
+  assert.ok(!('relevance' in detailFor({ x: false }, 'tariffs')));
+  assert.ok('relevance' in detailFor({ x: true }, 'tariffs'));
+  assert.ok('relevance' in detailFor({ x: false }, 'geopolitical-security'));
+  for (const name of ['format', 'priority', 'significance']) assert.ok(name in detailFor({}, 'results'));
+  assert.ok('relevance' in detailQuestions);
 });
 
 test('options-flow presentation separates publication from observations and preserves reported figures', () => {

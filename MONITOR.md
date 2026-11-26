@@ -44,7 +44,7 @@ Continuous rules (`markets`, `volatility`, `rates`, `equities`, `crypto`, `secto
 
 Before Jev, a structural pre-filter drops formats it always rejects: publisher URLs with a path segment in `skip_sections` (default `video`, `videos`, `live`, `live-updates`, `live-news`, `opinion`, `opinions`, `briefing`, `podcast`, `podcasts`, `newsletters`, `gallery`, `pictures`, `interactive`), and X posts whose letters are mostly outside the Latin alphabet. It uses only the URL and script, never topic keywords; the article version of a filtered video still goes through Jev.
 
-To keep Jev input small, classification sends the title plus at most 300 characters of summary, asks the topic question alone first, and asks format and priority only for stories that are on-topic or already matched a topic search. Exact and near-identical copies skip classification entirely.
+To keep Jev input small, classification sends the source, title and the lead of the summary (about 600 characters cut at a sentence, feed boilerplate such as "appeared first on" removed; X posts 1,200), asks the topic question alone first, and asks format, priority and significance only for stories that are on-topic or already matched a topic search. The relevance question is added only for X posts and geopolitical stories, the only places its answer is used, and the full X text goes only to the options-flow evidence check. Exact and near-identical copies skip classification entirely.
 
 ## Rules
 
