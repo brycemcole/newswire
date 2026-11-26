@@ -233,8 +233,26 @@ export function acceptedTopic(answers, { x = false, minimum = config.min_confide
   return answers.format.choice === 'news' || (topic.allow_analysis && (!x || topic.allow_x_analysis) && answers.format.choice === 'feature') ? topic.id : null;
 }
 
-export function classificationText(item) {
-  return `${item.title}\n\n${item.summary.slice(0, item.x ? 12000 : 2000)}`.trim();
+// Classifier input is the source, title and the lead of the summary: later paragraphs rarely change a verdict,
+// and every question in a request repeats this text. Only the options-flow evidence check reads the long form.
+const feedBoilerplate = /\b(?:the post .{1,200}? appeared first on .{1,80}?\.?|continue reading\b.*|read (?:more|the full (?:story|article))\b.*|click here\b.*|sign up for .{1,80}? newsletter\b.*)$/is;
+export function classificationText(item, { full = false } = {}) {
+  const limit = full ? 12000 : item.x ? 1200 : 600;
+  let summary = (item.summary ?? '').replace(/\s+/g, ' ').trim();
+  if (!full) summary = summary.replace(feedBoilerplate, '').trim();
+  if (summary.length > limit) {
+    const cut = summary.slice(0, limit);
+    const edge = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('? '), cut.lastIndexOf('! '));
+    summary = full ? cut : (edge > limit * 0.5 ? cut.slice(0, edge + 1) : cut.slice(0, cut.lastIndexOf(' ') > 0 ? cut.lastIndexOf(' ') : limit));
+  }
+  return `Source: ${item.publisher}\nTitle: ${item.title}${summary ? `\nSummary: ${summary}` : ''}`.trim();
+}
+
+// Relevance only gates X posts and geopolitical stories, so every other story skips that question and its criteria.
+export function detailFor(item, topicChoice) {
+  if (item.x || topicChoice === 'geopolitical-security') return detailQuestions;
+  const { relevance, ...rest } = detailQuestions;
+  return rest;
 }
 
 export function optionsFlowReport(item) {
@@ -343,8 +361,8 @@ export async function run({ lookbackHours } = {}) {
         const onTopic = topic.confidence >= minimum && topic.choice !== offTopic;
         const answers = {
           topic,
-          ...(onTopic || entry.matched.length ? await ask(text, detailQuestions) : {}),
-          ...(onTopic && topic.choice === 'options-flow' ? await ask(text, optionsFlowQuestion) : {}),
+          ...(onTopic || entry.matched.length ? await ask(text, detailFor(entry.item, topic.choice)) : {}),
+          ...(onTopic && topic.choice === 'options-flow' ? await ask(classificationText(entry.item, { full: true }), optionsFlowQuestion) : {}),
         };
         const verdict = {
           topic: acceptedTopic(answers, { x: entry.item.x, minimum }),
