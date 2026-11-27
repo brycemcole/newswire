@@ -478,6 +478,8 @@ struct PositionMoversCard: View {
         var proxy: String? = nil
         /// `value` is a model estimate at the underlying's current (possibly extended-hours) price, not a quoted option price.
         var valueEstimated = false
+        /// An estimated contract's move since its last trade, in dollars, when it hasn't traded today.
+        var estimatedMove: Double? = nil
     }
 
     /// The contract's move in the current regular session, per share. Before the open, or until the contract trades,
@@ -520,7 +522,8 @@ struct PositionMoversCard: View {
                 result.append(Row(id: position.id, symbol: symbol, title: "\(HomeFormat.display(symbol)) \(option.title)",
                                   detail: parts.joined(separator: " · "), dollars: move.map { $0 * multiplier },
                                   percent: move.flatMap { move in previous.flatMap { $0 > 0 ? move / $0 * 100 : nil } },
-                                  value: value, fallback: fallback, urgent: option.daysLeft <= 7, valueEstimated: estimated != nil))
+                                  value: value, fallback: fallback, urgent: option.daysLeft <= 7, valueEstimated: estimated != nil,
+                                  estimatedMove: move == nil ? sinceLast : nil))
             } else {
                 let lots = stocks[symbol]
                 stocks[symbol] = (quantity: (lots?.quantity ?? 0) + position.quantity,

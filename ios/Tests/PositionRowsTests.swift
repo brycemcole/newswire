@@ -69,6 +69,7 @@ struct PositionRowsTests {
         #expect(row.fallback?.text.hasPrefix("≈") == true)
         // The pill shows the contract's own dollar move from its last trade, not the stock's percent.
         #expect(row.fallback?.caption == "since last trade")
+        #expect(row.estimatedMove == row.fallback?.tint)
         #expect(abs((row.fallback?.tint ?? 0) - (expected - 10 * 200)) < 1e-6)
     }
 

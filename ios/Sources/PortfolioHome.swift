@@ -45,7 +45,8 @@ struct PortfolioHome: View {
             let detail = row.detail.components(separatedBy: " · ").filter { $0 != valueText && $0 != valueText.map({ "≈" + $0 }) }.joined(separator: " · ")
             return HoldingLine(id: row.id, symbol: row.symbol, title: row.title, detail: detail, value: row.value,
                                dayDollars: row.dollars, dayPercent: row.percent, fallback: row.fallback?.text, fallbackTint: row.fallback?.tint,
-                               isOption: isOption, urgent: row.urgent, estimated: row.proxy != nil, valueEstimated: row.valueEstimated)
+                               isOption: isOption, urgent: row.urgent, estimated: row.proxy != nil, valueEstimated: row.valueEstimated,
+                               estimatedMove: row.estimatedMove)
         }
     }
 
@@ -234,9 +235,11 @@ struct PortfolioHome: View {
                     Text(title).font(.title3.weight(.bold))
                     Text("\(lines.count)").font(.subheadline).foregroundStyle(.secondary)
                     Spacer()
-                    if lines.contains(where: { $0.dayDollars != nil }) {
-                        let total = lines.compactMap(\.dayDollars).reduce(0, +)
-                        Text("\(HomeFormat.dollars(total)) today").font(.footnote.weight(.semibold)).monospacedDigit().foregroundStyle(HomeFormat.tint(total))
+                    if lines.contains(where: { $0.dayDollars != nil || $0.estimatedMove != nil }) {
+                        // Contracts that haven't traded today count their estimated move since the last trade, marked ≈.
+                        let total = lines.compactMap { $0.dayDollars ?? $0.estimatedMove }.reduce(0, +)
+                        let approximate = lines.contains { ($0.estimated && $0.dayDollars != nil) || ($0.dayDollars == nil && $0.estimatedMove != nil) }
+                        Text("\(approximate ? "≈" : "")\(HomeFormat.dollars(total)) today").font(.footnote.weight(.semibold)).monospacedDigit().foregroundStyle(HomeFormat.tint(total))
                     }
                 }
                 .padding(.bottom, 8)
@@ -324,6 +327,7 @@ private struct HoldingLine: Identifiable {
     var estimated = false
     /// The value is a model estimate at the underlying's current price.
     var valueEstimated = false
+    var estimatedMove: Double? = nil
 }
 
 private struct ChangePill: ViewModifier {
