@@ -173,6 +173,12 @@ nonisolated struct ScreenerRow: Identifiable, Hashable, Sendable {
 
     var id: String { symbol }
 
+    /// Exchange test symbols (Nasdaq's ZVZZT family, NYSE's "test" issues) trade huge volume and top Most active,
+    /// but they are not real companies, so screens drop them.
+    var isTestIssue: Bool {
+        symbol.wholeMatch(of: /Z[A-Z]ZZT/) != nil || name.firstMatch(of: /(?i)\b(test|tst)\b/) != nil
+    }
+
     var relativeVolume: Double? {
         guard let volume, let averageVolume, averageVolume > 0 else { return nil }
         return volume / averageVolume
@@ -272,7 +278,7 @@ extension MarketClient {
             if code == 401 || code == 403 { continue }
             guard (200..<300).contains(code) else { throw MarketError.status(code) }
             let root = try JSONDecoder().decode(YValue.self, from: data)
-            return (root["finance"]?["result"]?.array.first?["quotes"]?.array ?? []).compactMap(ScreenerRow.init)
+            return (root["finance"]?["result"]?.array.first?["quotes"]?.array ?? []).compactMap(ScreenerRow.init).filter { !$0.isTestIssue }
         }
         throw MarketError.status(401)
     }

@@ -44,6 +44,17 @@ struct ScreenerTests {
         #expect(ScreenerRanking.apply(try preset("iv"), to: rows).map(\.symbol) == ["C", "D", "A"])
     }
 
+    @Test func exchangeTestIssuesAreFlagged() throws {
+        func make(_ symbol: String, _ name: String) throws -> ScreenerRow {
+            let json = #"{"symbol":"\#(symbol)","longName":"\#(name)","quoteType":"EQUITY","regularMarketPrice":10,"regularMarketChange":0.1,"regularMarketChangePercent":1,"marketState":"REGULAR"}"#
+            return try #require(ScreenerRow(JSONDecoder().decode(YValue.self, from: Data(json.utf8))))
+        }
+        #expect(try make("ZVZZT", "NASDAQ TEST STOCK").isTestIssue)
+        #expect(try make("ABCD", "NYSE Tst Issue").isTestIssue)
+        #expect(try !make("NVDA", "NVIDIA Corporation").isTestIssue)
+        #expect(try !make("LTST", "Latest Holdings Inc").isTestIssue)
+    }
+
     @Test func cryptoScreensAreGone() {
         #expect(ScreenerPreset.preset("cryptoGainers") == nil && ScreenerPreset.preset("cryptoLosers") == nil)
         #expect(!ScreenerPreset.defaultPinned.contains("cryptoGainers"))
