@@ -35,7 +35,7 @@ struct AppTabs: View {
                 FeedView().environment(\.askTab, .today).fullWidthTabBar()
             }
             Tab("Portfolio", systemImage: "briefcase", value: AppTab.portfolio) {
-                PortfolioView(embedded: true).environment(\.askTab, .portfolio).fullWidthTabBar()
+                PortfolioHome().environment(\.askTab, .portfolio).fullWidthTabBar()
             }
             Tab("Ask", systemImage: "message", value: AppTab.ask) {
                 AskSheet(context: navigator.askContext, embedded: true).fullWidthTabBar()
