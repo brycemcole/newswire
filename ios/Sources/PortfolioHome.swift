@@ -50,6 +50,14 @@ struct PortfolioHome: View {
         }
     }
 
+    /// The same per-row figures the Stocks & ETFs and Options headers total.
+    private var liveToday: LiveDayChange? {
+        let lines = realLines
+        guard lines.contains(where: { $0.dayDollars != nil || $0.estimatedMove != nil }) else { return nil }
+        return LiveDayChange(change: lines.compactMap { $0.dayDollars ?? $0.estimatedMove }.reduce(0, +),
+                             estimated: lines.contains { ($0.estimated && $0.dayDollars != nil) || ($0.dayDollars == nil && $0.estimatedMove != nil) })
+    }
+
     // MARK: Body
 
     var body: some View {
@@ -114,7 +122,8 @@ struct PortfolioHome: View {
             sampleHeader
         } else {
             PortfolioOverview(snapshot: overviewSnapshot, title: account == nil ? "All accounts" : accounts.first { $0.id == account }?.institution ?? "Account",
-                              accounts: account.flatMap { id in accounts.first { $0.id == id }.map { [$0] } } ?? accounts)
+                              accounts: account.flatMap { id in accounts.first { $0.id == id }.map { [$0] } } ?? accounts,
+                              liveToday: liveToday)
                 .id(account)
         }
     }
