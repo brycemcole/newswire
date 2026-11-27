@@ -50,6 +50,25 @@ struct PositionRowsTests {
         #expect(option.value == 1800 && option.dollars == nil && option.percent == nil)
     }
 
+    @Test func contractIsValuedAtTheUnderlyingsExtendedHoursPrice() throws {
+        let data = Data("""
+        {"symbol":"GEV","regularMarketPrice":690,"regularMarketTime":100,"regularMarketChange":1,"regularMarketChangePercent":0.1,
+         "marketState":"POST","postMarketPrice":720,"postMarketTime":200}
+        """.utf8)
+        let underlying = try #require(MarketQuote(JSONDecoder().decode(YValue.self, from: data)))
+        #expect(underlying.extendedLabel == "After" && underlying.price == 720)
+        let closed = OptionQuote(bid: 0, ask: 0, last: 10, lastTrade: utc("2026-10-27T19:59:00Z"), change: nil, yahooVolatility: 0.4,
+                                 regular: 700, pre: nil, post: nil, marketState: "POST")
+        let model = try #require(OptionEstimate(quote: closed, option: try #require(call.option)))
+        let row = try #require(PositionMoversCard.rows(positions: [call], quotes: ["GEV": underlying], options: [call.id: closed], now: utc("2026-10-28T00:30:00Z")).first)
+        // Same number the stock page shows: the model's price at the underlying's current price, not the synced brokerage value.
+        let expected = model.perShare(at: 720, on: .now) * 200
+        #expect(row.valueEstimated)
+        #expect(abs((row.value ?? 0) - expected) < expected * 0.05 + 1)
+        #expect(row.value != 1800)
+        #expect(row.fallback?.text.hasPrefix("≈") == true)
+    }
+
     private func fund(_ symbol: String, name: String? = nil, value: Double? = 4688) -> Position {
         Position(id: "b|\(symbol)", itemID: "b", institution: "Empower", account: "401(k)", symbol: symbol, name: name,
                  option: nil, quantity: 12.84, price: nil, value: value, reportedCost: nil)
