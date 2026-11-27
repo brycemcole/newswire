@@ -295,6 +295,7 @@ private struct ConditionalWireSearch: ViewModifier {
 
 struct FeedView: View {
     @Environment(\.scenePhase) private var phase
+    @Environment(\.dockAboveTabBar) private var dockAboveTabBar
     @State private var store = FeedStore.shared
     @State private var settings = false
     @State private var showingSaved = false
@@ -592,7 +593,7 @@ struct FeedView: View {
         .overlay {
             if !hidesMarketDock {
                 StorySuggestionsReader(source: storySuggestions) { suggestedSymbols in
-                    MarketDock(detent: $dock, onSelect: { symbol in
+                    MarketDock(detent: $dock, aboveTabBar: dockAboveTabBar, onSelect: { symbol in
                         if symbol == TerminalExploreView.token {
                             withAnimation(selectionAnimation) { dock = .peek }
                             marketDepth = nil

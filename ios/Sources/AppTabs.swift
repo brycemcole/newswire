@@ -34,6 +34,7 @@ struct AppTabs: View {
             }
         }
         .environment(navigator)
+        .environment(\.dockAboveTabBar, true)
     }
 }
 
