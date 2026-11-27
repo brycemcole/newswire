@@ -125,7 +125,7 @@ nonisolated struct ScreenerPreset: Identifiable, Hashable, Sendable {
                        blurb: "Largest one-year gains among companies over $2B.",
                        filters: [.usListed, .minPrice(5), .marketCap(min: 2e9, max: nil)], sortField: "fiftytwowkpercentchange", descending: true,
                        ranking: .fetched, metric: .yearChange),
-        ScreenerPreset(id: "smallcap", title: "Small-cap gainers", symbol: "sparkle",
+        ScreenerPreset(id: "smallcap", title: "Small-cap gainers", symbol: "arrow.up.right",
                        blurb: "Today's top gainers between $300M and $2B.",
                        filters: [.usListed, .minPrice(2), .minAverageVolume(300_000), .marketCap(min: 3e8, max: 2e9)],
                        sortField: "percentchange", descending: true, ranking: .fetched, metric: .change),

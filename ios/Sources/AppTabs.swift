@@ -9,6 +9,7 @@ enum AppTab: Hashable { case today, portfolio, ask }
     var tab = AppTab.today
     private(set) var screens: [AppTab: AskContext] = [:]
     private(set) var lastBrowsed = AppTab.today
+    private(set) var askReselections = 0
 
     /// The context Ask opens with: whatever was on screen in the tab the reader left.
     var askContext: AskContext { screens[lastBrowsed] ?? .markets }
@@ -18,7 +19,7 @@ enum AppTab: Hashable { case today, portfolio, ask }
     }
 
     func select(_ next: AppTab) {
-        if tab != .ask { lastBrowsed = tab }
+        if tab != .ask { lastBrowsed = tab } else if next == .ask { askReselections += 1 }
         tab = next
     }
 }
@@ -31,13 +32,13 @@ struct AppTabs: View {
         // The system tab bar is a compact pill that can't be widened, so it is hidden and replaced by a full-width bar
         // with the same side margin as the market dock above it.
         TabView(selection: selection) {
-            Tab("Today", systemImage: "newspaper", value: AppTab.today) {
+            Tab("Today", systemImage: "sun.max", value: AppTab.today) {
                 FeedView().environment(\.askTab, .today).fullWidthTabBar()
             }
-            Tab("Portfolio", systemImage: "briefcase", value: AppTab.portfolio) {
+            Tab("Portfolio", systemImage: "chart.line.uptrend.xyaxis", value: AppTab.portfolio) {
                 PortfolioHome().environment(\.askTab, .portfolio).fullWidthTabBar()
             }
-            Tab("Ask", systemImage: "message", value: AppTab.ask) {
+            Tab("Ask", systemImage: "questionmark.bubble", value: AppTab.ask) {
                 AskSheet(context: navigator.askContext, embedded: true).fullWidthTabBar()
             }
         }
@@ -55,6 +56,14 @@ struct AppTabs: View {
         }
         .environment(navigator)
         .environment(\.dockAboveTabBar, true)
+        .task {
+            // Load today's portfolio graph and option prices at launch so the Portfolio tab opens on real values.
+            let snapshot = PortfolioStore.shared.snapshot
+            guard !snapshot.positions.isEmpty else { return }
+            async let options: Void = HeldOptionQuotes.shared.refresh(snapshot.positions)
+            await PortfolioPerformance.shared.refresh(snapshot)
+            await options
+        }
     }
 }
 
@@ -88,7 +97,7 @@ private struct FullWidthTabBar: View {
     /// The 52 point buttons, 4 points of padding around them and 4 below the bar.
     static let height: CGFloat = 64
     private let items: [(tab: AppTab, title: String, icon: String)] = [
-        (.today, "Today", "newspaper"), (.portfolio, "Portfolio", "briefcase"), (.ask, "Ask", "message"),
+        (.today, "Today", "sun.max"), (.portfolio, "Portfolio", "chart.line.uptrend.xyaxis"), (.ask, "Ask", "questionmark.bubble"),
     ]
 
     var body: some View {
@@ -96,7 +105,7 @@ private struct FullWidthTabBar: View {
             ForEach(items, id: \.tab) { item in
                 Button { selection = item.tab } label: {
                     VStack(spacing: 2) {
-                        Image(systemName: item.icon).font(.system(size: 20, weight: .medium))
+                        Image(systemName: item.icon).font(.system(size: 20, weight: .medium)).frame(height: 24)
                         Text(item.title).font(.caption2.weight(.medium))
                     }
                     .foregroundStyle(selection == item.tab ? Color.accentColor : Color.secondary)

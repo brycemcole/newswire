@@ -362,6 +362,9 @@ struct StockChatMessage: Identifiable, Codable, Hashable {
     var error: String?
     private var task: Task<Void, Never>?
     private var taskID = UUID()
+    private var background: AskBackgroundTask?
+    /// Saves the thread as soon as an answer lands, even while the app is in the background.
+    var onAnswer: (([StockChatMessage]) -> Void)?
     private struct PendingRequest {
         let question: String
         let symbol: String
@@ -376,7 +379,9 @@ struct StockChatMessage: Identifiable, Codable, Hashable {
     var customFormat: String?
     var canRetry: Bool { !busy && error != nil && pendingRequest != nil }
     var busy: Bool { task != nil }
-    var backend: AIBackend { AIRouter.backend(for: .stockChat) ?? .onDevice }
+    /// Lets a caller pin the backend, such as the home outlook, which prefers the signed-in ChatGPT plan.
+    var backendOverride: AIBackend?
+    var backend: AIBackend { backendOverride ?? AIRouter.backend(for: .stockChat) ?? .onDevice }
     var usesDeepSeek: Bool { backend != .onDevice }
     var provider: String { backend.label }
 
@@ -392,7 +397,10 @@ struct StockChatMessage: Identifiable, Codable, Hashable {
     Before answering, check each proposed name against every requested criterion. Separate supported matches from unverified leads; never label a momentum-only list as low-attention matches. Return fewer than requested if fewer qualify, state the shortfall, and do not pad with unsupported names. Give each supported selection its relevant performance evidence, evidence for the other requested criteria, and a concise business driver or risk grounded in research. Briefly state the searched scope, period and material coverage gaps. Do not claim these are the best stocks across markets you did not inspect. For simple quotes, definitions or a single-company question, skip this discovery workflow and answer directly.
     """
 
-    func cancel() { taskID = UUID(); task?.cancel(); task = nil; activity = nil; streamingText = ""; ChatApproval.shared.resolve(false) }
+    func cancel() {
+        taskID = UUID(); task?.cancel(); task = nil; activity = nil; streamingText = ""; ChatApproval.shared.resolve(false)
+        background?.finish(answer: nil); background = nil
+    }
 
     func send(_ question: String, symbol: String, name: String, price: String?) {
         guard !busy, !question.isEmpty else { return }
@@ -423,14 +431,25 @@ struct StockChatMessage: Identifiable, Codable, Hashable {
         activity = "Researching…"
         let id = UUID()
         taskID = id
+        background?.finish(answer: nil)
+        let background = responder == nil && customFormat == nil
+            ? AskBackgroundTask(question: question, research: AskResearchDepth.current == .deep) { [weak self] in
+                guard let self, self.taskID == id else { return }
+                self.cancel()
+            }
+            : nil
+        self.background = background
         task = Task { [self] in
             defer { if taskID == id { task = nil; activity = nil; streamingText = "" } }
             let research = StockResearchTools(symbol: symbol, name: name, api: api, options: messages.flatMap(\.options), portfolioTools: customFormat == nil) { [weak self] status in
                 guard let self, self.taskID == id else { return }
                 self.activity = status
+                background?.update(status)
             }
+            let length = AskAnswerLength.current
+            let depth = AskResearchDepth.current
             let defaultFormat = """
-            Format every answer for a phone screen like a sharp analyst note. Start with one bold sentence under 30 words that directly answers the question with the key number, and end it with its citation, for example **Visa has the highest margin in the group at 50%.** [1] Optionally add one plain sentence of context, then at most four short bullets, one fact each with its number. The lead, context and bullets must agree with each other and with the tool results. The answer has only these parts, in this order: lead, optional context sentence, bullets, optional table, optional stories block. Nothing follows the table except the stories block, so put caveats and upcoming dates in a bullet. Cite every figure, date and claim with the bracketed number its tool result gave that source, right after the sentence or table cell, for example "Revenue rose 11% to $40B in fiscal 2025 [2]." or [2][4] for two sources. Use only numbers listed in tool results, never write URLs or source names in the text, and never end with a Sources line; the app shows citations as tappable chips. When you compare three or more companies, assets, periods or series on two or more numbers, add one Markdown table after the bullets, and use the bullets for what the table cannot show (drivers, exceptions, caveats) rather than repeating its numbers: a header row, a separator row of |---| cells, then one row per item, with the same number of cells in every row. The first column is the name with its ticker; use at most five columns; for a requested list include one row per supported candidate up to the requested count, otherwise use at most eight rows; put units and periods in headers such as "Revenue ($B, FY25)", write n/a for missing values, cite each row once in its name cell, and never add Source or As of columns. When tool results list Newswire stories (lines marked "story") that bear on the question, and always when you cite one, end with a block with language stories containing up to three of their numbers, for example [4, 7]; the app shows them as story cards, so do not summarize them line by line. Use plain words over jargon (say "a quarter-point rate hike", not "25 bp"), give dates as weekday and date, use no headings, and keep simple answers under 150 words, not counting the table. For discovery and multi-company research, allow enough space to address every requested criterion and give each supported candidate its own concise row or bullet; the four-bullet limit does not apply to candidate lists. Never squeeze several companies into one bullet just to meet a length limit. Keep methodology and shared caveats brief.
+            Format every answer for a phone screen like a sharp analyst note. Start with one bold sentence under 30 words that directly answers the question with the key number, and end it with its citation, for example **Visa has the highest margin in the group at 50%.** [1] \(length.shape) The lead, context and bullets must agree with each other and with the tool results. The answer has only these parts, in this order: lead, optional context sentence, bullets, optional table, optional stories block. Nothing follows the table except the stories block, so put caveats and upcoming dates in a bullet. Cite every figure, date and claim with the bracketed number its tool result gave that source, right after the sentence or table cell, for example "Revenue rose 11% to $40B in fiscal 2025 [2]." or [2][4] for two sources. Use only numbers listed in tool results, never write URLs or source names in the text, and never end with a Sources line; the app shows citations as tappable chips. When you compare three or more companies, assets, periods or series on two or more numbers, add one Markdown table after the bullets, and use the bullets for what the table cannot show (drivers, exceptions, caveats) rather than repeating its numbers: a header row, a separator row of |---| cells, then one row per item, with the same number of cells in every row. The first column is the name with its ticker; use at most five columns; for a requested list include one row per supported candidate up to the requested count, otherwise use at most eight rows; put units and periods in headers such as "Revenue ($B, FY25)", write n/a for missing values, cite each row once in its name cell, and never add Source or As of columns. When tool results list Newswire stories (lines marked "story") that bear on the question, and always when you cite one, end with a block with language stories containing up to three of their numbers, for example [4, 7]; the app shows them as story cards, so do not summarize them line by line. Use plain words over jargon (say "a quarter-point rate hike", not "25 bp"), give dates as weekday and date, use no headings, and \(length.budget) For discovery and multi-company research, allow enough space to address every requested criterion and give each supported candidate its own concise row or bullet; the bullet limit does not apply to candidate lists. Never squeeze several companies into one bullet just to meet a length limit. Keep methodology and shared caveats brief.
             Shape of a comparison answer (invented companies; never reuse these numbers), ending exactly where the stories block ends:
             **Alpha has the highest margin in the group at 41%, though Beta is growing faster.** [1][2]
             Alpha's revenue grew 9% to $12.0B in fiscal 2025 [1].
@@ -462,7 +481,7 @@ struct StockChatMessage: Identifiable, Codable, Hashable {
             """
             let viewing = screen.isEmpty ? "" : "\n\nThe reader opened Ask from this screen, so questions like \"this\", \"here\" or \"why is it up\" refer to it: \(screen)"
             let portfolio = customFormat == nil ? "\n\n" + PortfolioAssistant.instructions : ""
-            let instructions = baseInstructions + viewing + "\n\n" + Self.discoveryInstructions + "\n\n" + Self.screenInstructions + portfolio
+            let instructions = baseInstructions + viewing + "\n\n" + Self.discoveryInstructions + "\n\n" + Self.screenInstructions + portfolio + depth.instructions
             do {
                 let answer: String
                 if let responder {
@@ -477,14 +496,19 @@ struct StockChatMessage: Identifiable, Codable, Hashable {
                     var tools: [any Tool] = [StockDataTool(research: research), MarketDataTool(research: research), CurrentScreenTool(research: research)]
                     if customFormat == nil { tools += [PortfolioStatusTool(), PortfolioPositionsTool(), PortfolioRefreshTool(progress: research.progress)] }
                     let session = AIRouter.session(backend, instructions: instructions, tools: tools)
-                    answer = try await session.respond(to: "\(history)\nUser: \(question)", options: GenerationOptions(maximumResponseTokens: 900)).content
+                    answer = try await session.respond(to: "\(history)\nUser: \(question)", options: GenerationOptions(maximumResponseTokens: length.tokens(900))).content
                 }
                 try Task.checkCancellation()
                 let quotes = await research.contracts.filter { answer.contains($0.symbol) }
                 messages.append(StockChatMessage(user: false, text: answer, sources: await research.sources, provider: backend.label, options: quotes))
                 pendingRequest = nil
-            } catch is CancellationError {} catch {
+                onAnswer?(messages)
+                background?.finish(answer: answer)
+            } catch is CancellationError {
+                background?.finish(answer: nil)
+            } catch {
                 if !Task.isCancelled { self.error = error.localizedDescription }
+                background?.finish(answer: nil)
             }
         }
     }
@@ -555,10 +579,10 @@ struct StockChatMessage: Identifiable, Codable, Hashable {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpMethod = "POST"
             request.httpBody = try JSONSerialization.data(withJSONObject: ["model": "deepseek-flash", "messages": messages,
-                "tools": tools, "tool_choice": "auto", "max_tokens": 1800, "thinking": ["type": "disabled"]])
+                "tools": tools, "tool_choice": "auto", "max_tokens": AskAnswerLength.current.tokens(1800), "thinking": ["type": "disabled"]])
             let data: Data
             if free {
-                data = try await AIRouter.freeCompletion(["messages": messages, "tools": tools, "tool_choice": "auto", "max_tokens": 1800], api: research.api)
+                data = try await AIRouter.freeCompletion(["messages": messages, "tools": tools, "tool_choice": "auto", "max_tokens": AskAnswerLength.current.tokens(1800)], api: research.api)
             } else {
                 let result = try await session.data(for: request)
                 guard let http = result.1 as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw StockAIError.status((result.1 as? HTTPURLResponse)?.statusCode ?? 0) }
@@ -579,5 +603,55 @@ struct StockChatMessage: Identifiable, Codable, Hashable {
                 messages.append(["role": "tool", "tool_call_id": id, "content": output])
             }
         }
+    }
+}
+
+enum AskAnswerLength: String, CaseIterable, Identifiable {
+    case concise, standard, detailed
+    static let key = "askAnswerLength"
+    static var current: Self { UserDefaults.standard.string(forKey: key).flatMap(Self.init) ?? .detailed }
+    var id: Self { self }
+    var title: String { rawValue.capitalized }
+
+    var shape: String {
+        switch self {
+        case .concise: "Optionally add up to two short bullets, one fact each with its number."
+        case .standard: "Optionally add one plain sentence of context, then at most four short bullets, one fact each with its number."
+        case .detailed: "Then add two to four plain sentences of context explaining why, then as many short bullets as the evidence supports, usually five to eight, one fact, driver or implication each with its number."
+        }
+    }
+
+    var budget: String {
+        switch self {
+        case .concise: "keep answers under 60 words, not counting the table."
+        case .standard: "keep simple answers under 150 words, not counting the table."
+        case .detailed: "write a full analyst note of roughly 250 to 450 words, not counting the table, covering what happened, why it happened, what it means, and what to watch next."
+        }
+    }
+
+    var verbosity: String? {
+        switch self {
+        case .concise: "low"
+        case .standard: nil
+        case .detailed: "high"
+        }
+    }
+
+    func tokens(_ base: Int) -> Int { self == .detailed ? base * 2 : base }
+}
+
+enum AskResearchDepth: String, CaseIterable, Identifiable {
+    case standard, deep
+    static let key = "askResearchDepth"
+    static var current: Self { UserDefaults.standard.string(forKey: key).flatMap(Self.init) ?? .standard }
+    var id: Self { self }
+
+    var instructions: String {
+        guard self == .deep else { return "" }
+        return """
+
+
+        Research depth: deep. The reader wants thorough research, not a quick lookup. Before answering, investigate the question from several angles across multiple rounds of tool calls, and let each round's results decide the next: for a market or stock move, check prices and history for the relevant period, the news and Newswire stories behind it, comparable benchmarks or peers, and any economic releases, filings or events that bear on it. Read primary sources such as filings when they matter. Look for evidence that contradicts your first explanation and resolve conflicts between sources. Do not stop after the first tool result that seems to answer the question; stop when further calls would not change the answer. Mention any gap you could not close.
+        """
     }
 }
