@@ -150,6 +150,8 @@ struct PortfolioHoldingRow: View {
 
 struct LiveDayChange: Equatable {
     let change: Double
+    /// The brokerage balance plus the holdings' live moves since it was reported.
+    let value: Double
     var estimated = false
 }
 
@@ -168,14 +170,15 @@ struct PortfolioOverview: View {
 
     private var range: ChartRange { performance.range }
     private var live: LiveDayChange? { range == .day ? liveToday : nil }
-    // The 1D line keeps its intraday shape but measures from a baseline that makes its change equal the rows' total.
+    // The 1D line keeps its intraday shape, shifted to end at the live value, and starts the day that value minus the rows' total move.
     private var series: PerformanceSeries? {
         guard let live else { return performance.series[range] }
+        let end = live.value
         if let day = performance.series[.day], day.points.count > 1 {
-            return PerformanceSeries(points: day.points.map { PerformancePoint(id: $0.id, date: $0.date, value: $0.value) },
-                                     baseline: day.last - live.change, estimatedFromHoldings: day.estimatedFromHoldings)
+            let shift = end - day.last
+            return PerformanceSeries(points: day.points.map { PerformancePoint(id: $0.id, date: $0.date, value: $0.value + shift) },
+                                     baseline: end - live.change, estimatedFromHoldings: day.estimatedFromHoldings)
         }
-        let end = snapshot.totalValue
         return PerformanceSeries(points: [PerformancePoint(id: 0, date: Calendar.current.startOfDay(for: .now), value: end - live.change),
                                           PerformancePoint(id: 1, date: .now, value: end)], baseline: end - live.change)
     }
@@ -196,7 +199,7 @@ struct PortfolioOverview: View {
                         Text(eyebrow).font(.subheadline).foregroundStyle(.secondary)
                     }
                     // A live estimate (stocks and options repriced from current quotes) replaces the last synced balance while it is available.
-                    let shown = selected?.value ?? (range == .day && series?.estimatedFromHoldings == true ? series?.last : nil) ?? snapshot.totalValue
+                    let shown = selected?.value ?? live?.value ?? (range == .day && series?.estimatedFromHoldings == true ? series?.last : nil) ?? snapshot.totalValue
                     Text(Money.text(shown))
                         .font(.system(.largeTitle, design: .rounded).weight(.bold)).monospacedDigit()
                         .minimumScaleFactor(0.6).lineLimit(1)
