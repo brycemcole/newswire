@@ -153,6 +153,71 @@ struct LiveDayChange: Equatable {
     /// The brokerage balance plus the holdings' live moves since it was reported.
     let value: Double
     var estimated = false
+    /// Some holdings have no move today and are left out of `change`.
+    var partial = false
+
+    var percent: Double? { value - change > 0 ? change / (value - change) : nil }
+
+    /// Today's move summed from the same rows every screen lists, so the Portfolio header, its sections, the Today card
+    /// and the ticker can't disagree.
+    static func total(_ rows: [PositionMoversCard.Row]) -> (change: Double, estimated: Bool, partial: Bool)? {
+        guard rows.contains(where: { $0.dollars != nil || $0.estimatedMove != nil }) else { return nil }
+        return (rows.compactMap { $0.dollars ?? $0.estimatedMove }.reduce(0, +),
+                rows.contains { ($0.proxy != nil && $0.dollars != nil) || ($0.dollars == nil && $0.estimatedMove != nil) },
+                rows.contains { $0.dollars == nil && $0.estimatedMove == nil })
+    }
+
+    static func current(_ snapshot: PortfolioSnapshot, quotes: [String: MarketQuote], options: [String: OptionQuote], now: Date = .now) -> LiveDayChange? {
+        let rows = PositionMoversCard.rows(positions: snapshot.positions, quotes: quotes, options: options, now: now)
+        guard let total = total(rows) else { return nil }
+        return LiveDayChange(change: total.change, value: snapshot.totalValue + adjustment(rows, positions: snapshot.positions),
+                             estimated: total.estimated, partial: total.partial)
+    }
+
+    /// How far live prices have moved the holdings from the values the brokerage last reported. Brokerages report options
+    /// (and often stocks) at the previous close, so their balance doesn't yet include these moves.
+    static func adjustment(_ rows: [PositionMoversCard.Row], positions: [Position]) -> Double {
+        rows.reduce(0) { sum, row in
+            let synced = positions.filter { $0.option == nil ? HomeSymbols.normalize($0.symbol) == row.id : $0.id == row.id }
+            guard let live = row.value, synced.allSatisfy({ $0.value != nil }), !synced.isEmpty else { return sum }
+            let delta = live - synced.compactMap(\.value).reduce(0, +)
+            return delta.isFinite ? sum + delta : sum
+        }
+    }
+}
+
+/// One set of option quotes for every screen that values held contracts, so they price them identically and fetch once.
+@Observable final class HeldOptionQuotes {
+    static let shared = HeldOptionQuotes()
+    private(set) var quotes: [String: OptionQuote] = [:]
+    private var fetchedAt: Date?
+    private var fetchedIDs: Set<String> = []
+    private var inFlight: Task<Void, Never>?
+
+    func refresh(_ positions: [Position], maxAge: TimeInterval = 25) async {
+        let held = positions.filter { ($0.option?.daysLeft ?? -1) >= 0 }
+        let ids = Set(held.map(\.id))
+        guard !held.isEmpty else { quotes = [:]; return }
+        if let inFlight { await inFlight.value }
+        if let fetchedAt, ids.isSubset(of: fetchedIDs), Date.now.timeIntervalSince(fetchedAt) < maxAge { return }
+        let task = Task {
+            let found = await withTaskGroup(of: (String, OptionQuote?).self) { group in
+                for position in held {
+                    group.addTask { (position.id, try? await OptionChain.quote(symbol: HomeSymbols.normalize(position.symbol), option: position.option!)) }
+                }
+                var result: [String: OptionQuote] = [:]
+                for await (id, quote) in group { if let quote { result[id] = quote } }
+                return result
+            }
+            // A failed fetch drops the contract back to its synced value rather than keeping an older quote as current.
+            quotes = found
+            fetchedAt = .now
+            fetchedIDs = ids
+        }
+        inFlight = task
+        await task.value
+        inFlight = nil
+    }
 }
 
 struct PortfolioOverview: View {
@@ -162,25 +227,40 @@ struct PortfolioOverview: View {
     /// Today's move summed from the holdings rows, so options count even when the intraday series can't price them.
     var liveToday: LiveDayChange?
     @State private var funding = PortfolioFundingStore.shared
-    @State private var performance = PortfolioPerformance(publishesWidgets: false)
+    @State private var performance: PortfolioPerformance
     @State private var selected: PerformancePoint?
     @State private var refreshing = false
     @State private var explainingHistory = false
     @Environment(\.scenePhase) private var phase
 
+    init(snapshot: PortfolioSnapshot, title: String = "All accounts", accounts: [PortfolioAccount] = [], liveToday: LiveDayChange? = nil, allAccounts: Bool = false) {
+        self.snapshot = snapshot
+        self.title = title
+        self.accounts = accounts
+        self.liveToday = liveToday
+        // All accounts reuses the series the app has been keeping warm, so opening the tab shows the real graph at once.
+        _performance = State(initialValue: allAccounts ? .shared : PortfolioPerformance(publishesWidgets: false))
+    }
+
     private var range: ChartRange { performance.range }
     private var live: LiveDayChange? { range == .day ? liveToday : nil }
-    // The 1D line keeps its intraday shape, shifted to end at the live value, and starts the day that value minus the rows' total move.
+    // The 1D line keeps its intraday shape but is tilted to start at yesterday's close and end at the live value, so the line,
+    // its baseline and the number above it all describe the same move. Until the intraday prices load there is no line.
     private var series: PerformanceSeries? {
         guard let live else { return performance.series[range] }
-        let end = live.value
-        if let day = performance.series[.day], day.points.count > 1 {
-            let shift = end - day.last
-            return PerformanceSeries(points: day.points.map { PerformancePoint(id: $0.id, date: $0.date, value: $0.value + shift) },
-                                     baseline: end - live.change, estimatedFromHoldings: day.estimatedFromHoldings)
-        }
-        return PerformanceSeries(points: [PerformancePoint(id: 0, date: Calendar.current.startOfDay(for: .now), value: end - live.change),
-                                          PerformancePoint(id: 1, date: .now, value: end)], baseline: end - live.change)
+        guard let day = performance.series[.day], let first = day.points.first, let lastPoint = day.points.last, day.points.count > 1 else { return nil }
+        let start = live.value - live.change
+        let span = max(lastPoint.date.timeIntervalSince(first.date), 1)
+        let head = start - first.value, tail = live.value - lastPoint.value
+        return PerformanceSeries(points: day.points.map { point in
+            let progress = point.date.timeIntervalSince(first.date) / span
+            return PerformancePoint(id: point.id, date: point.date, value: point.value + head + (tail - head) * progress)
+        }, baseline: start, estimatedFromHoldings: day.estimatedFromHoldings)
+    }
+    private var headline: (change: Double, percent: Double?)? {
+        if let selected, let series { return (series.change(at: selected), series.percent(at: selected)) }
+        if selected == nil, let live { return (live.change, live.percent) }
+        return series.map { ($0.change, $0.percent) }
     }
     private var recorded: [PerformancePoint] { performance.recorded[range] ?? [] }
     private var confirmedFunding: AccountFunding? { funding.combined(for: accounts) }
@@ -204,13 +284,11 @@ struct PortfolioOverview: View {
                         .font(.system(.largeTitle, design: .rounded).weight(.bold)).monospacedDigit()
                         .minimumScaleFactor(0.6).lineLimit(1)
                         .numericTextTransition(value: shown)
-                    if let series {
-                        let change = selected.map { series.change(at: $0) } ?? series.change
-                        let percent = selected.flatMap { series.percent(at: $0) } ?? (selected == nil ? series.percent : nil)
+                    if let (change, percent) = headline {
                         HStack(spacing: 4) {
                             Text((selected == nil && live?.estimated == true ? "≈" : "") + Money.signed(change) + (percent.map { " (\(Money.percent($0)))" } ?? ""))
                                 .numericTextTransition(value: change)
-                            Text(selected.map { $0.date.formatted(.dateTime.month(.abbreviated).day().year()) } ?? range.caption)
+                            Text(selected.map { range == .day ? $0.date.formatted(date: .omitted, time: .shortened) : $0.date.formatted(.dateTime.month(.abbreviated).day().year()) } ?? (live?.partial == true ? range.caption + " · partial" : range.caption))
                                 .foregroundStyle(.secondary)
                         }
                         .font(.subheadline.weight(.medium)).monospacedDigit()
@@ -364,9 +442,14 @@ struct PortfolioOverview: View {
                 }
             }
             .chartYScale(domain: (low - pad)...(high + pad))
-            .chartYAxis(.hidden)
-            .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) { AxisValueLabel() } }
-            .frame(height: 96)
+            .chartYAxis {
+                AxisMarks(position: .trailing, values: .automatic(desiredCount: 4)) { value in
+                    AxisGridLine().foregroundStyle(.quaternary)
+                    AxisValueLabel { if let amount = value.as(Double.self) { Text(amount, format: .currency(code: "USD").precision(.fractionLength(0))).monospacedDigit() } }
+                }
+            }
+            .chartXAxis { AxisMarks(values: .automatic(desiredCount: 4)) { AxisValueLabel() } }
+            .frame(height: 220)
             .chartOverlay { proxy in
                 GeometryReader { geometry in
                     Rectangle().fill(.clear).contentShape(.rect)
@@ -386,11 +469,12 @@ struct PortfolioOverview: View {
                 if series == nil, !recorded.isEmpty {
                     Image(systemName: "chart.xyaxis.line")
                     Text("Recording account values. A graph will appear after another successful sync.")
-                } else if refreshing { ProgressView(); Text("Loading performance…") }
-                else { Image(systemName: "chart.xyaxis.line"); Text(performance.errors[range] ?? "Performance unavailable") }
+                } else if let error = performance.errors[range], !refreshing {
+                    Image(systemName: "chart.xyaxis.line"); Text(error)
+                } else { ProgressView() }
             }
             .font(.subheadline).foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, minHeight: 96)
+            .frame(maxWidth: .infinity, minHeight: 220)
         }
     }
 }

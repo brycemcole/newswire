@@ -209,7 +209,7 @@ struct ArticleMockupGallery: View {
                 }.padding(22)
             }.frame(height: 365).clipped()
             VStack(alignment: .leading, spacing: 16) {
-                HStack { Text("THE TAKEAWAY").font(.caption.weight(.bold)).foregroundStyle(.secondary); Spacer(); Image(systemName: "sparkle").foregroundStyle(.secondary) }
+                HStack { Text("THE TAKEAWAY").font(.caption.weight(.bold)).foregroundStyle(.secondary); Spacer(); Image(systemName: "lightbulb").foregroundStyle(.secondary) }
                 Text("Alphabet is tapping European bond markets again as AI spending drives a historic borrowing wave.")
                     .font(.title3.weight(.semibold)).lineSpacing(2)
                 Divider()
@@ -229,7 +229,7 @@ struct ArticleMockupGallery: View {
             }
             metadata
             VStack(alignment: .leading, spacing: 16) {
-                Label("The takeaway", systemImage: "sparkle").font(.headline)
+                Label("The takeaway", systemImage: "lightbulb").font(.headline)
                 Text("Alphabet is tapping European bond markets again as AI spending drives a historic borrowing wave.").font(.title3.weight(.medium))
                 Divider()
                 ForEach(Array(points.enumerated()), id: \.offset) { index, point in

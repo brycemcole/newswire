@@ -158,9 +158,9 @@ private struct MShell<Content: View>: View {
 
     var body: some View {
         TabView(selection: .constant(tab)) {
-            Tab("Today", systemImage: "newspaper", value: 0) { if tab == 0 { content() } else { Color.clear } }
-            Tab("Portfolio", systemImage: "briefcase", value: 1) { if tab == 1 { content() } else { Color.clear } }
-            Tab("Ask", systemImage: "message", value: 2) { Color.clear }
+            Tab("Today", systemImage: "sun.max", value: 0) { if tab == 0 { content() } else { Color.clear } }
+            Tab("Portfolio", systemImage: "chart.line.uptrend.xyaxis", value: 1) { if tab == 1 { content() } else { Color.clear } }
+            Tab("Ask", systemImage: "questionmark.bubble", value: 2) { Color.clear }
         }
     }
 }

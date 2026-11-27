@@ -126,11 +126,16 @@ struct CompactPortfolioTicker: View {
 
     private var items: [PortfolioTicker.Item] {
         let connected = !store.snapshot.positions.isEmpty || !(store.snapshot.accountBalances ?? []).isEmpty
+        // The same live figure as the Portfolio tab's header, falling back to the measured series before quotes arrive.
+        let live = LiveDayChange.current(store.snapshot, quotes: board.quotes, options: HeldOptionQuotes.shared.quotes)
         let today = performance.series[.day]
+        let value = live?.value ?? today?.last ?? store.snapshot.totalValue
+        let percent = live.map { $0.percent } ?? today?.percent
+        let change = live?.change ?? today?.change
         var result = [PortfolioTicker.Item(id: "portfolio",
-            title: connected ? Money.text(today?.last ?? store.snapshot.totalValue) : "Portfolio",
-            change: connected ? (store.snapshot.itemIDs.contains(where: { store.snapshot.isStale($0) }) ? "Sync needed" : today?.percent.map(Money.percent) ?? "—") : "Connect",
-            tint: today.map { Money.tint($0.change) } ?? .secondary, action: openPortfolio)]
+            title: connected ? Money.text(value) : "Portfolio",
+            change: connected ? (store.snapshot.itemIDs.contains(where: { store.snapshot.isStale($0) }) ? "Sync needed" : percent.map(Money.percent) ?? "—") : "Connect",
+            tint: change.map { Money.tint($0) } ?? .secondary, action: openPortfolio)]
         result += watchlist.symbols.map { symbol in
             let quote = board.quotes[symbol]
             return PortfolioTicker.Item(id: symbol, title: OptionSymbol.display(symbol),
@@ -150,7 +155,9 @@ struct CompactPortfolioTicker: View {
             .task(id: phase == .active) {
                 guard phase == .active else { return }
                 while !Task.isCancelled {
+                    async let options: Void = HeldOptionQuotes.shared.refresh(store.snapshot.positions)
                     await performance.refresh(store.snapshot)
+                    await options
                     do { try await Task.sleep(for: .seconds(60)) } catch { return }
                 }
             }

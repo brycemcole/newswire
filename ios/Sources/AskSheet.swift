@@ -69,6 +69,7 @@ struct AskSheet: View {
     @State private var openedStory: Story?
     @Environment(\.feedStore) private var feedStore
     @State private var isAtLatest = true
+    @AppStorage(AskResearchDepth.key) private var researchDepth = AskResearchDepth.standard
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var focused: Bool
     @Environment(\.dismiss) private var dismiss
@@ -95,6 +96,11 @@ struct AskSheet: View {
         if market && !context.screen.isEmpty { return ["What matters on this screen?", "Explain what I'm looking at in plain terms", "What should I watch next?"] }
         return market ? generator.questions
             : ["Why is \(thread.symbol) moving today?", "What does \(thread.name) do, in plain terms?", "Compare bullish earnings trades with a $1,000 budget"]
+    }
+
+    private func jumpToLatest(_ reader: ScrollViewProxy) {
+        let action = { reader.scrollTo("bottom", anchor: .bottom); isAtLatest = true }
+        if reduceMotion { action() } else { withAnimation(.easeOut(duration: 0.25), action) }
     }
 
     var body: some View {
@@ -136,7 +142,7 @@ struct AskSheet: View {
                 }
                 .scrollDismissesKeyboard(.interactively)
                 .onScrollGeometryChange(for: Bool.self) { geometry in
-                    geometry.contentOffset.y + geometry.containerSize.height - geometry.contentInsets.bottom >= geometry.contentSize.height - 48
+                    geometry.visibleRect.maxY - geometry.contentInsets.bottom >= geometry.contentSize.height - 48
                 } action: { _, atLatest in
                     isAtLatest = atLatest
                 }
@@ -146,21 +152,29 @@ struct AskSheet: View {
                     if reduceMotion { action() } else { withAnimation(.easeOut(duration: 0.25), action) }
                 }
                 .overlay(alignment: .bottom) {
-                    if !isAtLatest && chat.messages.count > 2 {
-                        Button {
-                            let action = { reader.scrollTo("bottom", anchor: .bottom); isAtLatest = true }
-                            if reduceMotion { action() } else { withAnimation(.easeOut(duration: 0.25), action) }
-                        } label: {
-                            Label("Jump to latest", systemImage: "arrow.down")
-                                .font(.subheadline.weight(.medium))
-                                .padding(.horizontal, 14).padding(.vertical, 9)
-                                .background(.regularMaterial, in: .capsule)
+                    ZStack {
+                        if !isAtLatest && chat.messages.count > 2 {
+                            Button {
+                                jumpToLatest(reader)
+                            } label: {
+                                Image(systemName: "arrow.down")
+                                    .font(.body.weight(.semibold))
+                                    .frame(width: 44, height: 44)
+                                    .contentShape(.circle)
+                                    .glassEffect(.regular.interactive(), in: .circle)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Jump to latest")
+                            .padding(.bottom, 12)
+                            .transition(.opacity)
                         }
-                        .buttonStyle(.plain)
-                        .padding(.bottom, 12)
                     }
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: isAtLatest)
                 }
                 .safeAreaInset(edge: .bottom, spacing: 0) { composer }
+                .onChange(of: AppNavigator.shared.askReselections) {
+                    if embedded { jumpToLatest(reader) }
+                }
             }
             .navigationTitle(market ? "Ask" : "Ask about \(thread.symbol)")
             .navigationDestination(item: $filing) { FilingReaderView(url: $0.url, title: $0.title) }
@@ -197,13 +211,10 @@ struct AskSheet: View {
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
         .presentationBackground { Rectangle().fill(.clear).glassEffect(.regular, in: .rect) }
-        .onChange(of: chat.messages) { _, messages in
-            thread.messages = messages
-            thread.updated = .now
-            history.save(thread)
-        }
+        .onChange(of: chat.messages) { _, messages in save(messages) }
+        .onAppear { chat.onAnswer = { save($0) } }
         // Plaid Link covers this sheet while the reader signs in; that is not leaving the chat.
-        .onDisappear { if !PortfolioStore.shared.linkOpen { chat.cancel() } }
+        .onDisappear { if !embedded && !PortfolioStore.shared.linkOpen { chat.cancel() } }
         // Account-changing steps the assistant proposes wait here for the reader's own answer.
         .alert(approvals.pending?.title ?? "", isPresented: Binding(get: { approvals.pending != nil }, set: { if !$0 { approvals.resolve(false) } }), presenting: approvals.pending) { request in
             Button(request.action, role: request.destructive ? .destructive : nil) { approvals.resolve(true) }
@@ -369,9 +380,43 @@ struct AskSheet: View {
         return .handled
     }
 
+    private func save(_ messages: [StockChatMessage]) {
+        guard thread.messages != messages else { return }
+        thread.messages = messages
+        thread.updated = .now
+        history.save(thread)
+    }
+
     private var canSend: Bool { !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     private var composer: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            researchToggle
+            composerBar
+        }
+        .padding(.horizontal, 16).padding(.bottom, 8)
+    }
+
+    private var researchToggle: some View {
+        let on = researchDepth == .deep
+        return Button {
+            researchDepth = on ? .standard : .deep
+        } label: {
+            Label("Research", systemImage: "magnifyingglass")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(on ? AnyShapeStyle(.white) : AnyShapeStyle(.secondary))
+                .padding(.horizontal, 14).padding(.vertical, 8)
+                .contentShape(.capsule)
+        }
+        .buttonStyle(.plain)
+        .glassEffect(on ? .regular.tint(.accentColor).interactive() : .regular.interactive(), in: .capsule)
+        .animation(.easeOut(duration: 0.2), value: on)
+        .sensoryFeedback(.selection, trigger: on)
+        .accessibilityAddTraits(on ? .isSelected : [])
+        .accessibilityHint("Checks more sources before answering")
+    }
+
+    private var composerBar: some View {
         HStack(alignment: .bottom, spacing: 10) {
             TextField(market ? "Ask anything about the markets" : "Ask about \(thread.symbol)", text: $question, axis: .vertical)
                 .lineLimit(1...5).focused($focused)
@@ -408,7 +453,6 @@ struct AskSheet: View {
         .animation(.spring(duration: 0.25, bounce: 0.2), value: canSend)
         .animation(.spring(duration: 0.25, bounce: 0.2), value: chat.busy)
         .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 24, style: .continuous))
-        .padding(.horizontal, 16).padding(.bottom, 8)
     }
 
     private func send() {
@@ -472,8 +516,8 @@ struct MarkdownText: View {
     @Environment(\.openURL) private var openURL
 
     /// `options` are the quotes behind any ```options or ```strategy widget blocks in `source`; `sources` resolve [n] citations and ```stories blocks.
-    init(_ source: String, options: [ChatOption] = [], sources: [StockSource] = []) {
-        blocks = Self.parse(source)
+    init(_ source: String, options: [ChatOption] = [], sources: [StockSource] = [], keepsOrder: Bool = false) {
+        blocks = Self.parse(source, keepsOrder: keepsOrder)
         self.options = options
         self.sources = sources
     }
@@ -651,7 +695,7 @@ struct MarkdownText: View {
         return .table(header: header, rows: rows)
     }
 
-    private static func parse(_ source: String) -> [Block] {
+    private static func parse(_ source: String, keepsOrder: Bool = false) -> [Block] {
         var blocks: [Block] = []
         var paragraph: [String] = []
         var tableLines: [String] = []
@@ -708,7 +752,7 @@ struct MarkdownText: View {
         flush()
         flushTable()
         if let open = fence, let block = fenced(open.language, open.lines) { blocks.append(block) }
-        return tableLast(blocks)
+        return keepsOrder ? blocks : tableLast(blocks)
     }
 
     /// Answers end with their table and story cards; a closing note the model adds after the table moves above it.
@@ -752,13 +796,14 @@ struct StockAISettings: View {
     @State private var account = ChatGPTAccount.shared
     @AppStorage(ChatGPTAccount.modelKey) private var chatGPTModel = ""
     @AppStorage(ChatGPTAccount.webSearchKey) private var webSearch = true
+    @AppStorage(AskAnswerLength.key) private var answerLength = AskAnswerLength.detailed
     @Environment(\.webAuthenticationSession) private var webAuthenticationSession
 
     var body: some View {
         Form {
             Section {
                 Picker("Answering with", selection: $provider) {
-                    Label("DeepSeek Free", systemImage: "sparkles").tag("newswire")
+                    Label("DeepSeek Free", systemImage: "cpu").tag("newswire")
                     Label("Apple on device", systemImage: "apple.intelligence").tag("onDevice")
                     Label("DeepSeek · personal API key", systemImage: "key").tag("deepSeek")
                     Label("ChatGPT · your plan", systemImage: "person.crop.circle").tag("chatGPT")
@@ -769,6 +814,15 @@ struct StockAISettings: View {
                 Text("Answering with")
             } footer: {
                 Text(footer)
+            }
+            Section {
+                Picker("Answer length", selection: $answerLength) {
+                    ForEach(AskAnswerLength.allCases) { Text($0.title).tag($0) }
+                }
+            } header: {
+                Text("Answers")
+            } footer: {
+                Text("Detailed answers explain the why and what to watch next. Turn on Research above the chat bar to check more sources before answering; replies take longer and use more of your plan.")
             }
             if provider == "deepSeek" {
                 Section {

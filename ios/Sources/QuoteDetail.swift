@@ -136,6 +136,7 @@ struct QuoteDetail: View {
     @State private var model: QuoteModel
     @State private var scrub = Scrub()
     @State private var news: QuoteNewsModel
+    @State private var explanation = RangeExplanation()
     @State private var holding: MarketSymbol?
     @State private var showingOptions = false
     @State private var showingFilings = false
@@ -161,6 +162,10 @@ struct QuoteDetail: View {
         return ChartCatalyst.earnings(summary) + chart.events + stories.map(ChartCatalyst.init)
     }
     private var symbol: String { model.symbol }
+    private var explanationTrigger: String {
+        guard let chart = model.chart, let key = RangeExplanation.key(symbol: symbol, range: model.range, chart: chart) else { return "" }
+        return "\(key)|\(model.summary != nil)|\(news.stories != nil)"
+    }
     private var dayMove: Double? {
         guard let live = model.live, let reference = live.previousClose, reference != 0 else { return nil }
         return live.price / reference - 1
@@ -194,6 +199,7 @@ struct QuoteDetail: View {
                     hero
                 }
                 catalystReadout
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: explanation.phase)
                 HoldingSection(symbol: symbol, chart: model.live)
                 optionsLink
                 tradingSection
@@ -285,6 +291,13 @@ struct QuoteDetail: View {
             guard phase == .active else { return }
             await model.stream()
         }
+        .task(id: explanationTrigger) {
+            guard let chart = model.chart else { return }
+            guard model.summary != nil, news.stories != nil else { explanation.restore(symbol: symbol, range: model.range, chart: chart); return }
+            let curated = ChartCatalyst.curated(chartEvents(chart), chart: chart, range: model.range)
+            await explanation.explain(symbol: symbol, name: name, range: model.range, chart: chart, summary: model.summary,
+                                      events: chartEvents(chart), drivers: curated.drivers)
+        }
         .task(id: "\(model.range.rawValue)|\(phase == .active)") {
             guard model.range != .day, phase == .active else { return }
             while !Task.isCancelled {
@@ -328,10 +341,33 @@ struct QuoteDetail: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(14)
                 .glassEffect(.regular, in: .rect(cornerRadius: 22))
+            } else if explanation.showsResult(symbol: symbol, range: model.range) || !explanation.partial.isEmpty {
+                let result = explanation.result ?? .init(text: "", through: .now, benchmarks: [])
+                let writing = explanation.phase == .writing
+                let streaming = !explanation.partial.isEmpty
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Text("Why it moved")
+                        if writing { ProgressView().controlSize(.mini) }
+                    }
+                    .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                    Text(streaming ? explanation.partial : result.text)
+                        .font(.footnote.weight(.semibold))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .opacity(writing && !streaming ? 0.5 : 1)
+                    Text(writing ? "Updating from price, earnings, headlines and sector" : (["AI summary of price", "earnings", "headlines"] + result.benchmarks).joined(separator: ", ") + " · through " + result.through.formatted(Date.FormatStyle(date: .abbreviated, time: model.range.intraday ? .shortened : .omitted, timeZone: chart.timeZone)) + " · hold chart for events")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .transaction { $0.animation = nil }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .transition(.opacity)
             } else if let driver = curated.drivers.first {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Why it moved")
-                        .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                    HStack(spacing: 6) {
+                        Text("Why it moved")
+                        if explanation.phase == .writing { ProgressView().controlSize(.mini) }
+                    }
+                    .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
                     Text(driver.move.change.formatted(.percent.precision(.fractionLength(1)).sign(strategy: .always())) + " · " + driver.event.title)
                         .font(.footnote.weight(.semibold))
                     Text("Possible catalyst · " + driver.event.source + " · " + driver.event.date.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened, timeZone: chart.timeZone)) + " · hold chart for other moves")

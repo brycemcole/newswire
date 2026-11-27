@@ -6,7 +6,7 @@ import SwiftUI
 struct PortfolioHome: View {
     @State private var store = PortfolioStore.shared
     @State private var board = MarketBoard.shared
-    @State private var optionQuotes: [String: OptionQuote] = [:]
+    @State private var held = HeldOptionQuotes.shared
     @State private var account: PortfolioAccount.ID?
     @State private var sampleAccount: Int?
     @State private var sampleRange = SamplePortfolio.Range.month
@@ -38,7 +38,7 @@ struct PortfolioHome: View {
     private var realLines: [HoldingLine] {
         let positions = selectedPositions
         _ = store.snapshot.updated
-        let rows = PositionMoversCard.rows(positions: positions, quotes: board.quotes, options: optionQuotes, now: .now)
+        let rows = PositionMoversCard.rows(positions: positions, quotes: board.quotes, options: held.quotes, now: .now)
         return rows.map { row in
             let isOption = positions.first { $0.id == row.id }?.option != nil
             let valueText = row.value.map(HomeFormat.whole)
@@ -52,23 +52,12 @@ struct PortfolioHome: View {
 
     /// The same per-row figures the Stocks & ETFs and Options headers total.
     private var liveToday: LiveDayChange? {
-        let lines = realLines
-        guard lines.contains(where: { $0.dayDollars != nil || $0.estimatedMove != nil }) else { return nil }
-        return LiveDayChange(change: lines.compactMap { $0.dayDollars ?? $0.estimatedMove }.reduce(0, +),
-                             value: overviewSnapshot.totalValue + liveAdjustment(selectedPositions),
-                             estimated: lines.contains { ($0.estimated && $0.dayDollars != nil) || ($0.dayDollars == nil && $0.estimatedMove != nil) })
+        _ = store.snapshot.updated
+        return LiveDayChange.current(overviewSnapshot, quotes: board.quotes, options: held.quotes)
     }
 
-    /// How far live prices have moved the holdings from the values the brokerage last reported. Brokerages report options
-    /// (and often stocks) at the previous close, so their balance doesn't yet include these moves.
     private func liveAdjustment(_ positions: [Position]) -> Double {
-        let rows = PositionMoversCard.rows(positions: positions, quotes: board.quotes, options: optionQuotes, now: .now)
-        return rows.reduce(0) { sum, row in
-            let synced = positions.filter { $0.option == nil ? HomeSymbols.normalize($0.symbol) == row.id : $0.id == row.id }
-            guard let live = row.value, synced.allSatisfy({ $0.value != nil }), !synced.isEmpty else { return sum }
-            let delta = live - synced.compactMap(\.value).reduce(0, +)
-            return delta.isFinite ? sum + delta : sum
-        }
+        LiveDayChange.adjustment(PositionMoversCard.rows(positions: positions, quotes: board.quotes, options: held.quotes, now: .now), positions: positions)
     }
 
     // MARK: Body
@@ -136,7 +125,7 @@ struct PortfolioHome: View {
         } else {
             PortfolioOverview(snapshot: overviewSnapshot, title: account == nil ? "All accounts" : accounts.first { $0.id == account }?.institution ?? "Account",
                               accounts: account.flatMap { id in accounts.first { $0.id == id }.map { [$0] } } ?? accounts,
-                              liveToday: liveToday)
+                              liveToday: liveToday, allAccounts: account == nil)
                 .id(account)
         }
     }
@@ -238,11 +227,26 @@ struct PortfolioHome: View {
     }
 
     private var cashRow: some View {
-        let cash: Double? = isSample ? SamplePortfolio.cash(account: sampleAccount) : (account == nil ? store.snapshot.cash : overviewSnapshot.cash)
-        return HStack {
-            Text("Cash").font(.subheadline.weight(.semibold))
-            Spacer()
-            Text(cash.map { Money.text($0) } ?? "—").font(.subheadline).monospacedDigit()
+        let scope = account == nil ? store.snapshot : overviewSnapshot
+        let loan = isSample ? nil : scope.marginLoan
+        let cash: Double = isSample ? SamplePortfolio.cash(account: sampleAccount) : scope.cash - (loan ?? 0)
+        return VStack(spacing: 10) {
+            HStack {
+                Text("Cash").font(.subheadline.weight(.semibold))
+                Spacer()
+                Text(Money.text(cash)).font(.subheadline).monospacedDigit()
+            }
+            if let loan {
+                // The account value already nets this out; it is listed so the cash above isn't mistaken for spendable equity.
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Margin loan").font(.subheadline.weight(.semibold))
+                        Text("Already subtracted from your account value").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Text(Money.text(loan)).font(.subheadline).monospacedDigit().foregroundStyle(.red)
+                }
+            }
         }
         .padding(14)
         .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 16))
@@ -307,25 +311,10 @@ struct PortfolioHome: View {
     // MARK: Live prices
 
     private func refreshQuotes() async {
-        guard scenePhase == .active, !isSample else { optionQuotes = [:]; return }
+        guard scenePhase == .active, !isSample else { return }
         while !Task.isCancelled {
             await board.refresh(quotes: HomeSymbols.quoted, sparks: [])
-            let held = store.snapshot.positions.filter { ($0.option?.daysLeft ?? -1) >= 0 }
-            if held.isEmpty {
-                optionQuotes = [:]
-            } else {
-                let found = await withTaskGroup(of: (String, OptionQuote?).self) { group in
-                    for position in held {
-                        group.addTask { (position.id, try? await OptionChain.quote(symbol: HomeSymbols.normalize(position.symbol), option: position.option!)) }
-                    }
-                    var result: [String: OptionQuote] = [:]
-                    for await (id, quote) in group { if let quote { result[id] = quote } }
-                    return result
-                }
-                guard !Task.isCancelled else { return }
-                // A failed fetch drops the contract back to its synced value rather than keeping an older quote as current.
-                optionQuotes = found
-            }
+            await held.refresh(store.snapshot.positions)
             do { try await Task.sleep(for: .seconds(30)) } catch { return }
         }
     }

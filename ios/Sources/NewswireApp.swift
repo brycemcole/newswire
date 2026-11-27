@@ -13,7 +13,9 @@ import SwiftUI
         WindowGroup {
             Group {
                 #if DEBUG
-                if CommandLine.arguments.contains("-articleMockups") {
+                if let index = CommandLine.arguments.firstIndex(of: "-quote"), CommandLine.arguments.indices.contains(index + 1) {
+                    NavigationStack { QuoteDetail(symbol: CommandLine.arguments[index + 1]) }
+                } else if CommandLine.arguments.contains("-articleMockups") {
                     ArticleMockupGallery()
                 } else if CommandLine.arguments.contains("-goalsMockup") {
                     GoalsMockupGallery()
@@ -318,7 +320,6 @@ struct FeedView: View {
     @State private var skyScroll = SkyScroll()
     @AppStorage("headlinesOnly") private var headlinesOnly = false
     @AppStorage("homeOrder") private var homeOrder = "marketsFirst"
-    @AppStorage("homeTab") private var homeTab = HomeTab.positions
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var hidesMarketDock: Bool {
@@ -339,61 +340,6 @@ struct FeedView: View {
 
     private var showsHome: Bool { search.isEmpty && store.filters.isEmpty }
 
-    /// One section at a time, so the market strip and this card stay within the top half of the screen.
-    private var homeDeck: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            GlassSwitch(label: "Home section", selection: $homeTab, options: HomeTab.allCases, title: \.title)
-            Group {
-                switch homeTab {
-                case .moves:
-                    SinceVisitCard(now: homeClock, stories: store.stories, onQuote: { open(quote: $0) },
-                                   onStory: { store.path.append($0) }, onAlert: { alertSymbol = MarketSymbol(id: $0) },
-                                   onFindSymbols: { dock = .large })
-                case .positions:
-                    PositionMoversCard(onQuote: { open(quote: $0) }, onAlert: { alertSymbol = MarketSymbol(id: $0) }, openPortfolio: { AppNavigator.shared.select(.portfolio) })
-                case .watchlist:
-                    deckWatchlist
-                case .next:
-                    VStack(alignment: .leading, spacing: 8) {
-                        OutlookLine(embedded: true)
-                        TodayEventsCard(now: homeClock, onQuote: { open(quote: $0) })
-                    }
-                }
-            }
-            // Only the switch animates; a resizing list row lurches if the section underneath animates with it.
-            .transaction { $0.animation = nil }
-        }
-        .padding(12)
-        .homeCard()
-    }
-
-    private var deckWatchlist: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if watchlist.symbols.isEmpty {
-                Button { dock = .large } label: {
-                    Text("Star any quote to add it here.").font(.subheadline).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading).contentShape(.rect)
-                }
-                .buttonStyle(.plain)
-            }
-            let shown = Array(moversFirst.prefix(3))
-            ForEach(shown, id: \.self) { symbol in
-                watchlistMenu(for: symbol) { WatchlistLine(symbol: symbol) }
-                if symbol != shown.last { Divider() }
-            }
-            if watchlist.symbols.count > shown.count {
-                Button { dock = .large } label: {
-                    HStack(spacing: 4) {
-                        Text("All \(watchlist.symbols.count) symbols")
-                        Image(systemName: "chevron.right").font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
-                    }
-                    .font(.caption).foregroundStyle(.secondary).padding(.top, 6).contentShape(.rect)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-    }
-
     private var navigation: some View {
         NavigationStack(path: $store.path) {
             Group {
@@ -403,10 +349,11 @@ struct FeedView: View {
                             .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 5, trailing: 16))
                             .listRowSeparator(.hidden)
                             .listRowBackground(Color.clear)
-                        homeDeck
-                            .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 16))
-                            .listRowSeparator(.hidden)
+                        MarketOutlookRow()
+                            .background { NavigationLink(value: MarketOutlookRoute()) { EmptyView() }.opacity(0) }
+                            .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 12))
                             .listRowBackground(Color.clear)
+                            .listRowSeparator(.visible)
                     }
                     if !store.configured && store.stories.isEmpty {
                         state("CONNECT YOUR WIRE", message: "Add your HTTPS server URL to start reading.", icon: "antenna.radiowaves.left.and.right.slash")
@@ -481,6 +428,7 @@ struct FeedView: View {
                         .asksAbout(AskContext(screen: "The story \"\(story.title)\" from \(story.source), published \(story.publishedAt.formatted(.dateTime.month().day().hour().minute())). Summary: \(story.summary.prefix(600))"))
                 }
                 .navigationDestination(for: MarketSymbol.self) { QuoteDetail(symbol: $0.id).id($0.id).dockClearance() }
+                .navigationDestination(for: MarketOutlookRoute.self) { _ in MarketOutlookDetail().dockClearance() }
                 .navigationDestination(for: DataRoute.self) { route in
                     Group {
                         if DataScreen.designedPaths.contains(route.path) {
@@ -701,36 +649,6 @@ struct FeedView: View {
             store.path.append(route)
         }
         marketDepth = store.path.count
-    }
-
-    /// Biggest gain today first, biggest loss last; symbols still waiting on a quote keep their saved order at the end.
-    private var moversFirst: [String] {
-        let order = Dictionary(watchlist.symbols.enumerated().map { ($1, $0) }, uniquingKeysWith: min)
-        return watchlist.symbols.sorted { a, b in
-            switch (board.quotes[a]?.changePercent, board.quotes[b]?.changePercent) {
-            case let (x?, y?) where x != y: x > y
-            case (_?, nil): true
-            case (nil, _?): false
-            default: order[a, default: 0] < order[b, default: 0]
-            }
-        }
-    }
-
-    /// Tap opens the quote; press and hold shows the remove action.
-    /// A `Menu` is used instead of `.contextMenu` because the home card is a single `List` row,
-    /// and a context menu inside a row lifts the whole card as its preview.
-    private func watchlistMenu<Label: View>(for symbol: String, @ViewBuilder label: () -> Label) -> some View {
-        Menu {
-            Button("Set Price Alert…", systemImage: "bell.badge") { alertSymbol = MarketSymbol(id: symbol) }
-            Button("Remove from Watchlist", systemImage: "star.slash", role: .destructive) {
-                withAnimation(.easeOut(duration: 0.2)) { watchlist.remove(symbol) }
-            }
-        } label: {
-            label().contentShape(.rect)
-        } primaryAction: {
-            open(quote: symbol)
-        }
-        .buttonStyle(.plain)
     }
 
     private func state(_ title: String, message: String, icon: String) -> some View {
@@ -1766,7 +1684,7 @@ struct SettingsView: View {
                     NavigationLink { PushSettingsView() } label: { Label("Alerts and topics", systemImage: "bell.badge") }
                 }
                 Section("Stock Questions") {
-                    NavigationLink { StockAISettings() } label: { Label("AI", systemImage: "sparkles") }
+                    NavigationLink { StockAISettings() } label: { Label("AI", systemImage: "cpu") }
                 }
                 Section("Connection") {
                     NavigationLink {

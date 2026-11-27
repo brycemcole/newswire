@@ -57,9 +57,11 @@ enum ChatGPTResponses {
         return output
     }
 
-    static func text(instructions: String, prompt: String) async throws -> String {
+    static func text(instructions: String, prompt: String, onPartial: (@MainActor @Sendable (String) -> Void)? = nil) async throws -> String {
         let model = try await ChatGPTAccount.shared.model()
-        let output = try await respond(["model": model, "instructions": instructions, "input": [["role": "user", "content": prompt]]])
+        let output = try await respond(["model": model, "instructions": instructions, "input": [["role": "user", "content": prompt]]]) { event in
+            if case .text(let text) = event { onPartial?(text) }
+        }
         return try answer(output).text
     }
 
@@ -181,19 +183,27 @@ extension StockChat {
         var input: [[String: Any]] = [["role": "user", "content": "\(history)\n\(question)"]]
         let progress = research.progress
         var emptyTurns = 0
+        var reasoning = AskResearchDepth.current == .deep && modelOverride == nil
+        var verbosity = modelOverride == nil ? AskAnswerLength.current.verbosity : nil
         while true {
             try Task.checkCancellation()
             let guidance = webSearch ? "\n\nWeb search: prefer Newswire tools for prices, filings and economic data. Use web_search for recent news, events or facts Newswire tools don't cover. Cite each web page as an inline Markdown link [publisher](url) right after the claim it supports; the app turns these links into numbered citations, so this is the one exception to the rule against writing URLs." : ""
             streamingText = ""
             let output: [[String: Any]]
             do {
-                output = try await respond(["model": model, "instructions": instructions + guidance, "input": input,
-                    "tools": namespaces + (webSearch ? [["type": "web_search"]] : []), "tool_choice": "auto", "parallel_tool_calls": true]) { event in
+                var body: [String: Any] = ["model": model, "instructions": instructions + guidance, "input": input,
+                    "tools": namespaces + (webSearch ? [["type": "web_search"]] : []), "tool_choice": "auto", "parallel_tool_calls": true]
+                if reasoning { body["reasoning"] = ["effort": "high"] }
+                if let verbosity { body["text"] = ["verbosity": verbosity] }
+                output = try await respond(body) { event in
                     switch event {
                     case .searching: progress("Searching the web…")
                     case .text(let text): self.streamingText = text
                     }
                 }
+            } catch let error as ChatGPTError where (reasoning || verbosity != nil) && error.rejects(["reasoning", "verbosity"]) {
+                if error.rejects(["reasoning"]) { reasoning = false } else { verbosity = nil }
+                continue
             } catch ChatGPTError.unsupported(let param) where webSearch && (param.isEmpty || param.contains("tools")) {
                 webSearch = false
                 continue
@@ -218,5 +228,17 @@ extension StockChat {
                 input.append(["type": "function_call_output", "call_id": id, "output": result])
             }
         }
+    }
+}
+
+extension ChatGPTError {
+    func rejects(_ names: [String]) -> Bool {
+        let text: String
+        switch self {
+        case .unsupported(let param): text = param
+        case .rejected(400, let message): text = message
+        default: return false
+        }
+        return names.contains { text.localizedCaseInsensitiveContains($0) }
     }
 }

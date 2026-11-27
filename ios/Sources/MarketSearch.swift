@@ -124,8 +124,17 @@ nonisolated struct MarketQuote: Sendable, Hashable, Identifiable {
     /// Source timestamp of the selected price (pre, post, overnight or regular session), not a fetch time.
     private(set) var observedAt: Date?
     let regularPrice: Double
+    private(set) var regularChange: Double = 0
 
     var id: String { symbol }
+
+    /// The move since the last regular close: after hours that is the session's change plus the after-hours move,
+    /// where `change` alone is only the after-hours part. Pre-market and overnight prices already count from that close.
+    var dayChange: Double { extendedLabel == "After" ? regularChange + change : change }
+    var dayChangePercent: Double {
+        let base = price - dayChange
+        return base > 0 ? dayChange / base * 100 : changePercent
+    }
 
     init?(_ value: YValue) {
         guard case .string(let symbol)? = value["symbol"], let rawPrice = value["regularMarketPrice"]?.raw else { return nil }
@@ -135,6 +144,7 @@ nonisolated struct MarketQuote: Sendable, Hashable, Identifiable {
         self.symbol = symbol
         self.currency = currency
         regularPrice = price
+        regularChange = minor("regularMarketChange") ?? 0
         name = value["longName"]?.text ?? value["shortName"]?.text ?? value["displayName"]?.text ?? symbol
         type = value["quoteType"]?.text
         exchange = value["fullExchangeName"]?.text

@@ -28,22 +28,6 @@ nonisolated enum HomePhase: String {
     var usesFutures: Bool { self != .open }
 }
 
-/// The sections of the home card. One shows at a time so the dashboard stays within half the screen.
-enum HomeTab: String, CaseIterable, Identifiable {
-    case moves, positions, watchlist, next
-
-    var id: Self { self }
-
-    var title: String {
-        switch self {
-        case .moves: "Moves"
-        case .positions: "Positions"
-        case .watchlist: "Watchlist"
-        case .next: "Next"
-        }
-    }
-}
-
 /// The symbols the home screen treats as "yours": held positions first, then the watchlist.
 enum HomeSymbols {
     static var positions: [Position] {
@@ -458,7 +442,7 @@ struct PositionMoversCard: View {
     var openPortfolio: () -> Void
     @State private var board = MarketBoard.shared
     @State private var portfolio = PortfolioStore.shared
-    @State private var optionQuotes: [String: OptionQuote] = [:]
+    @State private var held = HeldOptionQuotes.shared
     @Environment(\.scenePhase) private var scenePhase
 
     struct Row: Identifiable {
@@ -514,16 +498,21 @@ struct PositionMoversCard: View {
                 parts.append("\(option.daysLeft) DTE")
                 let previous = contract.map { $0.last - (move ?? 0) }
                 let gain = value.flatMap { value in position.costBasis.map { value - $0 } } ?? position.gain
-                // Without a trade today, an estimated contract shows its own move from the last trade, not the stock's percent,
-                // which has the wrong sign for a put and the wrong size for any contract.
-                let sinceLast: Double? = estimated.flatMap { value in contract.flatMap { $0.last > 0 ? value - $0.last * multiplier : nil } }
-                let fallback: (String, String, Double?)? = sinceLast.map { ("≈" + HomeFormat.dollars($0), "since last trade", $0) }
+                // Without a trade today, the contract's move is modelled from the underlying's move since its last close, so it
+                // covers today only (a last trade can be days old) and has the right sign for a put.
+                let todayEstimate: Double? = move != nil ? nil : {
+                    guard let contract, let underlying, underlying.price - underlying.dayChange > 0,
+                          let model = OptionEstimate(quote: contract, option: option) else { return nil }
+                    let delta = (model.perShare(at: underlying.price) - model.perShare(at: underlying.price - underlying.dayChange)) * multiplier
+                    return delta.isFinite ? delta : nil
+                }()
+                let fallback: (String, String, Double?)? = todayEstimate.map { ("≈" + HomeFormat.dollars($0), "today", $0) }
                     ?? gain.map { ((estimated == nil ? "" : "≈") + HomeFormat.dollars($0), "total", $0) }
                 result.append(Row(id: position.id, symbol: symbol, title: "\(HomeFormat.display(symbol)) \(option.title)",
                                   detail: parts.joined(separator: " · "), dollars: move.map { $0 * multiplier },
                                   percent: move.flatMap { move in previous.flatMap { $0 > 0 ? move / $0 * 100 : nil } },
                                   value: value, fallback: fallback, urgent: option.daysLeft <= 7, valueEstimated: estimated != nil,
-                                  estimatedMove: move == nil ? sinceLast : nil))
+                                  estimatedMove: todayEstimate))
             } else {
                 let lots = stocks[symbol]
                 stocks[symbol] = (quantity: (lots?.quantity ?? 0) + position.quantity,
@@ -538,8 +527,8 @@ struct PositionMoversCard: View {
                 let quote = quotes[proxy]
                 let detail = [shares, holding.value.map(HomeFormat.whole), "tracks \(proxy)"].compactMap { $0 }.joined(separator: " · ")
                 result.append(Row(id: symbol, symbol: proxy, title: HomeFormat.display(symbol), detail: detail,
-                                  dollars: quote.flatMap { quote in holding.value.map { $0 * quote.changePercent / 100 } },
-                                  percent: quote?.changePercent, value: holding.value, urgent: false, proxy: proxy))
+                                  dollars: quote.flatMap { quote in holding.value.map { $0 * quote.dayChangePercent / 100 } },
+                                  percent: quote?.dayChangePercent, value: holding.value, urgent: false, proxy: proxy))
                 continue
             }
             let quote = quotes[symbol]
@@ -548,7 +537,7 @@ struct PositionMoversCard: View {
                           quote?.earnings.flatMap { earningsNote($0, now: now) }]
                 .compactMap { $0 }.joined(separator: " · ")
             result.append(Row(id: symbol, symbol: symbol, title: HomeFormat.display(symbol), detail: detail,
-                              dollars: quote.map { $0.change * holding.quantity }, percent: quote?.changePercent, value: value, urgent: false))
+                              dollars: quote.map { $0.dayChange * holding.quantity }, percent: quote?.dayChangePercent, value: value, urgent: false))
         }
         return result.sorted { a, b in
             if a.urgent != b.urgent { return a.urgent }
@@ -558,7 +547,7 @@ struct PositionMoversCard: View {
 
     private var rows: [Row] {
         _ = portfolio.snapshot.updated
-        return Self.rows(positions: HomeSymbols.positions, quotes: board.quotes, options: optionQuotes, now: .now)
+        return Self.rows(positions: HomeSymbols.positions, quotes: board.quotes, options: held.quotes, now: .now)
     }
 
     private static func earningsNote(_ date: Date, now: Date) -> String? {
@@ -576,7 +565,7 @@ struct PositionMoversCard: View {
                     .frame(maxWidth: .infinity, alignment: .leading).contentShape(.rect)
             }.buttonStyle(.plain)
         } else {
-            let total = rows.compactMap(\.dollars).reduce(0, +)
+            let today = LiveDayChange.total(rows)
             let shown = Array(rows.prefix(3))
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(shown) { row in
@@ -585,10 +574,10 @@ struct PositionMoversCard: View {
                 }
                 Button(action: openPortfolio) {
                     HStack(spacing: 4) {
-                        if rows.contains(where: { $0.dollars != nil }) {
+                        if let today {
                             // Positions without a move today are left out of the total, so say so instead of implying all of them.
-                            Text("\(rows.contains { $0.proxy != nil && $0.dollars != nil } ? "≈" : "")\(HomeFormat.dollars(total)) today\(rows.contains { $0.dollars == nil } ? " · partial" : "")")
-                                .fontWeight(.semibold).foregroundStyle(HomeFormat.tint(total))
+                            Text("\(today.estimated ? "≈" : "")\(HomeFormat.dollars(today.change)) today\(today.partial ? " · partial" : "")")
+                                .fontWeight(.semibold).foregroundStyle(HomeFormat.tint(today.change))
                             Text("·")
                         }
                         Text(rows.count > shown.count ? "All \(rows.count) positions" : "Portfolio")
@@ -606,20 +595,8 @@ struct PositionMoversCard: View {
     private func refreshOptions() async {
         guard scenePhase == .active, !FinancialFreshnessPreview.active else { return }
         while !Task.isCancelled {
-            let held = HomeSymbols.positions.filter { ($0.option?.daysLeft ?? -1) >= 0 }
-            guard !held.isEmpty else { optionQuotes = [:]; return }
-            let found = await withTaskGroup(of: (String, OptionQuote?).self) { group in
-                for position in held {
-                    group.addTask { (position.id, try? await OptionChain.quote(symbol: HomeSymbols.normalize(position.symbol), option: position.option!)) }
-                }
-                var result: [String: OptionQuote] = [:]
-                for await (id, quote) in group { if let quote { result[id] = quote } }
-                return result
-            }
-            guard !Task.isCancelled else { return }
-            // A failed fetch drops the contract back to its synced value rather than keeping an older quote as current.
-            optionQuotes = found
-            do { try await Task.sleep(for: .seconds(found.values.contains(where: \.liveMarket) ? 30 : 120)) } catch { return }
+            await held.refresh(HomeSymbols.positions)
+            do { try await Task.sleep(for: .seconds(held.quotes.values.contains(where: \.liveMarket) ? 30 : 120)) } catch { return }
         }
     }
 

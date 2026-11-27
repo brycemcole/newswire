@@ -6,6 +6,7 @@
 	<array>
 		<string>com.brycecole.newswire.refresh</string>
 		<string>com.brycecole.newswire.process</string>
+		<string>com.brycecole.newswire.ask.*</string>
 	</array>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
