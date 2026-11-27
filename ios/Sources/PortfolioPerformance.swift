@@ -91,24 +91,29 @@ nonisolated struct PerformanceSeries: Sendable {
     }
 
     // Values today's non-option holdings at past prices; ignores trades, deposits and options, so it is flagged as an estimate.
+    // Plan funds (401(k) collective trusts) have no market history of their own, so they follow the ETF that tracks their index:
+    // today's value scaled by that ETF's move since the day. A fund no ETF tracks leaves the estimate unavailable, not guessed.
     private static func estimateFromHoldings(snapshot: PortfolioSnapshot, range: ChartRange) async -> PerformanceSeries? {
         let start = PortfolioLedger.start(for: range, at: .now)
         let held = snapshot.positions.filter { $0.option == nil && $0.value?.isFinite == true && $0.quantity.isFinite && $0.quantity != 0 }
-        var quantities: [String: Double] = [:]
-        for position in held { quantities[position.symbol, default: 0] += position.quantity }
-        guard !quantities.isEmpty else { return nil }
+        struct Holding { let history: String; let quantity: Double; let value: Double; let tracksProxy: Bool }
+        let holdings = held.map { position in
+            Holding(history: position.proxySymbol ?? position.symbol, quantity: position.quantity, value: position.value ?? 0, tracksProxy: position.proxySymbol != nil)
+        }
+        guard !holdings.isEmpty else { return nil }
+        let symbols = Set(holdings.map(\.history))
         let heldValue = held.compactMap(\.value).reduce(0, +)
         let total = snapshot.totalValue
         let fixed = total - heldValue
         let tracks = await withTaskGroup(of: (String, [HistoryPoint]?).self) { group in
-            for symbol in quantities.keys {
+            for symbol in symbols {
                 group.addTask { (symbol, try? await MarketClient.portfolioHistory(symbol, from: start.addingTimeInterval(-7 * 86400))) }
             }
             var found: [String: [HistoryPoint]] = [:]
             for await (symbol, points) in group { if let points { found[symbol] = points.sorted { $0.date < $1.date } } }
             return found
         }
-        guard tracks.count == quantities.count else { return nil }
+        guard tracks.count == symbols.count else { return nil }
         let calendar = PortfolioLedger.calendar
         let end = calendar.startOfDay(for: .now)
         var days = Set(tracks.values.flatMap { $0.map { calendar.startOfDay(for: $0.date) } }.filter { $0 >= start && $0 <= end })
@@ -117,11 +122,16 @@ nonisolated struct PerformanceSeries: Sendable {
         for day in days.sorted() {
             var sum = fixed
             var complete = true
-            for (symbol, quantity) in quantities {
-                guard let price = tracks[symbol]?.last(where: { calendar.startOfDay(for: $0.date) <= day }),
+            for holding in holdings {
+                guard let price = tracks[holding.history]?.last(where: { calendar.startOfDay(for: $0.date) <= day }),
                       day.timeIntervalSince(calendar.startOfDay(for: price.date)) < 7 * 86400,
                       price.close.isFinite, price.close > 0 else { complete = false; break }
-                sum += quantity * price.close
+                if holding.tracksProxy {
+                    guard let latest = tracks[holding.history]?.last?.close, latest.isFinite, latest > 0 else { complete = false; break }
+                    sum += holding.value * price.close / latest
+                } else {
+                    sum += holding.quantity * price.close
+                }
             }
             if complete, sum.isFinite { values.append((day, day == end ? total : sum)) }
         }
