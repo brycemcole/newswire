@@ -116,18 +116,40 @@ nonisolated struct PerformanceSeries: Sendable {
             return found
         }
         let quotes = await fetchedQuotes
+        let night = await Overnight.bars(symbols)
         guard charts.count == symbols.count else { return nil }
         guard let grid = charts.values.map(\.points).max(by: { $0.count < $1.count }), grid.count > 2 else { return nil }
-        let times = grid.map(\.date)
+        // The line runs from midnight New York time on the latest day with any trade, overnight ones included.
+        let calendar = PortfolioLedger.calendar
+        let nightDates = night.values.flatMap { $0.map(\.date) }
+        guard let latestTrade = (nightDates + grid.map(\.date)).max() else { return nil }
+        let midnight = calendar.startOfDay(for: latestTrade)
+        let outsideGrid = nightDates.filter { $0 < grid[0].date || $0 > grid[grid.count - 1].date }
+        let times = Set(grid.map(\.date) + outsideGrid).filter { $0 >= midnight }.sorted()
+        let tracks = Dictionary(uniqueKeysWithValues: charts.map { symbol, chart in
+            let regular = chart.points.map { (date: $0.date, close: $0.close) }
+            let extra = (night[symbol] ?? []).filter { bar in
+                guard let first = regular.first?.date, let last = regular.last?.date else { return true }
+                return bar.date < first || bar.date > last
+            }
+            return (symbol, (regular + extra).sorted { $0.date < $1.date })
+        })
+        // Before the first trade of a new day, the chart source still describes the previous one, so its price is the prior close.
+        func previousClose(_ symbol: String) -> Double? {
+            guard let chart = charts[symbol] else { return nil }
+            if let last = chart.points.last?.date, last < midnight { return chart.price }
+            return chart.previousClose
+        }
 
         struct PricedOption { let position: Position; let detail: OptionDetail; let model: OptionEstimate?; let underlying: String }
         let priced = options.map { position in
             PricedOption(position: position, detail: position.option!, model: quotes[position.id].flatMap { OptionEstimate(quote: $0, option: position.option!) }, underlying: ticker(position.symbol))
         }
+        // A holding that hasn't traded yet that day is still at its previous close; it must not cut the line short.
         func close(_ symbol: String, at date: Date) -> Double? {
-            charts[symbol]?.points.last(where: { $0.date <= date })?.close
+            tracks[symbol]?.last(where: { $0.date <= date })?.close ?? previousClose(symbol)
         }
-        func latest(_ symbol: String) -> Double? { charts[symbol].map { $0.points.last?.close ?? $0.price } }
+        func latest(_ symbol: String) -> Double? { tracks[symbol]?.last?.close ?? charts[symbol]?.price }
         let stockValue = stocks.compactMap(\.value).reduce(0, +)
         let optionValue = options.compactMap(\.value).reduce(0, +)
         let fixed = snapshot.totalValue - stockValue - optionValue
@@ -136,7 +158,7 @@ nonisolated struct PerformanceSeries: Sendable {
             var sum = fixed
             for position in stocks {
                 let symbol = position.proxySymbol ?? ticker(position.symbol)
-                guard let price = prior ? charts[symbol]?.previousClose : close(symbol, at: date), let last = latest(symbol), last > 0, price > 0 else { return nil }
+                guard let price = prior ? previousClose(symbol) : close(symbol, at: date), let last = latest(symbol), last > 0, price > 0 else { return nil }
                 sum += (position.value ?? 0) * price / last
             }
             for option in priced {
@@ -153,7 +175,7 @@ nonisolated struct PerformanceSeries: Sendable {
         }
         var values: [(Date, Double)] = []
         for time in times { if let value = total(at: time, prior: false) { values.append((time, value)) } }
-        guard values.count > 2, let baseline = total(at: times[0], prior: true) else { return nil }
+        guard values.count > 1, let baseline = total(at: times[0], prior: true) else { return nil }
         let points = values.enumerated().map { PerformancePoint(id: $0.offset, date: $0.element.0, value: $0.element.1) }
         return PerformanceSeries(points: points, baseline: baseline, estimatedFromHoldings: true)
     }
