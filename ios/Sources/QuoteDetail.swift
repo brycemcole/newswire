@@ -1397,6 +1397,17 @@ private struct PriceChart: View {
                     }
             }
             if let overnight, let overnightX {
+                // The overnight price trades apart from the day's bars, so draw the gap from the last bar to it instead of leaving it floating.
+                if let last = points.last {
+                    LineMark(x: .value("Time", last.id), y: .value("Price", last.close), series: .value("Session", "overnight"))
+                        .interpolationMethod(.linear)
+                        .foregroundStyle(tint.opacity(0.6))
+                        .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, dash: [4, 4]))
+                    LineMark(x: .value("Time", overnightX), y: .value("Price", overnight.price), series: .value("Session", "overnight"))
+                        .interpolationMethod(.linear)
+                        .foregroundStyle(tint.opacity(0.6))
+                        .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, dash: [4, 4]))
+                }
                 PointMark(x: .value("Time", overnightX), y: .value("Overnight price", overnight.price))
                     .symbolSize(55)
                     .foregroundStyle(tint)
