@@ -148,10 +148,17 @@ struct PortfolioHoldingRow: View {
     }
 }
 
+struct LiveDayChange: Equatable {
+    let change: Double
+    var estimated = false
+}
+
 struct PortfolioOverview: View {
     let snapshot: PortfolioSnapshot
     var title = "All accounts"
     var accounts: [PortfolioAccount] = []
+    /// Today's move summed from the holdings rows, so options count even when the intraday series can't price them.
+    var liveToday: LiveDayChange?
     @State private var funding = PortfolioFundingStore.shared
     @State private var performance = PortfolioPerformance(publishesWidgets: false)
     @State private var selected: PerformancePoint?
@@ -160,7 +167,18 @@ struct PortfolioOverview: View {
     @Environment(\.scenePhase) private var phase
 
     private var range: ChartRange { performance.range }
-    private var series: PerformanceSeries? { performance.series[range] }
+    private var live: LiveDayChange? { range == .day ? liveToday : nil }
+    // The 1D line keeps its intraday shape but measures from a baseline that makes its change equal the rows' total.
+    private var series: PerformanceSeries? {
+        guard let live else { return performance.series[range] }
+        if let day = performance.series[.day], day.points.count > 1 {
+            return PerformanceSeries(points: day.points.map { PerformancePoint(id: $0.id, date: $0.date, value: $0.value) },
+                                     baseline: day.last - live.change, estimatedFromHoldings: day.estimatedFromHoldings)
+        }
+        let end = snapshot.totalValue
+        return PerformanceSeries(points: [PerformancePoint(id: 0, date: Calendar.current.startOfDay(for: .now), value: end - live.change),
+                                          PerformancePoint(id: 1, date: .now, value: end)], baseline: end - live.change)
+    }
     private var recorded: [PerformancePoint] { performance.recorded[range] ?? [] }
     private var confirmedFunding: AccountFunding? { funding.combined(for: accounts) }
     /// Shown only when it says something the number alone doesn't: which kind of value is being scrubbed, or that
@@ -187,7 +205,7 @@ struct PortfolioOverview: View {
                         let change = selected.map { series.change(at: $0) } ?? series.change
                         let percent = selected.flatMap { series.percent(at: $0) } ?? (selected == nil ? series.percent : nil)
                         HStack(spacing: 4) {
-                            Text(Money.signed(change) + (percent.map { " (\(Money.percent($0)))" } ?? ""))
+                            Text((selected == nil && live?.estimated == true ? "≈" : "") + Money.signed(change) + (percent.map { " (\(Money.percent($0)))" } ?? ""))
                                 .numericTextTransition(value: change)
                             Text(selected.map { $0.date.formatted(.dateTime.month(.abbreviated).day().year()) } ?? range.caption)
                                 .foregroundStyle(.secondary)
