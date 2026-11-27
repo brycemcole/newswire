@@ -478,6 +478,8 @@ struct PositionMoversCard: View {
         var proxy: String? = nil
         /// `value` is a model estimate at the underlying's current (possibly extended-hours) price, not a quoted option price.
         var valueEstimated = false
+        /// An estimated contract's move since its last trade, in dollars, when it hasn't traded today.
+        var estimatedMove: Double? = nil
     }
 
     /// The contract's move in the current regular session, per share. Before the open, or until the contract trades,
@@ -512,12 +514,16 @@ struct PositionMoversCard: View {
                 parts.append("\(option.daysLeft) DTE")
                 let previous = contract.map { $0.last - (move ?? 0) }
                 let gain = value.flatMap { value in position.costBasis.map { value - $0 } } ?? position.gain
-                let fallback: (String, String, Double?)? = gain.map { ((estimated == nil ? "" : "≈") + HomeFormat.dollars($0), "total", $0) }
-                    ?? quotes[symbol].map { (HomeFormat.percent($0.changePercent), "underlying", $0.changePercent) }
+                // Without a trade today, an estimated contract shows its own move from the last trade, not the stock's percent,
+                // which has the wrong sign for a put and the wrong size for any contract.
+                let sinceLast: Double? = estimated.flatMap { value in contract.flatMap { $0.last > 0 ? value - $0.last * multiplier : nil } }
+                let fallback: (String, String, Double?)? = sinceLast.map { ("≈" + HomeFormat.dollars($0), "since last trade", $0) }
+                    ?? gain.map { ((estimated == nil ? "" : "≈") + HomeFormat.dollars($0), "total", $0) }
                 result.append(Row(id: position.id, symbol: symbol, title: "\(HomeFormat.display(symbol)) \(option.title)",
                                   detail: parts.joined(separator: " · "), dollars: move.map { $0 * multiplier },
                                   percent: move.flatMap { move in previous.flatMap { $0 > 0 ? move / $0 * 100 : nil } },
-                                  value: value, fallback: fallback, urgent: option.daysLeft <= 7, valueEstimated: estimated != nil))
+                                  value: value, fallback: fallback, urgent: option.daysLeft <= 7, valueEstimated: estimated != nil,
+                                  estimatedMove: move == nil ? sinceLast : nil))
             } else {
                 let lots = stocks[symbol]
                 stocks[symbol] = (quantity: (lots?.quantity ?? 0) + position.quantity,

@@ -142,8 +142,12 @@ nonisolated struct PerformanceSeries: Sendable {
             for option in priced {
                 let multiplier = 100 * option.detail.contracts
                 guard let model = option.model else { sum += option.position.value ?? 0; continue }
-                guard let spot = prior ? charts[option.underlying]?.previousClose : close(option.underlying, at: date), spot > 0 else { return nil }
-                sum += model.perShare(at: spot, on: date) * multiplier
+                // The starting value is the contract's last trade, the same baseline its row's "since last trade" move uses.
+                if prior { sum += model.quote.last > 0 ? model.quote.last * multiplier : model.quote.mark * multiplier; continue }
+                guard let spot = close(option.underlying, at: date), spot > 0 else { return nil }
+                // Priced as of now, like the holdings rows, so the line follows the stock's moves rather than a model time decay
+                // drawn across the day, and its last point equals the value shown for the contract.
+                sum += model.perShare(at: spot) * multiplier
             }
             return sum.isFinite ? sum : nil
         }
