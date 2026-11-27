@@ -94,13 +94,16 @@ struct MarketDock: View {
             let height = stops.rubberBanded(stops.height(detent) - drag)
             // 0 while resting (a floating card), 1 once expanded (docked to the bottom and sides, filling the home-indicator area).
             let docked = min(max((height - stops.height(.peek)) / (stops.height(.medium) - stops.height(.peek)), 0), 1)
-            let inset = min(proxy.safeAreaInsets.bottom, 34) * docked
+            // Above the tab bar the dock never docks to the screen's bottom or sides, so it stays a floating card with rounded corners all round.
+            let floating = aboveTabBar ? 0 : docked
+            let inset = min(proxy.safeAreaInsets.bottom, 34) * floating
             let gap = aboveTabBar ? Self.tabBarGap : Self.floatGap
             // Above the tab bar the frame already ends at the tab bar, so only the keyboard's height beyond it needs padding.
             let keyboardPad = aboveTabBar ? max(keyboard - proxy.safeAreaInsets.bottom, 0) : keyboard
             // Bottom corners follow the display's own curve (concentric with it, whatever the inset), so they match the device.
             let shape = ConcentricRectangle(topLeadingCorner: .fixed(radius), topTrailingCorner: .fixed(radius),
-                                            bottomLeadingCorner: .concentric(minimum: 20), bottomTrailingCorner: .concentric(minimum: 20))
+                                            bottomLeadingCorner: aboveTabBar ? .fixed(radius) : .concentric(minimum: 20),
+                                            bottomTrailingCorner: aboveTabBar ? .fixed(radius) : .concentric(minimum: 20))
             VStack(spacing: suggestedSymbols.isEmpty ? 0 : 8) {
                 if !suggestedSymbols.isEmpty { storySuggestions.padding(.horizontal, 22) }
                 MarketSearchSheet(detent: $detent, onSelect: onSelect, onAsk: onAsk)
@@ -108,12 +111,12 @@ struct MarketDock: View {
                     .padding(.top, Self.barInset + 8 * docked)
                     .overlay(alignment: .top) { handle(stops) }
                     .padding(.bottom, max(inset, keyboardPad))
-                    .frame(height: height + gap * docked, alignment: .top)
+                    .frame(height: height + gap * floating, alignment: .top)
                     .clipShape(shape)
                     .glassEffect(.regular, in: shape)
                     .shadow(color: .black.opacity(0.10), radius: 14, y: 4)
-                    .padding(.horizontal, Self.sideInset * (1 - docked))
-                    .padding(.bottom, gap * (1 - docked))
+                    .padding(.horizontal, Self.sideInset * (1 - floating))
+                    .padding(.bottom, gap * (1 - floating))
             }
             .animation(animation, value: detent)
             .animation(.easeOut(duration: 0.18), value: suggestedSymbols)
