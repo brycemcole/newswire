@@ -78,10 +78,10 @@ import SwiftUI
                 } else if let index = CommandLine.arguments.firstIndex(of: "-widgetGallery") {
                     WidgetGallery(page: CommandLine.arguments.dropFirst(index + 1).first ?? "home")
                 } else {
-                    FeedView()
+                    AppTabs()
                 }
                 #else
-                FeedView()
+                AppTabs()
                 #endif
             }
             .task(id: scenePhase) {
@@ -349,7 +349,7 @@ struct FeedView: View {
                                    onStory: { store.path.append($0) }, onAlert: { alertSymbol = MarketSymbol(id: $0) },
                                    onFindSymbols: { dock = .large })
                 case .positions:
-                    PositionMoversCard(onQuote: { open(quote: $0) }, onAlert: { alertSymbol = MarketSymbol(id: $0) }, openPortfolio: { portfolio = true })
+                    PositionMoversCard(onQuote: { open(quote: $0) }, onAlert: { alertSymbol = MarketSymbol(id: $0) }, openPortfolio: { AppNavigator.shared.select(.portfolio) })
                 case .watchlist:
                     deckWatchlist
                 case .next:
@@ -508,7 +508,7 @@ struct FeedView: View {
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         Menu {
-                            Button { portfolio = true } label: { Label("Portfolio", systemImage: "briefcase") }
+                            Button { AppNavigator.shared.select(.portfolio) } label: { Label("Portfolio", systemImage: "briefcase") }
                             Button { settings = true } label: { Label("Settings", systemImage: "gearshape") }
                             Button { showingSaved = true } label: { Label("Saved Stories", systemImage: "bookmark") }
                             Divider()
@@ -618,7 +618,7 @@ struct FeedView: View {
             settings = false
             dock = .peek
             switch url.host() {
-            case "portfolio": portfolio = true
+            case "portfolio": AppNavigator.shared.select(.portfolio)
             case "quote":
                 portfolio = false
                 guard let symbol = url.pathComponents.dropFirst().first else { return }
