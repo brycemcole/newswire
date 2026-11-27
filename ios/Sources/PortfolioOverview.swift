@@ -183,7 +183,18 @@ struct PortfolioOverview: View {
                         .font(.system(.largeTitle, design: .rounded).weight(.bold)).monospacedDigit()
                         .minimumScaleFactor(0.6).lineLimit(1)
                         .numericTextTransition(value: shown)
-                    if let selected {
+                    if let series {
+                        let change = selected.map { series.change(at: $0) } ?? series.change
+                        let percent = selected.flatMap { series.percent(at: $0) } ?? (selected == nil ? series.percent : nil)
+                        HStack(spacing: 4) {
+                            Text(Money.signed(change) + (percent.map { " (\(Money.percent($0)))" } ?? ""))
+                                .numericTextTransition(value: change)
+                            Text(selected.map { $0.date.formatted(.dateTime.month(.abbreviated).day().year()) } ?? range.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .font(.subheadline.weight(.medium)).monospacedDigit()
+                        .foregroundStyle(Money.tint(change))
+                    } else if let selected {
                         Text(selected.date.formatted(.dateTime.month(.abbreviated).day().year()))
                             .font(.caption).foregroundStyle(.secondary)
                     }
@@ -217,11 +228,8 @@ struct PortfolioOverview: View {
             }
             chart
             if let series {
-                let change = selected.map { series.change(at: $0) } ?? series.change
-                let percent = selected.flatMap { series.percent(at: $0) } ?? (selected == nil ? series.percent : nil)
-                Text(Money.signed(change) + (percent.map { " (\(Money.percent($0)))" } ?? "") + " · Est. \(range.caption)" + (series.estimatedFromHoldings ? " · current holdings" : ""))
-                    .font(.caption.weight(.medium)).monospacedDigit().foregroundStyle(Money.tint(change))
-                    .numericTextTransition(value: change)
+                Text(series.estimatedFromHoldings ? "Estimated from current holdings" : "Recorded balances")
+                    .font(.caption.weight(.medium)).foregroundStyle(.secondary)
             }
             Picker("Performance range", selection: $performance.range) {
                 ForEach(PortfolioPerformance.ranges) { Text($0.rawValue).tag($0) }
