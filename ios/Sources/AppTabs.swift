@@ -45,6 +45,13 @@ struct AppTabs: View {
             FullWidthTabBar(selection: selection)
                 .frame(maxHeight: .infinity, alignment: .bottom)
                 .ignoresSafeArea(.keyboard, edges: .bottom)
+                .background(alignment: .bottom) {
+                    // Content scrolls under the floating bar, so fade it out behind the bar instead of letting rows collide with its labels.
+                    LinearGradient(colors: [.clear, Color(.systemBackground).opacity(0.92)], startPoint: .top, endPoint: .bottom)
+                        .frame(height: FullWidthTabBar.height + 28)
+                        .ignoresSafeArea()
+                        .allowsHitTesting(false)
+                }
         }
         .environment(navigator)
         .environment(\.dockAboveTabBar, true)

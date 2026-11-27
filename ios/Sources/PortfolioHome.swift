@@ -119,7 +119,7 @@ struct PortfolioHome: View {
     }
 
     private var sampleHeader: some View {
-        let series = SamplePortfolio.series(range: sampleRange, end: SamplePortfolio.total(account: sampleAccount))
+        let series = SamplePortfolio.series(range: sampleRange, end: SamplePortfolio.total(account: sampleAccount), seed: Double(sampleAccount ?? 2))
         let selected = selectedDate.flatMap { date in series.min { abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date)) } }
         let shown = selected ?? series.last!
         let change = shown.value - series.first!.value
@@ -170,24 +170,32 @@ struct PortfolioHome: View {
     // MARK: Accounts
 
     private var accountStrip: some View {
+        ScrollViewReader { proxy in
         ScrollView(.horizontal) {
             HStack(spacing: 10) {
                 if isSample {
                     accountCard(title: "All accounts", subtitle: "\(SamplePortfolio.accountNames.count) accounts", value: SamplePortfolio.total(account: nil), selected: sampleAccount == nil) { sampleAccount = nil }
+                        .id("all")
                     ForEach(SamplePortfolio.accountNames.indices, id: \.self) { index in
                         accountCard(title: SamplePortfolio.accountNames[index], subtitle: SamplePortfolio.institutions[index], value: SamplePortfolio.total(account: index), selected: sampleAccount == index) { sampleAccount = index }
+                            .id("sample-\(index)")
                     }
                 } else {
                     accountCard(title: "All accounts", subtitle: "\(accounts.count) account\(accounts.count == 1 ? "" : "s")", value: store.snapshot.totalValue, selected: account == nil) { account = nil }
+                        .id("all")
                     ForEach(accounts) { entry in
                         let value = entry.reportedValue ?? entry.positions.compactMap(\.value).reduce(0, +)
                         accountCard(title: entry.name, subtitle: entry.institution, value: value, selected: account == entry.id) { account = entry.id }
+                            .id("\(entry.id.item)|\(entry.id.name)")
                     }
                 }
             }
         }
         .scrollIndicators(.hidden)
         .scrollClipDisabled()
+        .onChange(of: sampleAccount) { _, new in withAnimation { proxy.scrollTo(new.map { "sample-\($0)" } ?? "all", anchor: .center) } }
+        .onChange(of: account) { _, new in withAnimation { proxy.scrollTo(new.map { "\($0.item)|\($0.name)" } ?? "all", anchor: .center) } }
+        }
     }
 
     private func accountCard(title: String, subtitle: String, value: Double, selected: Bool, action: @escaping () -> Void) -> some View {
@@ -251,7 +259,7 @@ struct PortfolioHome: View {
             }
             Spacer(minLength: 8)
             VStack(alignment: .trailing, spacing: 5) {
-                Text(line.value.map { HomeFormat.whole($0) } ?? "—").font(.body.weight(.semibold)).monospacedDigit()
+                Text(line.value.map { Money.text($0) } ?? "—").font(.body.weight(.semibold)).monospacedDigit()
                 pill(line)
             }
         }
@@ -406,13 +414,13 @@ private enum SamplePortfolio {
         lines(account: account).compactMap(\.value).reduce(cash(account: account), +)
     }
 
-    static func series(range: Range, end: Double) -> [Point] {
+    static func series(range: Range, end: Double, seed: Double) -> [Point] {
         let start = Date.now.addingTimeInterval(-range.days * 86_400)
         let count = range.points
         let base = end / (1 + range.move)
         return (0..<count).map { index in
             let progress = Double(index) / Double(count - 1)
-            let wobble = sin(Double(index) * 0.7) * 0.004 + sin(Double(index) * 0.23 + 1) * 0.006
+            let wobble = sin(Double(index) * (0.7 + seed * 0.13) + seed) * 0.004 + sin(Double(index) * (0.23 + seed * 0.05) + 1 + seed * 2) * 0.006
             let value = index == count - 1 ? end : base * (1 + range.move * progress + wobble * (1 - progress * 0.3))
             return Point(id: index, date: start.addingTimeInterval(range.days * 86_400 * progress), value: value)
         }
