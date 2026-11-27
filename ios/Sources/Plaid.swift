@@ -217,6 +217,36 @@ nonisolated struct PortfolioSnapshot: Codable, Sendable {
     }
 
     var cash: Double { cashByItem.values.reduce(0, +) }
+    /// Borrowed on margin across accounts, as a negative number; nil when no account is below zero cash.
+    var marginLoan: Double? {
+        let loans = (accountBalances ?? []).compactMap(\.cashValue).filter { $0 < 0 }
+        return loans.isEmpty ? nil : loans.reduce(0, +)
+    }
+
+    static func isMarginDebit(cash: Double, residual: Double, value: Double) -> Bool {
+        cash > 0 && residual < -max(1, abs(value) * 0.001)
+    }
+
+    /// Caches written before margin debits were recognised hold them as positive cash.
+    func correctingMarginCash() -> PortfolioSnapshot {
+        guard var balances = accountBalances else { return self }
+        var snapshot = self
+        var changed = Set<String>()
+        for index in balances.indices {
+            let balance = balances[index]
+            guard balance.holdingsComplete == true, let value = balance.value, let cash = balance.cashValue else { continue }
+            let invested = positions.filter { $0.itemID == balance.itemID && $0.id.hasPrefix(balance.accountID + "|") }.compactMap(\.value).reduce(0, +)
+            guard Self.isMarginDebit(cash: cash, residual: value - invested, value: value) else { continue }
+            balances[index].cashValue = value - invested
+            changed.insert(balance.itemID)
+        }
+        guard !changed.isEmpty else { return self }
+        snapshot.accountBalances = balances
+        for item in changed {
+            snapshot.cashByItem[item] = balances.filter { $0.itemID == item }.compactMap(\.cashValue).reduce(0, +)
+        }
+        return snapshot
+    }
     var reportedValue: Double? {
         guard let accountBalances, !accountBalances.isEmpty,
               accountBalances.allSatisfy({ $0.value != nil }),
@@ -517,10 +547,9 @@ nonisolated struct HoldingsResponse: Decodable, Sendable {
                 let invested = held.filter { securities[$0.securityId]?.type != "cash" }.compactMap(\.institutionValue).reduce(0, +)
                 let residual = value - invested
                 let tolerance = max(1, abs(value) * 0.001)
-                let soFiMargin = item.institution.caseInsensitiveCompare("SoFi") == .orderedSame &&
-                    accountCash > 0 && residual < 0 && abs(residual + accountCash) < tolerance
-                // Some brokers omit cash holdings; SoFi can report a margin debit as positive cash.
-                if cashHoldings.isEmpty || abs(residual - accountCash) < tolerance || soFiMargin {
+                // Some brokers omit cash holdings. Holdings worth more than the account mean the difference is borrowed,
+                // which SoFi reports as positive cash; the balance is the equity, so the cash is the negative residual.
+                if cashHoldings.isEmpty || abs(residual - accountCash) < tolerance || PortfolioSnapshot.isMarginDebit(cash: accountCash, residual: residual, value: value) {
                     accountCash = residual
                 }
             }
@@ -569,7 +598,7 @@ nonisolated struct HoldingsResponse: Decodable, Sendable {
     }
 
     private func applyingOverrides(_ snapshot: PortfolioSnapshot) -> PortfolioSnapshot {
-        var snapshot = snapshot
+        var snapshot = snapshot.correctingMarginCash()
         for index in snapshot.positions.indices {
             if snapshot.positions[index].costEstimated && snapshot.costMethodVersion != 2 {
                 snapshot.positions[index].reportedCost = nil
