@@ -44,11 +44,9 @@ struct ScreenerTests {
         #expect(ScreenerRanking.apply(try preset("iv"), to: rows).map(\.symbol) == ["C", "D", "A"])
     }
 
-    @Test func cryptoRankingSortsByChangeBothWays() throws {
-        let rows = try [row("A-USD", change: 3), row("B-USD", change: -5), row("C-USD", change: 8)]
-        #expect(ScreenerRanking.apply(try preset("cryptoGainers"), to: rows).map(\.symbol) == ["C-USD", "A-USD", "B-USD"])
-        #expect(ScreenerRanking.apply(try preset("cryptoLosers"), to: rows).map(\.symbol) == ["B-USD", "A-USD", "C-USD"])
-        #expect(try row("BTC-USD").label == "BTC")
+    @Test func cryptoScreensAreGone() {
+        #expect(ScreenerPreset.preset("cryptoGainers") == nil && ScreenerPreset.preset("cryptoLosers") == nil)
+        #expect(!ScreenerPreset.defaultPinned.contains("cryptoGainers"))
     }
 
     @Test func impliedVolatilityParsingUsesNearestLiquidStrikeAndSkipsJunk() throws {
