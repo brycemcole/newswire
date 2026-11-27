@@ -701,6 +701,26 @@ nonisolated enum Overnight {
         return trades
     }
 
+    /// Recent 5-minute bars including the overnight venue, which the chart source's 4 AM start leaves out.
+    static func bars(_ symbols: Set<String>) async -> [String: [(date: Date, close: Double)]] {
+        let eligible = symbols.filter { $0.range(of: #"^[A-Z]{1,5}(-[A-Z])?$"#, options: .regularExpression) != nil }.sorted()
+        guard !eligible.isEmpty,
+              let url = URL(string: "https://api.robinhood.com/marketdata/historicals/?symbols=\(eligible.map { $0.replacingOccurrences(of: "-", with: ".") }.joined(separator: ","))&interval=5minute&span=day&bounds=24_5"),
+              let response = try? await MarketClient.load(url), (200..<300).contains(response.1),
+              let rows = (try? JSONDecoder().decode(YValue.self, from: response.0))?["results"]?.array else { return [:] }
+        var found: [String: [(date: Date, close: Double)]] = [:]
+        for row in rows {
+            guard let symbol = row["symbol"]?.text?.replacingOccurrences(of: ".", with: "-") else { continue }
+            found[symbol] = (row["historicals"]?.array ?? []).compactMap { bar in
+                if case .bool(true)? = bar["interpolated"] { return nil }
+                guard let stamp = bar["begins_at"]?.text, let date = parseDate(stamp),
+                      let close = bar["close_price"]?.text.flatMap(Double.init), close > 0 else { return nil }
+                return (date, close)
+            }
+        }
+        return found
+    }
+
     static func parse(_ row: YValue, symbol: String, now: Date = .now) -> MarketTick? {
         guard let price = row["last_non_reg_trade_price"]?.text.flatMap(Double.init), price > 0,
               let stamp = row["venue_last_non_reg_trade_time"]?.text, let date = parseDate(stamp),
