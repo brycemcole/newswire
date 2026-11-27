@@ -88,21 +88,19 @@ struct MoverPillRows: View {
     let pills: [MoverPill]
     let onSelect: (String) -> Void
 
+    // Pills fill a row left to right and wrap to the next, with the same 8 pt gap between every pair.
+    // A two-row grid sized each column to its widest pill, which left uneven gaps.
     var body: some View {
-        ScrollView(.horizontal) {
-            GlassEffectContainer(spacing: 8) {
-                LazyHGrid(rows: [GridItem(.fixed(40), spacing: 8), GridItem(.fixed(40), spacing: 8)], spacing: 8) {
-                    ForEach(pills) { pill in
-                        Button { onSelect(pill.symbol) } label: { MoverPillLabel(pill: pill) }
-                            .buttonStyle(PressSpringStyle())
-                    }
+        GlassEffectContainer(spacing: 8) {
+            FlowLayout(spacing: 8) {
+                ForEach(pills) { pill in
+                    Button { onSelect(pill.symbol) } label: { MoverPillLabel(pill: pill) }
+                        .buttonStyle(PressSpringStyle())
                 }
-                .padding(.horizontal, 16)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .scrollIndicators(.hidden)
-        .scrollClipDisabled()
-        .frame(height: 88)
+        .padding(.horizontal, 16)
     }
 }
 

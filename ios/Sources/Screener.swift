@@ -66,7 +66,6 @@ nonisolated struct ScreenerPreset: Identifiable, Hashable, Sendable {
 
     enum Source: Hashable, Sendable {
         case screener
-        case crypto
         case symbols([String])
     }
 
@@ -85,7 +84,6 @@ nonisolated struct ScreenerPreset: Identifiable, Hashable, Sendable {
     var criteria: String {
         switch source {
         case .screener: filters.map(\.label).joined(separator: " · ")
-        case .crypto: "US-listed crypto pairs"
         case .symbols(let symbols): symbols.map { $0.replacingOccurrences(of: "=F", with: "") }.joined(separator: " · ")
         }
     }
@@ -148,15 +146,11 @@ nonisolated struct ScreenerPreset: Identifiable, Hashable, Sendable {
     static let futuresSymbols = ["ES=F", "NQ=F", "YM=F", "RTY=F", "CL=F", "GC=F", "SI=F", "NG=F", "HG=F", "ZN=F"]
 
     static let all: [ScreenerPreset] = stocks + [
-        ScreenerPreset(id: "cryptoGainers", title: "Crypto gainers", symbol: "bitcoinsign.circle", blurb: "Biggest 24-hour gains among major crypto.",
-                       filters: [], sortField: "", descending: true, ranking: .change(descending: true), metric: .change, source: .crypto),
-        ScreenerPreset(id: "cryptoLosers", title: "Crypto losers", symbol: "bitcoinsign.circle", blurb: "Biggest 24-hour declines among major crypto.",
-                       filters: [], sortField: "", descending: false, ranking: .change(descending: false), metric: .change, source: .crypto),
         ScreenerPreset(id: "futures", title: "Futures markets", symbol: "calendar.badge.clock", blurb: "Index, energy, metals and rate futures.",
                        filters: [], sortField: "", descending: true, ranking: .fetched, metric: .change, source: .symbols(futuresSymbols)),
     ]
 
-    static let defaultPinned = ["iv", "cryptoGainers", "futures", "gainers", "losers", "active"]
+    static let defaultPinned = ["iv", "futures", "gainers", "losers", "active"]
     static func preset(_ id: String) -> ScreenerPreset? { all.first { $0.id == id } }
 }
 
@@ -178,6 +172,12 @@ nonisolated struct ScreenerRow: Identifiable, Hashable, Sendable {
     }
 
     var id: String { symbol }
+
+    /// Exchange test symbols (Nasdaq's ZVZZT family, NYSE's "test" issues) trade huge volume and top Most active,
+    /// but they are not real companies, so screens drop them.
+    var isTestIssue: Bool {
+        symbol.wholeMatch(of: /Z[A-Z]ZZT/) != nil || name.firstMatch(of: /(?i)\b(test|tst)\b/) != nil
+    }
 
     var relativeVolume: Double? {
         guard let volume, let averageVolume, averageVolume > 0 else { return nil }
@@ -261,11 +261,6 @@ extension MarketClient {
         case .symbols(let symbols):
             return try await quotes(symbols).map(ScreenerRow.init)
                 .sorted { (symbols.firstIndex(of: $0.symbol) ?? 0) < (symbols.firstIndex(of: $1.symbol) ?? 0) }
-        case .crypto:
-            let root = try await authed("/v1/finance/screener/predefined/saved", [
-                URLQueryItem(name: "scrIds", value: "all_cryptocurrencies_us"), URLQueryItem(name: "count", value: "100"),
-            ])
-            return (root["finance"]?["result"]?.array.first?["quotes"]?.array ?? []).compactMap(ScreenerRow.init).filter { ($0.marketCap ?? 0) >= 1e8 }
         case .screener: break
         }
         let body = try JSONSerialization.data(withJSONObject: preset.requestBody())
@@ -283,7 +278,7 @@ extension MarketClient {
             if code == 401 || code == 403 { continue }
             guard (200..<300).contains(code) else { throw MarketError.status(code) }
             let root = try JSONDecoder().decode(YValue.self, from: data)
-            return (root["finance"]?["result"]?.array.first?["quotes"]?.array ?? []).compactMap(ScreenerRow.init)
+            return (root["finance"]?["result"]?.array.first?["quotes"]?.array ?? []).compactMap(ScreenerRow.init).filter { !$0.isTestIssue }
         }
         throw MarketError.status(401)
     }
