@@ -67,6 +67,19 @@ struct PositionRowsTests {
         #expect(abs((row.value ?? 0) - expected) < expected * 0.05 + 1)
         #expect(row.value != 1800)
         #expect(row.fallback?.text.hasPrefix("≈") == true)
+        // The pill shows the contract's own dollar move from its last trade, not the stock's percent.
+        #expect(row.fallback?.caption == "since last trade")
+        #expect(abs((row.fallback?.tint ?? 0) - (expected - 10 * 200)) < 1e-6)
+    }
+
+    @Test func optionWithoutPricesShowsNoMoveRatherThanTheStocksPercent() throws {
+        let put = Position(id: "a|gev-put", itemID: "a", institution: "Robinhood", account: "Individual", symbol: "GEV", name: "GE Vernova Put",
+                           option: OptionDetail(isCall: false, strike: 600, expiration: Date.now.addingTimeInterval(30 * 86400), contracts: 1),
+                           quantity: 100, price: 2, value: 200, reportedCost: nil)
+        let data = Data(#"{"symbol":"GEV","regularMarketPrice":690,"regularMarketTime":100,"regularMarketChange":20,"regularMarketChangePercent":3,"marketState":"CLOSED"}"#.utf8)
+        let underlying = try #require(MarketQuote(JSONDecoder().decode(YValue.self, from: data)))
+        let row = try #require(PositionMoversCard.rows(positions: [put], quotes: ["GEV": underlying], options: [:], now: utc("2026-10-28T12:00:00Z")).first)
+        #expect(row.dollars == nil && row.fallback == nil)
     }
 
     private func fund(_ symbol: String, name: String? = nil, value: Double? = 4688) -> Position {
