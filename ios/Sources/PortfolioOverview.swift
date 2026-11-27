@@ -205,14 +205,12 @@ struct PortfolioOverview: View {
                     }
 
                 }
-            } else {
+            } else if accounts.count == 1, let account = accounts.first, let history = account.history {
+                // Lifetime gain needs confirmed funding, so without it only the recorded flows are shown rather than a prompt.
+                let flows = InvestmentCashFlows(history: history, accountID: account.id.name, institution: account.institution)
                 HStack(alignment: .top, spacing: 16) {
-                    metric("Lifetime gain", "Confirm funding")
-                    if accounts.count == 1, let account = accounts.first, let history = account.history {
-                        let flows = InvestmentCashFlows(history: history, accountID: account.id.name, institution: account.institution)
-                        metric("Recorded deposits", Money.text(flows.contributed))
-                        metric("Recorded withdrawals", Money.text(flows.withdrawn))
-                    }
+                    metric("Recorded deposits", Money.text(flows.contributed))
+                    metric("Recorded withdrawals", Money.text(flows.withdrawn))
                 }
             }
             chart
