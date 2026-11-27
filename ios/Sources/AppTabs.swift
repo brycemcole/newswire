@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 enum AppTab: Hashable { case today, portfolio, ask }
 
@@ -24,16 +25,94 @@ enum AppTab: Hashable { case today, portfolio, ask }
 
 struct AppTabs: View {
     @State private var navigator = AppNavigator.shared
+    private var selection: Binding<AppTab> { Binding(get: { navigator.tab }, set: { navigator.select($0) }) }
 
     var body: some View {
-        TabView(selection: Binding(get: { navigator.tab }, set: { navigator.select($0) })) {
-            Tab("Today", systemImage: "newspaper", value: AppTab.today) { FeedView().environment(\.askTab, .today) }
-            Tab("Portfolio", systemImage: "briefcase", value: AppTab.portfolio) { PortfolioView(embedded: true).environment(\.askTab, .portfolio) }
+        // The system tab bar is a compact pill that can't be widened, so it is hidden and replaced by a full-width bar
+        // with the same side margin as the market dock above it.
+        TabView(selection: selection) {
+            Tab("Today", systemImage: "newspaper", value: AppTab.today) {
+                FeedView().environment(\.askTab, .today).fullWidthTabBar()
+            }
+            Tab("Portfolio", systemImage: "briefcase", value: AppTab.portfolio) {
+                PortfolioHome().environment(\.askTab, .portfolio).fullWidthTabBar()
+            }
             Tab("Ask", systemImage: "message", value: AppTab.ask) {
-                AskSheet(context: navigator.askContext, embedded: true)
+                AskSheet(context: navigator.askContext, embedded: true).fullWidthTabBar()
             }
         }
+        .overlay {
+            FullWidthTabBar(selection: selection)
+                .frame(maxHeight: .infinity, alignment: .bottom)
+                .ignoresSafeArea(.keyboard, edges: .bottom)
+                .background(alignment: .bottom) {
+                    // Content scrolls under the floating bar, so fade it out behind the bar instead of letting rows collide with its labels.
+                    LinearGradient(colors: [.clear, Color(.systemBackground).opacity(0.92)], startPoint: .top, endPoint: .bottom)
+                        .frame(height: FullWidthTabBar.height + 28)
+                        .ignoresSafeArea()
+                        .allowsHitTesting(false)
+                }
+        }
         .environment(navigator)
+        .environment(\.dockAboveTabBar, true)
+    }
+}
+
+private extension View {
+    func fullWidthTabBar() -> some View {
+        toolbarVisibility(.hidden, for: .tabBar).background(TabBarInset().allowsHitTesting(false))
+    }
+}
+
+/// A SwiftUI safe area inset does not reach a NavigationStack's own bottom bars (Ask's composer), so the room for the
+/// custom tab bar is reserved on the tab bar controller, which every screen under it inherits.
+private struct TabBarInset: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> Controller { Controller() }
+    func updateUIViewController(_ controller: Controller, context: Context) { controller.apply() }
+
+    final class Controller: UIViewController {
+        override func viewIsAppearing(_ animated: Bool) {
+            super.viewIsAppearing(animated)
+            apply()
+        }
+
+        func apply() {
+            guard let tabs = tabBarController, tabs.additionalSafeAreaInsets.bottom != FullWidthTabBar.height else { return }
+            tabs.additionalSafeAreaInsets.bottom = FullWidthTabBar.height
+        }
+    }
+}
+
+private struct FullWidthTabBar: View {
+    @Binding var selection: AppTab
+    /// The 52 point buttons, 4 points of padding around them and 4 below the bar.
+    static let height: CGFloat = 64
+    private let items: [(tab: AppTab, title: String, icon: String)] = [
+        (.today, "Today", "newspaper"), (.portfolio, "Portfolio", "briefcase"), (.ask, "Ask", "message"),
+    ]
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(items, id: \.tab) { item in
+                Button { selection = item.tab } label: {
+                    VStack(spacing: 2) {
+                        Image(systemName: item.icon).font(.system(size: 20, weight: .medium))
+                        Text(item.title).font(.caption2.weight(.medium))
+                    }
+                    .foregroundStyle(selection == item.tab ? Color.accentColor : Color.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 52)
+                    .background { if selection == item.tab { Capsule().fill(.quaternary) } }
+                    .contentShape(.capsule)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(item.title)
+                .accessibilityAddTraits(selection == item.tab ? [.isButton, .isSelected] : .isButton)
+            }
+        }
+        .padding(4)
+        .glassEffect(.regular, in: .capsule)
+        .padding(.horizontal, MarketDock.sideInset)
+        .padding(.bottom, 4)
     }
 }
 

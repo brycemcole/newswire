@@ -68,7 +68,13 @@ struct MarketDock: View {
     /// How much room screens under the dock reserve at the bottom (dock top edge, less the home-indicator inset it already sits above).
     static let clearance: CGFloat = peekHeight + floatGap - 34
 
+    /// Space under the dock when it rests above the tab bar (the tab bar already supplies the bottom inset).
+    static let tabBarGap: CGFloat = 8
+    /// Room screens reserve at the bottom when the dock rests above the tab bar.
+    static let tabbedClearance: CGFloat = peekHeight + tabBarGap
+
     @Binding var detent: DockDetent
+    var aboveTabBar = false
     let onSelect: (String) -> Void
     var onAsk: (String) -> Void = { _ in }
     var onSuggestionSelect: ((String) -> Void)?
@@ -88,23 +94,29 @@ struct MarketDock: View {
             let height = stops.rubberBanded(stops.height(detent) - drag)
             // 0 while resting (a floating card), 1 once expanded (docked to the bottom and sides, filling the home-indicator area).
             let docked = min(max((height - stops.height(.peek)) / (stops.height(.medium) - stops.height(.peek)), 0), 1)
-            let inset = min(proxy.safeAreaInsets.bottom, 34) * docked
+            // Above the tab bar the dock never docks to the screen's bottom or sides, so it stays a floating card with rounded corners all round.
+            let floating = aboveTabBar ? 0 : docked
+            let inset = min(proxy.safeAreaInsets.bottom, 34) * floating
+            let gap = aboveTabBar ? Self.tabBarGap : Self.floatGap
+            // Above the tab bar the frame already ends at the tab bar, so only the keyboard's height beyond it needs padding.
+            let keyboardPad = aboveTabBar ? max(keyboard - proxy.safeAreaInsets.bottom, 0) : keyboard
             // Bottom corners follow the display's own curve (concentric with it, whatever the inset), so they match the device.
             let shape = ConcentricRectangle(topLeadingCorner: .fixed(radius), topTrailingCorner: .fixed(radius),
-                                            bottomLeadingCorner: .concentric(minimum: 20), bottomTrailingCorner: .concentric(minimum: 20))
+                                            bottomLeadingCorner: aboveTabBar ? .fixed(radius) : .concentric(minimum: 20),
+                                            bottomTrailingCorner: aboveTabBar ? .fixed(radius) : .concentric(minimum: 20))
             VStack(spacing: suggestedSymbols.isEmpty ? 0 : 8) {
                 if !suggestedSymbols.isEmpty { storySuggestions.padding(.horizontal, 22) }
                 MarketSearchSheet(detent: $detent, onSelect: onSelect, onAsk: onAsk)
                     .equatable()
                     .padding(.top, Self.barInset + 8 * docked)
                     .overlay(alignment: .top) { handle(stops) }
-                    .padding(.bottom, max(inset, keyboard))
-                    .frame(height: height + Self.floatGap * docked, alignment: .top)
+                    .padding(.bottom, max(inset, keyboardPad))
+                    .frame(height: height + gap * floating, alignment: .top)
                     .clipShape(shape)
                     .glassEffect(.regular, in: shape)
                     .shadow(color: .black.opacity(0.10), radius: 14, y: 4)
-                    .padding(.horizontal, Self.sideInset * (1 - docked))
-                    .padding(.bottom, Self.floatGap * (1 - docked))
+                    .padding(.horizontal, Self.sideInset * (1 - floating))
+                    .padding(.bottom, gap * (1 - floating))
             }
             .animation(animation, value: detent)
             .animation(.easeOut(duration: 0.18), value: suggestedSymbols)
@@ -114,7 +126,7 @@ struct MarketDock: View {
         }
         // The keyboard must not resize the dock: the frame would change under the drag and while it dismisses, which is what made collapsing judder.
         // Instead the frame ignores it and the content is padded up by the keyboard's height.
-        .ignoresSafeArea(.all, edges: .bottom)
+        .ignoresSafeArea(aboveTabBar ? .keyboard : .all, edges: .bottom)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
             guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
             let hidden = frame.minY >= UIScreen.main.bounds.height
@@ -209,11 +221,28 @@ struct MarketDock: View {
     }
 }
 
-extension View {
-    /// Keeps content clear of the dock's resting search bar.
-    func dockClearance(suggestions: Bool = false) -> some View {
-        safeAreaInset(edge: .bottom, spacing: 0) {
-            Color.clear.frame(height: MarketDock.clearance + (suggestions ? MarketDock.storySuggestionHeight : 0))
+private struct DockAboveTabBarKey: EnvironmentKey { static let defaultValue = false }
+
+extension EnvironmentValues {
+    /// True when the app's tab bar is showing, so the dock rests above it instead of at the screen's bottom edge.
+    var dockAboveTabBar: Bool {
+        get { self[DockAboveTabBarKey.self] }
+        set { self[DockAboveTabBarKey.self] = newValue }
+    }
+}
+
+private struct DockClearance: ViewModifier {
+    let suggestions: Bool
+    @Environment(\.dockAboveTabBar) private var aboveTabBar
+
+    func body(content: Content) -> some View {
+        content.safeAreaInset(edge: .bottom, spacing: 0) {
+            Color.clear.frame(height: (aboveTabBar ? MarketDock.tabbedClearance : MarketDock.clearance) + (suggestions ? MarketDock.storySuggestionHeight : 0))
         }
     }
+}
+
+extension View {
+    /// Keeps content clear of the dock's resting search bar.
+    func dockClearance(suggestions: Bool = false) -> some View { modifier(DockClearance(suggestions: suggestions)) }
 }

@@ -78,10 +78,10 @@ import SwiftUI
                 } else if let index = CommandLine.arguments.firstIndex(of: "-widgetGallery") {
                     WidgetGallery(page: CommandLine.arguments.dropFirst(index + 1).first ?? "home")
                 } else {
-                    FeedView()
+                    AppTabs()
                 }
                 #else
-                FeedView()
+                AppTabs()
                 #endif
             }
             .task(id: scenePhase) {
@@ -295,6 +295,7 @@ private struct ConditionalWireSearch: ViewModifier {
 
 struct FeedView: View {
     @Environment(\.scenePhase) private var phase
+    @Environment(\.dockAboveTabBar) private var dockAboveTabBar
     @State private var store = FeedStore.shared
     @State private var settings = false
     @State private var showingSaved = false
@@ -349,7 +350,7 @@ struct FeedView: View {
                                    onStory: { store.path.append($0) }, onAlert: { alertSymbol = MarketSymbol(id: $0) },
                                    onFindSymbols: { dock = .large })
                 case .positions:
-                    PositionMoversCard(onQuote: { open(quote: $0) }, onAlert: { alertSymbol = MarketSymbol(id: $0) }, openPortfolio: { portfolio = true })
+                    PositionMoversCard(onQuote: { open(quote: $0) }, onAlert: { alertSymbol = MarketSymbol(id: $0) }, openPortfolio: { AppNavigator.shared.select(.portfolio) })
                 case .watchlist:
                     deckWatchlist
                 case .next:
@@ -508,7 +509,7 @@ struct FeedView: View {
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         Menu {
-                            Button { portfolio = true } label: { Label("Portfolio", systemImage: "briefcase") }
+                            Button { AppNavigator.shared.select(.portfolio) } label: { Label("Portfolio", systemImage: "briefcase") }
                             Button { settings = true } label: { Label("Settings", systemImage: "gearshape") }
                             Button { showingSaved = true } label: { Label("Saved Stories", systemImage: "bookmark") }
                             Divider()
@@ -592,7 +593,7 @@ struct FeedView: View {
         .overlay {
             if !hidesMarketDock {
                 StorySuggestionsReader(source: storySuggestions) { suggestedSymbols in
-                    MarketDock(detent: $dock, onSelect: { symbol in
+                    MarketDock(detent: $dock, aboveTabBar: dockAboveTabBar, onSelect: { symbol in
                         if symbol == TerminalExploreView.token {
                             withAnimation(selectionAnimation) { dock = .peek }
                             marketDepth = nil
@@ -618,7 +619,7 @@ struct FeedView: View {
             settings = false
             dock = .peek
             switch url.host() {
-            case "portfolio": portfolio = true
+            case "portfolio": AppNavigator.shared.select(.portfolio)
             case "quote":
                 portfolio = false
                 guard let symbol = url.pathComponents.dropFirst().first else { return }

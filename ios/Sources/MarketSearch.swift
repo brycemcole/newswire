@@ -447,7 +447,6 @@ struct MarketSearchSheet: View, Equatable {
         GlassEffectContainer(spacing: 10) {
             HStack(spacing: 10) {
                 searchField
-                askButton
             }
         }
     }
@@ -488,24 +487,6 @@ struct MarketSearchSheet: View, Equatable {
             guard searching, !query.isEmpty else { return }
             selection = TextSelection(range: query.startIndex..<query.endIndex)
         }
-    }
-
-    private var askButton: some View {
-        Button {
-            query = ""
-            searching = false
-            detent = .peek
-            onAsk("")
-        } label: {
-            Image(systemName: "message")
-                .font(.body.weight(.semibold))
-                .foregroundStyle(Color.wireAccent)
-                .frame(width: 48, height: 48)
-                .contentShape(.circle)
-        }
-        .buttonStyle(.plain)
-        .glassEffect(.regular.interactive(), in: .circle)
-        .accessibilityLabel("Ask the markets")
     }
 
     private var suggestions: some View {
