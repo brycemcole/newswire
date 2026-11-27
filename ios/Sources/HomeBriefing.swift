@@ -476,6 +476,8 @@ struct PositionMoversCard: View {
         let urgent: Bool
         /// The ETF whose move estimates this plan fund's; `dollars` and `percent` are then estimates.
         var proxy: String? = nil
+        /// `value` is a model estimate at the underlying's current (possibly extended-hours) price, not a quoted option price.
+        var valueEstimated = false
     }
 
     /// The contract's move in the current regular session, per share. Before the open, or until the contract trades,
@@ -496,17 +498,26 @@ struct PositionMoversCard: View {
                 let multiplier = 100 * option.contracts
                 let contract = options[position.id]
                 let move = contract.flatMap { sessionChange($0, now: now) }
-                let value = contract.flatMap { $0.liveMarket ? $0.mark * multiplier : nil } ?? position.value
+                // The stock page values a contract that isn't trading live, or any contract while the underlying trades outside regular
+                // hours, from the underlying's current price. Do the same here so both screens show one number.
+                let underlying = quotes[symbol]
+                let estimated: Double? = {
+                    guard let contract, let underlying, underlying.price > 0, !contract.liveMarket || underlying.extendedLabel != nil,
+                          let model = OptionEstimate(quote: contract, option: option) else { return nil }
+                    return model.perShare(at: underlying.price) * multiplier
+                }()
+                let value = estimated ?? contract.flatMap { $0.liveMarket ? $0.mark * multiplier : nil } ?? position.value
                 var parts = ["\(abs(option.contracts).formatted(.number.precision(.fractionLength(0...2)))) ct"]
-                if let value { parts.append(HomeFormat.whole(value)) }
+                if let value { parts.append((estimated == nil ? "" : "≈") + HomeFormat.whole(value)) }
                 parts.append("\(option.daysLeft) DTE")
                 let previous = contract.map { $0.last - (move ?? 0) }
-                let fallback: (String, String, Double?)? = position.gain.map { (HomeFormat.dollars($0), "total", $0) }
+                let gain = value.flatMap { value in position.costBasis.map { value - $0 } } ?? position.gain
+                let fallback: (String, String, Double?)? = gain.map { ((estimated == nil ? "" : "≈") + HomeFormat.dollars($0), "total", $0) }
                     ?? quotes[symbol].map { (HomeFormat.percent($0.changePercent), "underlying", $0.changePercent) }
                 result.append(Row(id: position.id, symbol: symbol, title: "\(HomeFormat.display(symbol)) \(option.title)",
                                   detail: parts.joined(separator: " · "), dollars: move.map { $0 * multiplier },
                                   percent: move.flatMap { move in previous.flatMap { $0 > 0 ? move / $0 * 100 : nil } },
-                                  value: value, fallback: fallback, urgent: option.daysLeft <= 7))
+                                  value: value, fallback: fallback, urgent: option.daysLeft <= 7, valueEstimated: estimated != nil))
             } else {
                 let lots = stocks[symbol]
                 stocks[symbol] = (quantity: (lots?.quantity ?? 0) + position.quantity,

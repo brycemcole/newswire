@@ -42,10 +42,10 @@ struct PortfolioHome: View {
         return rows.map { row in
             let isOption = positions.first { $0.id == row.id }?.option != nil
             let valueText = row.value.map(HomeFormat.whole)
-            let detail = row.detail.components(separatedBy: " · ").filter { $0 != valueText }.joined(separator: " · ")
+            let detail = row.detail.components(separatedBy: " · ").filter { $0 != valueText && $0 != valueText.map({ "≈" + $0 }) }.joined(separator: " · ")
             return HoldingLine(id: row.id, symbol: row.symbol, title: row.title, detail: detail, value: row.value,
                                dayDollars: row.dollars, dayPercent: row.percent, fallback: row.fallback?.text, fallbackTint: row.fallback?.tint,
-                               isOption: isOption, urgent: row.urgent, estimated: row.proxy != nil)
+                               isOption: isOption, urgent: row.urgent, estimated: row.proxy != nil, valueEstimated: row.valueEstimated)
         }
     }
 
@@ -259,7 +259,7 @@ struct PortfolioHome: View {
             }
             Spacer(minLength: 8)
             VStack(alignment: .trailing, spacing: 5) {
-                Text(line.value.map { Money.text($0) } ?? "—").font(.body.weight(.semibold)).monospacedDigit()
+                Text(line.value.map { (line.valueEstimated ? "≈" : "") + Money.text($0) } ?? "—").font(.body.weight(.semibold)).monospacedDigit()
                 pill(line)
             }
         }
@@ -322,6 +322,8 @@ private struct HoldingLine: Identifiable {
     var urgent = false
     /// The change is estimated from a tracking fund rather than the holding's own price.
     var estimated = false
+    /// The value is a model estimate at the underlying's current price.
+    var valueEstimated = false
 }
 
 private struct ChangePill: ViewModifier {
