@@ -6,6 +6,7 @@
 	<array>
 		<string>com.brycecole.newswire.refresh</string>
 		<string>com.brycecole.newswire.process</string>
+		<string>com.brycecole.newswire.ask.*</string>
 	</array>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
@@ -38,6 +39,10 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
+	<key>NSSupportsLiveActivitiesFrequentUpdates</key>
+	<true/>
 	<key>NewswireAppGroup</key>
 	<string>group.com.brycecole.newswire.beta</string>
 	<key>UIBackgroundModes</key>
