@@ -85,9 +85,73 @@ nonisolated struct PerformanceSeries: Sendable {
         do {
             return try await buildExact(snapshot: snapshot, range: range)
         } catch {
+            if range == .day, let live = await estimateIntraday(snapshot: snapshot) { return live }
             if let estimate = await estimateFromHoldings(snapshot: snapshot, range: range) { return estimate }
             throw error
         }
+    }
+
+    // Today's value from live prices: each stock (or the ETF tracking a plan fund) scales its synced value by its intraday move,
+    // and each option is repriced with the same model the stock page uses at the underlying's price at that time. Cash and anything
+    // that can't be priced stay at the synced value, so this is an estimate and is flagged as one. If a stock's prices can't be
+    // fetched the series is unavailable rather than drawn from the rest.
+    private static func estimateIntraday(snapshot: PortfolioSnapshot) async -> PerformanceSeries? {
+        func ticker(_ value: String) -> String { value.trimmingCharacters(in: CharacterSet(charactersIn: "$ ")).uppercased() }
+        let stocks = snapshot.positions.filter { $0.option == nil && $0.value?.isFinite == true && $0.quantity.isFinite && $0.quantity != 0 }
+        let options = snapshot.positions.filter { ($0.option?.daysLeft ?? -1) >= 0 && $0.value?.isFinite == true }
+        guard !stocks.isEmpty || !options.isEmpty else { return nil }
+        let symbols = Set(stocks.map { $0.proxySymbol ?? ticker($0.symbol) } + options.map { ticker($0.symbol) })
+        async let fetchedQuotes = withTaskGroup(of: (String, OptionQuote?).self) { group in
+            for position in options {
+                group.addTask { (position.id, try? await OptionChain.quote(symbol: ticker(position.symbol), option: position.option!)) }
+            }
+            var found: [String: OptionQuote] = [:]
+            for await (id, quote) in group { if let quote { found[id] = quote } }
+            return found
+        }
+        let charts = await withTaskGroup(of: (String, MarketChart?).self) { group in
+            for symbol in symbols { group.addTask { (symbol, try? await MarketClient.chart(symbol, range: .day)) } }
+            var found: [String: MarketChart] = [:]
+            for await (symbol, chart) in group { if let chart { found[symbol] = chart } }
+            return found
+        }
+        let quotes = await fetchedQuotes
+        guard charts.count == symbols.count else { return nil }
+        guard let grid = charts.values.map(\.points).max(by: { $0.count < $1.count }), grid.count > 2 else { return nil }
+        let times = grid.map(\.date)
+
+        struct PricedOption { let position: Position; let detail: OptionDetail; let model: OptionEstimate?; let underlying: String }
+        let priced = options.map { position in
+            PricedOption(position: position, detail: position.option!, model: quotes[position.id].flatMap { OptionEstimate(quote: $0, option: position.option!) }, underlying: ticker(position.symbol))
+        }
+        func close(_ symbol: String, at date: Date) -> Double? {
+            charts[symbol]?.points.last(where: { $0.date <= date })?.close
+        }
+        func latest(_ symbol: String) -> Double? { charts[symbol].map { $0.points.last?.close ?? $0.price } }
+        let stockValue = stocks.compactMap(\.value).reduce(0, +)
+        let optionValue = options.compactMap(\.value).reduce(0, +)
+        let fixed = snapshot.totalValue - stockValue - optionValue
+
+        func total(at date: Date, prior: Bool) -> Double? {
+            var sum = fixed
+            for position in stocks {
+                let symbol = position.proxySymbol ?? ticker(position.symbol)
+                guard let price = prior ? charts[symbol]?.previousClose : close(symbol, at: date), let last = latest(symbol), last > 0, price > 0 else { return nil }
+                sum += (position.value ?? 0) * price / last
+            }
+            for option in priced {
+                let multiplier = 100 * option.detail.contracts
+                guard let model = option.model else { sum += option.position.value ?? 0; continue }
+                guard let spot = prior ? charts[option.underlying]?.previousClose : close(option.underlying, at: date), spot > 0 else { return nil }
+                sum += model.perShare(at: spot, on: date) * multiplier
+            }
+            return sum.isFinite ? sum : nil
+        }
+        var values: [(Date, Double)] = []
+        for time in times { if let value = total(at: time, prior: false) { values.append((time, value)) } }
+        guard values.count > 2, let baseline = total(at: times[0], prior: true) else { return nil }
+        let points = values.enumerated().map { PerformancePoint(id: $0.offset, date: $0.element.0, value: $0.element.1) }
+        return PerformanceSeries(points: points, baseline: baseline, estimatedFromHoldings: true)
     }
 
     // Values today's non-option holdings at past prices; ignores trades, deposits and options, so it is flagged as an estimate.

@@ -177,10 +177,12 @@ struct PortfolioOverview: View {
                     if let eyebrow {
                         Text(eyebrow).font(.subheadline).foregroundStyle(.secondary)
                     }
-                    Text(Money.text(selected?.value ?? snapshot.totalValue))
+                    // A live estimate (stocks and options repriced from current quotes) replaces the last synced balance while it is available.
+                    let shown = selected?.value ?? (range == .day && series?.estimatedFromHoldings == true ? series?.last : nil) ?? snapshot.totalValue
+                    Text(Money.text(shown))
                         .font(.system(.largeTitle, design: .rounded).weight(.bold)).monospacedDigit()
                         .minimumScaleFactor(0.6).lineLimit(1)
-                        .numericTextTransition(value: selected?.value ?? snapshot.totalValue)
+                        .numericTextTransition(value: shown)
                     if let selected {
                         Text(selected.date.formatted(.dateTime.month(.abbreviated).day().year()))
                             .font(.caption).foregroundStyle(.secondary)
