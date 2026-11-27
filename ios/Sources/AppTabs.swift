@@ -26,15 +26,56 @@ struct AppTabs: View {
     @State private var navigator = AppNavigator.shared
 
     var body: some View {
+        // The system tab bar is a compact pill that can't be widened, so it is hidden and replaced by a full-width bar
+        // with the same side margin as the market dock above it.
         TabView(selection: Binding(get: { navigator.tab }, set: { navigator.select($0) })) {
-            Tab("Today", systemImage: "newspaper", value: AppTab.today) { FeedView().environment(\.askTab, .today) }
-            Tab("Portfolio", systemImage: "briefcase", value: AppTab.portfolio) { PortfolioView(embedded: true).environment(\.askTab, .portfolio) }
-            Tab("Ask", systemImage: "message", value: AppTab.ask) {
-                AskSheet(context: navigator.askContext, embedded: true)
+            Tab("Today", systemImage: "newspaper", value: AppTab.today) {
+                FeedView().environment(\.askTab, .today).toolbarVisibility(.hidden, for: .tabBar)
             }
+            Tab("Portfolio", systemImage: "briefcase", value: AppTab.portfolio) {
+                PortfolioView(embedded: true).environment(\.askTab, .portfolio).toolbarVisibility(.hidden, for: .tabBar)
+            }
+            Tab("Ask", systemImage: "message", value: AppTab.ask) {
+                AskSheet(context: navigator.askContext, embedded: true).toolbarVisibility(.hidden, for: .tabBar)
+            }
+        }
+        .toolbarVisibility(.hidden, for: .tabBar)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            FullWidthTabBar(selection: Binding(get: { navigator.tab }, set: { navigator.select($0) }))
         }
         .environment(navigator)
         .environment(\.dockAboveTabBar, true)
+    }
+}
+
+private struct FullWidthTabBar: View {
+    @Binding var selection: AppTab
+    private let items: [(tab: AppTab, title: String, icon: String)] = [
+        (.today, "Today", "newspaper"), (.portfolio, "Portfolio", "briefcase"), (.ask, "Ask", "message"),
+    ]
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(items, id: \.tab) { item in
+                Button { selection = item.tab } label: {
+                    VStack(spacing: 2) {
+                        Image(systemName: item.icon).font(.system(size: 20, weight: .medium))
+                        Text(item.title).font(.caption2.weight(.medium))
+                    }
+                    .foregroundStyle(selection == item.tab ? Color.accentColor : Color.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 52)
+                    .background { if selection == item.tab { Capsule().fill(.quaternary) } }
+                    .contentShape(.capsule)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(item.title)
+                .accessibilityAddTraits(selection == item.tab ? [.isButton, .isSelected] : .isButton)
+            }
+        }
+        .padding(4)
+        .glassEffect(.regular, in: .capsule)
+        .padding(.horizontal, MarketDock.sideInset)
+        .padding(.bottom, 4)
     }
 }
 
