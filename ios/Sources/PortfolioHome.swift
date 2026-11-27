@@ -55,7 +55,20 @@ struct PortfolioHome: View {
         let lines = realLines
         guard lines.contains(where: { $0.dayDollars != nil || $0.estimatedMove != nil }) else { return nil }
         return LiveDayChange(change: lines.compactMap { $0.dayDollars ?? $0.estimatedMove }.reduce(0, +),
+                             value: overviewSnapshot.totalValue + liveAdjustment(selectedPositions),
                              estimated: lines.contains { ($0.estimated && $0.dayDollars != nil) || ($0.dayDollars == nil && $0.estimatedMove != nil) })
+    }
+
+    /// How far live prices have moved the holdings from the values the brokerage last reported. Brokerages report options
+    /// (and often stocks) at the previous close, so their balance doesn't yet include these moves.
+    private func liveAdjustment(_ positions: [Position]) -> Double {
+        let rows = PositionMoversCard.rows(positions: positions, quotes: board.quotes, options: optionQuotes, now: .now)
+        return rows.reduce(0) { sum, row in
+            let synced = positions.filter { $0.option == nil ? HomeSymbols.normalize($0.symbol) == row.id : $0.id == row.id }
+            guard let live = row.value, synced.allSatisfy({ $0.value != nil }), !synced.isEmpty else { return sum }
+            let delta = live - synced.compactMap(\.value).reduce(0, +)
+            return delta.isFinite ? sum + delta : sum
+        }
     }
 
     // MARK: Body
@@ -191,11 +204,11 @@ struct PortfolioHome: View {
                             .id("sample-\(index)")
                     }
                 } else {
-                    accountCard(title: "All accounts", subtitle: "\(accounts.count) account\(accounts.count == 1 ? "" : "s")", value: store.snapshot.totalValue, selected: account == nil) { account = nil }
+                    accountCard(title: "All accounts", subtitle: "\(accounts.count) account\(accounts.count == 1 ? "" : "s")", value: store.snapshot.totalValue + liveAdjustment(store.snapshot.positions), selected: account == nil) { account = nil }
                         .id("all")
                     ForEach(accounts) { entry in
                         let value = entry.reportedValue ?? entry.positions.compactMap(\.value).reduce(0, +)
-                        accountCard(title: entry.name, subtitle: entry.institution, value: value, selected: account == entry.id) { account = entry.id }
+                        accountCard(title: entry.name, subtitle: entry.institution, value: value + liveAdjustment(entry.positions), selected: account == entry.id) { account = entry.id }
                             .id("\(entry.id.item)|\(entry.id.name)")
                     }
                 }
