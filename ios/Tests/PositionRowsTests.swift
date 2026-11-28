@@ -59,7 +59,8 @@ struct PositionRowsTests {
         #expect(underlying.extendedLabel == "After" && underlying.price == 720)
         let closed = OptionQuote(bid: 0, ask: 0, last: 10, lastTrade: utc("2026-10-27T19:59:00Z"), change: nil, yahooVolatility: 0.4,
                                  regular: 700, pre: nil, post: nil, marketState: "POST")
-        let model = try #require(OptionEstimate(quote: closed, option: try #require(call.option)))
+        let callOption = try #require(call.option)
+        let model = try #require(OptionEstimate(quote: closed, option: callOption))
         let row = try #require(PositionMoversCard.rows(positions: [call], quotes: ["GEV": underlying], options: [call.id: closed], now: utc("2026-10-28T00:30:00Z")).first)
         // Same number the stock page shows: the model's price at the underlying's current price, not the synced brokerage value.
         let expected = model.perShare(at: 720, on: .now) * 200

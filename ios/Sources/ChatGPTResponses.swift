@@ -4,6 +4,8 @@ import os
 nonisolated enum ChatGPTEvent: Sendable {
     /// Text of the current response so far.
     case text(String)
+    /// Reasoning summary text of the current response so far.
+    case thinking(String)
     case searching
 }
 
@@ -129,6 +131,7 @@ enum ChatGPTResponses {
             throw ChatGPTError.from(status: http.statusCode, body: data, requestID: requestID)
         }
         var text = ""
+        var thinking = ""
         var items: [Int: [String: Any]] = [:]
         for try await line in bytes.lines {
             guard line.hasPrefix("data:") else { continue }
@@ -141,6 +144,12 @@ enum ChatGPTResponses {
                 text += event["delta"] as? String ?? ""
                 let snapshot = text
                 await onEvent(.text(snapshot))
+            case "response.reasoning_summary_text.delta":
+                thinking += event["delta"] as? String ?? ""
+                let snapshot = thinking
+                await onEvent(.thinking(snapshot))
+            case "response.reasoning_summary_part.added":
+                if !thinking.isEmpty && !thinking.hasSuffix("\n\n") { thinking += "\n\n" }
             case "response.output_item.added":
                 if (event["item"] as? [String: Any])?["type"] as? String == "web_search_call" { await onEvent(.searching) }
             case "response.output_item.done":
@@ -193,12 +202,13 @@ extension StockChat {
             do {
                 var body: [String: Any] = ["model": model, "instructions": instructions + guidance, "input": input,
                     "tools": namespaces + (webSearch ? [["type": "web_search"]] : []), "tool_choice": "auto", "parallel_tool_calls": true]
-                if reasoning { body["reasoning"] = ["effort": "high"] }
+                if reasoning { body["reasoning"] = ["effort": "high", "summary": "auto"] }
                 if let verbosity { body["text"] = ["verbosity": verbosity] }
                 output = try await respond(body) { event in
                     switch event {
                     case .searching: progress("Searching the web…")
                     case .text(let text): self.streamingText = text
+                    case .thinking(let text): self.thinkingText = text
                     }
                 }
             } catch let error as ChatGPTError where (reasoning || verbosity != nil) && error.rejects(["reasoning", "verbosity"]) {
