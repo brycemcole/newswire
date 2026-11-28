@@ -31,50 +31,133 @@ nonisolated struct MarketOutlook: Codable, Equatable, Sendable {
     private(set) var outlook: MarketOutlook?
     private(set) var generating = false
     private(set) var activity: String?
+    private(set) var progressLog: [String] = []
+    private(set) var thinking = ""
+    private(set) var streamingText = ""
+    private(set) var startedAt: Date?
     private(set) var error: String?
+    var canGenerate: Bool { isAvailable() }
     @ObservationIgnored private var lastFailure: Date?
     @ObservationIgnored private var chat: StockChat?
+    @ObservationIgnored private var generationTask: Task<Void, Never>?
+    @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let storageKey: String
+    @ObservationIgnored private let fetchPulse: @MainActor () async -> MarketPulse?
+    @ObservationIgnored private let makeChat: @MainActor () -> StockChat
+    @ObservationIgnored private let modelName: @MainActor (StockChat) async -> String?
+    @ObservationIgnored private let isAvailable: @MainActor () -> Bool
+    @ObservationIgnored private let clock: () -> Date
 
-    init() {
-        if let data = UserDefaults.standard.data(forKey: Self.key) {
+    init(
+        defaults: UserDefaults = .standard,
+        storageKey: String = MarketOutlookStore.key,
+        fetchPulse: @escaping @MainActor () async -> MarketPulse? = MarketOutlookStore.pulse,
+        makeChat: @escaping @MainActor () -> StockChat = MarketOutlookStore.defaultChat,
+        modelName: @escaping @MainActor (StockChat) async -> String? = MarketOutlookStore.defaultModel,
+        isAvailable: @escaping @MainActor () -> Bool = MarketOutlookStore.defaultAvailable,
+        clock: @escaping () -> Date = { .now }
+    ) {
+        self.defaults = defaults
+        self.storageKey = storageKey
+        self.fetchPulse = fetchPulse
+        self.makeChat = makeChat
+        self.modelName = modelName
+        self.isAvailable = isAvailable
+        self.clock = clock
+        if let data = defaults.data(forKey: storageKey) {
             outlook = try? JSONDecoder().decode(MarketOutlook.self, from: data)
         }
     }
 
-    func needsRefresh(at now: Date = .now) -> Bool {
+    func needsRefresh(at now: Date? = nil) -> Bool {
+        let now = now ?? clock()
         guard let outlook else { return true }
         if !outlook.current(at: now) { return true }
         if MarketClock.session(on: now)?.contains(now) == true, now.timeIntervalSince(outlook.generatedAt) > Self.openSessionAge { return true }
         return false
     }
 
-    func ensure(now: Date = .now) async {
-        guard !generating, needsRefresh(at: now), AIRouter.isAvailable(.stockChat) || ChatGPTAccount.shared.ready else { return }
+    func ensure(now: Date? = nil) {
+        #if DEBUG
+        if CommandLine.arguments.contains("-outlookGenerating") {
+            loadGeneratingSample()
+            return
+        }
+        #endif
+        let now = now ?? clock()
+        guard !generating, needsRefresh(at: now), isAvailable() else { return }
         if let lastFailure, now.timeIntervalSince(lastFailure) < Self.retryDelay { return }
-        await generate()
+        startGeneration()
     }
 
-    func generate() async {
-        guard !generating else { return }
+    /// Starts generation in a store-owned task so view disappearance, tab switches, or scrolling cannot cancel it.
+    @discardableResult
+    func startGeneration() -> Task<Void, Never> {
+        if let generationTask { return generationTask }
         #if DEBUG
-        if CommandLine.arguments.contains("-outlookSample") { loadSample(); return }
+        if CommandLine.arguments.contains("-outlookGenerating") {
+            loadGeneratingSample()
+            return Task {}
+        }
+        if CommandLine.arguments.contains("-outlookSample") {
+            loadSample()
+            return Task {}
+        }
         #endif
         generating = true
         error = nil
+        startedAt = clock()
         activity = "Reading the market…"
-        defer { generating = false; activity = nil; chat = nil }
-        let started = Date.now
-        let pulse = await Self.pulse()
-        let chat = StockChat()
-        if ChatGPTAccount.shared.ready { chat.backendOverride = .chatGPT }
+        progressLog = ["Reading the market…"]
+        thinking = ""
+        streamingText = ""
+        let task = Task { [self] in
+            await runGeneration()
+        }
+        generationTask = task
+        return task
+    }
+
+    func generate() async {
+        await startGeneration().value
+    }
+
+    private func recordProgress(_ status: String) {
+        let trimmed = status.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if activity != trimmed { activity = trimmed }
+        if progressLog.last != trimmed { progressLog.append(trimmed) }
+    }
+
+    private func runGeneration() async {
+        defer {
+            generating = false
+            activity = nil
+            progressLog = []
+            thinking = ""
+            streamingText = ""
+            startedAt = nil
+            chat = nil
+            generationTask = nil
+        }
+        let started = startedAt ?? clock()
+        let pulse = await fetchPulse()
+        let chat = makeChat()
         chat.customFormat = Self.format
         self.chat = chat
-        let model = chat.backend == .chatGPT ? try? await ChatGPTAccount.shared.model() : nil
+        let model = await modelName(chat)
         chat.send(Self.prompt(pulse: pulse, now: started), symbol: "", name: "Markets", price: nil)
         do {
             while chat.busy {
-                if let status = chat.activity { activity = status }
-                try await Task.sleep(for: .milliseconds(250))
+                if let status = chat.activity { recordProgress(status) }
+                if !chat.thinkingText.isEmpty && chat.thinkingText != thinking {
+                    thinking = chat.thinkingText
+                }
+                if chat.streamingText != streamingText {
+                    streamingText = chat.streamingText
+                    if !chat.streamingText.isEmpty { recordProgress("Writing the outlook…") }
+                }
+                try await Task.sleep(for: .milliseconds(150))
             }
         } catch {
             chat.cancel()
@@ -95,12 +178,26 @@ nonisolated struct MarketOutlook: Codable, Equatable, Sendable {
                                     generatedAt: started, validUntil: validUntil, pulseAsOf: pulse?.asOf)
         self.outlook = outlook
         lastFailure = nil
-        if let data = try? JSONEncoder().encode(outlook) { UserDefaults.standard.set(data, forKey: Self.key) }
+        if let data = try? JSONEncoder().encode(outlook) { defaults.set(data, forKey: storageKey) }
     }
 
     private func fail(_ message: String) {
         error = message
-        lastFailure = .now
+        lastFailure = clock()
+    }
+
+    private static func defaultChat() -> StockChat {
+        let chat = StockChat()
+        if ChatGPTAccount.shared.ready { chat.backendOverride = .chatGPT }
+        return chat
+    }
+
+    private static func defaultModel(_ chat: StockChat) async -> String? {
+        chat.backend == .chatGPT ? try? await ChatGPTAccount.shared.model() : nil
+    }
+
+    private static func defaultAvailable() -> Bool {
+        AIRouter.isAvailable(.stockChat) || ChatGPTAccount.shared.ready
     }
 
     private static func pulse() async -> MarketPulse? {
@@ -156,7 +253,51 @@ nonisolated struct MarketOutlook: Codable, Equatable, Sendable {
         return Parsed(headline: header.headline, deck: header.deck ?? "", tone: header.tone ?? "mixed", symbols: Array(symbols.prefix(6)), body: body)
     }
 
+    struct DraftPreview: Equatable {
+        var headline: String?
+        var deck: String?
+        var body: String
+    }
+
+    /// Turns raw streaming text into a readable preview, hiding an incomplete ```outlook JSON block until it closes.
+    static func draftPreview(_ text: String) -> DraftPreview {
+        if let match = text.firstMatch(of: /```outlook\s*([\s\S]*?)```/) {
+            let header = try? JSONDecoder().decode(Header.self, from: Data(String(match.1).utf8))
+            let body = text.replacingCharacters(in: match.range, with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return DraftPreview(headline: header?.headline, deck: header?.deck, body: body)
+        }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("```") { return DraftPreview(headline: nil, deck: nil, body: "") }
+        return DraftPreview(headline: nil, deck: nil, body: trimmed)
+    }
+
     #if DEBUG
+    private func loadGeneratingSample() {
+        outlook = nil
+        error = nil
+        generating = true
+        startedAt = clock().addingTimeInterval(-14)
+        activity = "Writing the outlook…"
+        progressLog = [
+            "Reading the market…",
+            "Checking SPY, QQQ, VIX and 10Y yields…",
+            "Checking economic and earnings calendar…",
+            "Searching the web…",
+            "Writing the outlook…"
+        ]
+        thinking = "S&P 500 futures are modestly firmer overnight while VIX sits near 14 and the 10-year yield is steady. Cross-checking Tuesday's PCE consensus and major tech earnings before framing the base case and downside risk."
+        streamingText = """
+        ```outlook
+        {"headline":"[TEST] Stocks lean higher into a light week, with PCE as the swing factor","deck":"[TEST] Futures are up 0.3% and volatility stays muted, though Tuesday's inflation print could test the drift.","tone":"bullish","symbols":["SPY","QQQ","NVDA"]}
+        ```
+        [TEST] **Expect a modest upward drift over the next few sessions as calmer rates and low volatility support large-cap tech.**
+
+        ## What's driving it
+
+        Overnight index futures are firmer while Treasury yields have steadied after last week's move…
+        """
+    }
+
     private func loadSample() {
         let now = Date.now
         outlook = MarketOutlook(
@@ -191,10 +332,17 @@ struct MarketOutlookRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(.rect)
         .accessibilityElement(children: .combine)
+        #if DEBUG
+        .onAppear {
+            if CommandLine.arguments.contains("-openOutlook"), FeedStore.shared.path.isEmpty {
+                FeedStore.shared.path.append(MarketOutlookRoute())
+            }
+        }
+        #endif
         .task(id: phase == .active) {
             guard phase == .active else { return }
             while !Task.isCancelled {
-                await store.ensure()
+                store.ensure()
                 do { try await Task.sleep(for: .seconds(60)) } catch { return }
             }
         }
@@ -286,20 +434,35 @@ struct MarketOutlookDetail: View {
         ScrollView {
             if let outlook = store.outlook {
                 article(outlook)
+            } else if store.generating || (store.error == nil && store.canGenerate) {
+                generatingView
+            } else if let error = store.error {
+                ContentUnavailableView {
+                    Label("Outlook unavailable", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(error)
+                } actions: {
+                    Button("Try Again", systemImage: "arrow.clockwise") {
+                        store.startGeneration()
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                .padding(.top, 80)
             } else {
-                ContentUnavailableView(store.generating ? "Writing the outlook" : "No outlook yet",
+                ContentUnavailableView("Sign in to ChatGPT",
                                        systemImage: "chart.line.uptrend.xyaxis",
-                                       description: Text(store.error ?? store.activity ?? ""))
+                                       description: Text("Sign in to ChatGPT in Settings to generate a daily market outlook."))
                     .padding(.top, 80)
             }
         }
         .scrollEdgeEffectStyle(.soft, for: .all)
         .navigationTitle("Outlook")
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear { store.ensure() }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
-                    Task { await store.generate() }
+                    store.startGeneration()
                 } label: {
                     if store.generating { ProgressView() } else { Image(systemName: "arrow.clockwise") }
                 }
@@ -307,7 +470,96 @@ struct MarketOutlookDetail: View {
                 .accessibilityLabel("Rewrite outlook")
             }
         }
-        .asksAbout(AskContext(screen: store.outlook.map { "The Newswire market outlook \"\($0.headline)\", written \($0.generatedAt.formatted(.dateTime.month().day().hour().minute())). \($0.body.prefix(1500))" } ?? "The Newswire market outlook, not yet written."))
+        .asksAbout(AskContext(screen: store.outlook.map { "The Newswire market outlook \"\($0.headline)\", written \($0.generatedAt.formatted(.dateTime.month().day().hour().minute())). \($0.body.prefix(1500))" } ?? "The Newswire market outlook, currently being written."))
+    }
+
+    private var generatingView: some View {
+        let preview = MarketOutlookStore.draftPreview(store.streamingText)
+        return VStack(alignment: .leading, spacing: 16) {
+            TimelineView(.periodic(from: store.startedAt ?? .now, by: 1)) { context in
+                let elapsed = max(0, Int(context.date.timeIntervalSince(store.startedAt ?? context.date)))
+                HStack(spacing: 6) {
+                    Image(systemName: "chart.line.uptrend.xyaxis").foregroundStyle(Color.wireAccent)
+                    Text("Outlook").fontWeight(.bold)
+                    Text("·").foregroundStyle(.tertiary)
+                    Text("In progress")
+                    if store.startedAt != nil {
+                        Text("·").foregroundStyle(.tertiary)
+                        Text("\(elapsed)s").monospacedDigit()
+                    }
+                }
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            }
+            Text("Writing the market outlook")
+                .font(.title2.weight(.bold))
+                .fixedSize(horizontal: false, vertical: true)
+            progressCard
+            if !store.thinking.isEmpty {
+                thinkingCard
+            }
+            if preview.headline != nil || !preview.body.isEmpty {
+                Divider()
+                VStack(alignment: .leading, spacing: 10) {
+                    if let headline = preview.headline, !headline.isEmpty {
+                        Text(headline).font(.title3.weight(.bold)).fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let deck = preview.deck, !deck.isEmpty {
+                        Text(deck).font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                    if !preview.body.isEmpty {
+                        MarkdownText(preview.body, sources: [], keepsOrder: true)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 20).padding(.vertical, 16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .animation(.easeOut(duration: 0.2), value: store.progressLog)
+        .animation(.easeOut(duration: 0.2), value: store.thinking.isEmpty)
+    }
+
+    private var progressCard: some View {
+        let steps = store.progressLog.isEmpty ? [store.activity ?? "Reading the market…"] : store.progressLog
+        return VStack(alignment: .leading, spacing: 10) {
+            ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
+                let isCurrent = index == steps.count - 1
+                HStack(alignment: .center, spacing: 10) {
+                    if isCurrent {
+                        ProgressView()
+                            .controlSize(.small)
+                            .frame(width: 16, height: 16)
+                    } else {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 16, height: 16)
+                    }
+                    Text(step)
+                        .font(.subheadline.weight(isCurrent ? .medium : .regular))
+                        .foregroundStyle(isCurrent ? .primary : .secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private var thinkingCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Thinking", systemImage: "sparkles")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(store.thinking)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private func article(_ outlook: MarketOutlook) -> some View {
@@ -322,6 +574,10 @@ struct MarketOutlookDetail: View {
                 Text(outlook.headline).font(.title.weight(.bold)).fixedSize(horizontal: false, vertical: true)
                 if !outlook.deck.isEmpty { Text(outlook.deck).font(.title3).foregroundStyle(.secondary) }
                 provenance(outlook, now: context.date)
+                if store.generating {
+                    progressCard
+                    if !store.thinking.isEmpty { thinkingCard }
+                }
                 if !outlook.symbols.isEmpty { OutlookQuotePills(symbols: outlook.symbols) }
                 Divider()
                 MarkdownText(outlook.body, sources: outlook.sources, keepsOrder: true)

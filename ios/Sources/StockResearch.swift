@@ -359,6 +359,7 @@ struct StockChatMessage: Identifiable, Codable, Hashable {
     var messages: [StockChatMessage] = []
     var activity: String?
     var streamingText = ""
+    var thinkingText = ""
     var error: String?
     private var task: Task<Void, Never>?
     private var taskID = UUID()
@@ -398,7 +399,7 @@ struct StockChatMessage: Identifiable, Codable, Hashable {
     """
 
     func cancel() {
-        taskID = UUID(); task?.cancel(); task = nil; activity = nil; streamingText = ""; ChatApproval.shared.resolve(false)
+        taskID = UUID(); task?.cancel(); task = nil; activity = nil; streamingText = ""; thinkingText = ""; ChatApproval.shared.resolve(false)
         background?.finish(answer: nil); background = nil
     }
 
@@ -440,7 +441,7 @@ struct StockChatMessage: Identifiable, Codable, Hashable {
             : nil
         self.background = background
         task = Task { [self] in
-            defer { if taskID == id { task = nil; activity = nil; streamingText = "" } }
+            defer { if taskID == id { task = nil; activity = nil; streamingText = ""; thinkingText = "" } }
             let research = StockResearchTools(symbol: symbol, name: name, api: api, options: messages.flatMap(\.options), portfolioTools: customFormat == nil) { [weak self] status in
                 guard let self, self.taskID == id else { return }
                 self.activity = status
